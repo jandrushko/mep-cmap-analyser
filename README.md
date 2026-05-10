@@ -1,6 +1,6 @@
 # MEP-CMAP Analyser
 
-**Version 0.8.1 | May 2026**  
+**Version 0.8.2 | May 2026**  
 *Author: Justin Andrushko PhD, Northumbria University*
 
 A BIDS-compliant, open-source tool for processing and quantifying TMS-evoked motor evoked potentials (MEPs) and cortical silent periods (cSPs) from Spike-2 EMG recordings.
@@ -154,7 +154,7 @@ python3 build_mac.py
 
 If you use this tool in your research, please cite:
 
-> Andrushko, J.W. (2026). MEP-CMAP Analyser (Version 0.8.1) [Software].
+> Andrushko, J.W. (2026). MEP-CMAP Analyser (Version 0.8.2) [Software].
 > Northumbria University. https://doi.org/10.5281/zenodo.XXXXXXX
 
 ---
