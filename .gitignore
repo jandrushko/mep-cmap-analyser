@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+MANIFEST
+
+# Virtual environments
+venv/
+venv_windows/
+venv_linux/
+venv_mac/
+env/
+.env/
+.venv/
+
+# PyInstaller
+*.spec.bak
+dist/
+build/
+
+# Distribution
+*.zip
+*.tar.gz
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Session files (user-specific, not for repo)
+*_session.json
+
+# Results (user data, not for repo)
+derivatives/
+stim_type_split/
+stim_type_split_with_outliers/
+results/
+figures/
+figures_with_outliers/
+
+# Test data
+*.txt.bak

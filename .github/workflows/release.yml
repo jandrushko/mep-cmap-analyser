@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+      - name: Build
+        run: pyinstaller MEP_CMAP_Windows.spec --clean
+      - name: Zip
+        run: Compress-Archive -Path "dist\MEP-CMAP Analyser" -DestinationPath MEP-CMAP_Analyser_Windows.zip
+        shell: pwsh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: MEP-CMAP_Analyser_Windows.zip
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install system deps
+        run: sudo apt-get install -y python3-tk tk-dev binutils
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+      - name: Build
+        run: pyinstaller MEP_CMAP_Linux.spec --clean
+      - name: Tar
+        run: tar -czf MEP-CMAP_Analyser_Linux.tar.gz -C dist 'MEP-CMAP Analyser'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-build
+          path: MEP-CMAP_Analyser_Linux.tar.gz
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+      - name: Build
+        run: pyinstaller MEP_CMAP_Mac.spec --clean
+      - name: Zip
+        run: zip -r MEP-CMAP_Analyser_Mac.zip "dist/MEP-CMAP Analyser"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-build
+          path: MEP-CMAP_Analyser_Mac.zip
+
+  release:
+    needs: [build-windows, build-linux, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            windows-build/MEP-CMAP_Analyser_Windows.zip
+            linux-build/MEP-CMAP_Analyser_Linux.tar.gz
+            mac-build/MEP-CMAP_Analyser_Mac.zip
+          generate_release_notes: true
+
+  publish-pypi:
+    needs: release
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build package
+        run: |
+          pip install build
+          python -m build
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
