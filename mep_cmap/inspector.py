@@ -315,8 +315,13 @@ class DataInspectorWindow:
                 self.note_box_is_shown = False
                 self._resize_window()
 
-    def _save_note_from_widget(self):                               
+    def _save_note_from_widget(self):
+        """Save the note box content to metadata for the current segment."""
         key = (self.cur_type, self.cur_idx)
+        # Only save if the note box is currently shown — if hidden, the widget
+        # may contain stale text from a previous segment.
+        if not self.note_box_is_shown:
+            return
         txt = self.note_box.get("1.0", "end").strip()
         if txt:
             self.meta.setdefault(key, {})['note'] = txt
@@ -710,9 +715,17 @@ class DataInspectorWindow:
         ax_ex.grid(ls=":", lw=0.4)
         self.canvas.draw_idle()
 
-    def _close_and_save(self):         # <<< NEW
-        self._save_note_from_widget()  # make sure the current text is stored
-        self.top.destroy()             # close the toplevel
+    def _close_and_save(self):
+        """Save all pending edits including note, then close."""
+        # Save the current segment's note
+        if self.note_box_is_shown:
+            key = (self.cur_type, self.cur_idx)
+            txt = self.note_box.get("1.0", "end").strip()
+            if txt:
+                self.meta.setdefault(key, {})['note'] = txt
+            elif key in self.meta and 'note' in self.meta[key]:
+                del self.meta[key]['note']
+        self.top.destroy()
 
     # ---------------------------------------------------------------- status-bar
     def _refresh_status(self):

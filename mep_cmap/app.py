@@ -475,10 +475,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         _visible_pre   = self.pre_time.get()  # display window only
         inspector = DataInspectorWindow(
             self.root, segments_dict, time_axis,
-            # Pass empty metadata so onset detection always re-runs fresh.
-            # (Passing self.segments_metadata with old onset_idx values
-            # prevents setdefault from re-detecting with new parameters.)
-            metadata_dict       = {},
+            # Seed with any previously stored metadata so notes, AUC windows
+            # and manual marker positions survive re-runs within the same session.
+            metadata_dict       = dict(getattr(self, 'segments_metadata', {})),
             label_map=label_map, color_map=color_map, emg_unit=unit,
             ptp_start_ms        = self.ptp_start.get(),
             ptp_end_ms          = self.ptp_end.get(),
