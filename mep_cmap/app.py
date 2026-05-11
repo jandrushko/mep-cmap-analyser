@@ -64,9 +64,6 @@ from .filter_preview import FilterPreviewMixin
 class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
     def __init__(self, root):
         self.root = root
-        # ── Detect DPI and apply initial scaling ──────────────────────────────
-        prefs.detect_dpi(root)
-        apply_scaling(root)
         # ── State that setup_gui() widgets depend on — must come first ────────
         self.crop_start        = None
         self.crop_end          = None
@@ -241,56 +238,61 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         return f"{base} ({self.emg_unit})" if self.emg_unit else base
 
     @staticmethod
+    def _get_monitor_origin(ref_widget):
+        """
+        Return (mon_x, mon_y, mon_w, mon_h) for the monitor that contains
+        the mouse cursor.  Used by _cap_toplevel to centre dialogs on the
+        correct physical screen in multi-monitor setups.
+        """
+        sw = ref_widget.winfo_screenwidth()
+        sh = ref_widget.winfo_screenheight()
+        try:
+            px = ref_widget.winfo_pointerx()
+            py = ref_widget.winfo_pointery()
+        except Exception:
+            return 0, 0, sw, sh
+        mon_col = px // sw
+        mon_row = py // sh
+        return mon_col * sw, mon_row * sh, sw, sh
+
+    @staticmethod
     def _cap_toplevel(win, frac_h=0.88, frac_w=0.92):
-        """Cap a Toplevel to a fraction of screen size and centre it."""
+        """Cap a Toplevel to a fraction of the active monitor and centre it."""
         win.update_idletasks()
-        sw = win.winfo_screenwidth()
-        sh = win.winfo_screenheight()
-        max_w = int(sw * frac_w)
-        max_h = int(sh * frac_h)
-        req_w = win.winfo_reqwidth()  + 40
-        req_h = win.winfo_reqheight() + 40
+        mon_x, mon_y, sw, sh = TMSAnalysisApp._get_monitor_origin(win)
+        max_w   = int(sw * frac_w)
+        max_h   = int(sh * frac_h)
+        req_w   = win.winfo_reqwidth()  + 40
+        req_h   = win.winfo_reqheight() + 40
         final_w = min(req_w, max_w)
         final_h = min(req_h, max_h)
-        x = (sw - final_w) // 2
-        y = (sh - final_h) // 4
+        x = mon_x + (sw - final_w) // 2
+        y = mon_y + (sh - final_h) // 4
         win.geometry(f"{final_w}x{final_h}+{x}+{y}")
 
     def _make_window_adaptive(self):
-        """Size the window to fit content, up to 90% of the screen in each dimension."""
+        """Maximise on startup — eliminates font/size complaints across all screens.
 
-        # 1) Screen dimensions
-        sw = self.root.winfo_screenwidth()
-        sh = self.root.winfo_screenheight()
+        Professional analysis tools (MATLAB, Spike2, LabChart) open maximised.
+        Falls back to 90%-of-screen geometry if the platform doesn't support
+        the zoomed state.
+        """
+        import sys as _sys
+        try:
+            if _sys.platform in ("win32", "darwin"):
+                self.root.state("zoomed")
+            else:
+                self.root.attributes("-zoomed", True)
+        except Exception:
+            # Fallback: 90% of active monitor, centred
+            mon_x, mon_y, sw, sh = self._get_monitor_origin(self.root)
+            h       = max(int(sh * 0.9), 600)
+            final_w = min(max(self.root.winfo_reqwidth() + 36, 680), int(sw * 0.9))
+            x       = mon_x + (sw - final_w) // 2
+            y       = mon_y + (sh - h) // 4
+            self.root.geometry(f"{final_w}x{h}+{x}+{y}")
 
-        # 2) Height: 90% of screen height, with a 600px floor
-        h = int(sh * 0.9)
-        h = max(600, h)
-
-        # 3) Width: ask Tk for the window's natural (shrink-wrapped) required width.
-        #    setup_gui() already called geometry("") + update_idletasks(), so by the
-        #    time this after(0) callback runs the layout has settled and
-        #    winfo_reqwidth() returns the true content width.
-        #    We must NOT force the window to 1px first — that collapses every
-        #    fill='x' frame and produces a falsely small measurement.
-        self.root.update_idletasks()
-        natural_w = self.root.winfo_reqwidth()
-
-        # 4) Add scrollbar width + a little breathing room
-        padding = 36          # 17px scrollbar + ~19px padding
-        desired_w = natural_w + padding
-
-        # 5) Clamp to [min:680px, max:90% of screen width]
-        min_w   = 680
-        max_w   = int(sw * 0.9)
-        final_w = min(max(desired_w, min_w), max_w)
-
-        # 6) Center and apply geometry
-        x = (sw - final_w) // 2
-        y = (sh - h)       // 4
-        self.root.geometry(f"{final_w}x{h}+{x}+{y}")
-
-        # 7) Apply DPI-aware font scaling
+        # Apply DPI-aware font scaling after window is settled
         apply_scaling(self.root)
 
     # ------------------------------------------------------------------
@@ -304,9 +306,16 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill="both", expand=True)
 
+        # Centre the tab strip — ttk doesn't expose this directly,
+        # so we use a custom style with anchor="center" on the tab area.
+        _nb_style = ttk.Style()
+        _nb_style.configure("Centered.TNotebook", tabposition="n")
+        _nb_style.configure("Centered.TNotebook.Tab", anchor="center", padding=[20, 4])
+        self.notebook.configure(style="Centered.TNotebook")
+
         # ── Tab 1: Stage 1 (scrollable content + fixed footer) ───────────────
         tab1_outer = ttk.Frame(self.notebook)
-        self.notebook.add(tab1_outer, text="Stage 1 – Single File Processing")
+        self.notebook.add(tab1_outer, text="Stage 1a – Single File Processing")
 
         # Fixed footer — packed FIRST (before canvas) so it stays pinned
         # at the bottom regardless of scroll position.
@@ -326,7 +335,20 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         vscroll.config(command=self.canvas.yview)
 
         self.main_frame = ttk.Frame(self.canvas)
-        self.canvas.create_window((0, 0), window=self.main_frame, anchor="nw")
+        self._canvas_window = self.canvas.create_window(
+            (0, 0), window=self.main_frame, anchor="nw")
+
+        # Re-centre content whenever the canvas is resized.
+        # Content is capped at 860px wide so it doesn't stretch awkwardly
+        # on large monitors, then centred in the available space.
+        MAX_CONTENT_W = 1100
+        def _on_canvas_resize(event):
+            cw = event.width
+            content_w = min(cw, MAX_CONTENT_W)
+            x = max(0, (cw - content_w) // 2)
+            self.canvas.itemconfigure(self._canvas_window, width=content_w)
+            self.canvas.coords(self._canvas_window, x, 0)
+        self.canvas.bind("<Configure>", _on_canvas_resize)
 
         self.main_frame.bind(
             "<Configure>",
@@ -340,6 +362,13 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                 self.canvas.yview_scroll(int(-delta / 120), "units")
         for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
             self.canvas.bind_all(seq, _on_mousewheel)
+
+        # ── Tab 1b: Stage 1b – Labels & Analysis Setup ──────────────────────────
+        self.tab1b_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab1b_frame, text="Stage 1b – Labels & Analysis Setup")
+        # Tab 1b is populated by _build_labels_tab() after a file is loaded
+        self._labels_tab_built = False
+        self._labels_tab_confirmed = False  # True once user confirms setup
 
         # ── Tab 2: Stage 2 (group analysis) ──────────────────────────────────
         self.tab2_frame = ttk.Frame(self.notebook)
@@ -364,6 +393,17 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
     def run_analysis_start(self):
         """Called by the green *Run Analysis* button (GUI thread)."""
 
+
+        # Guard: Tab 1b must be confirmed before running
+        if getattr(self, "_labels_tab_built", False) and \
+                not getattr(self, "_labels_tab_confirmed", False):
+            messagebox.showwarning(
+                "Setup not confirmed",
+                "Please go to the 'Stage 1b – Labels & Analysis Setup' tab "
+                "and click  ✔ Confirm Setup  before running analysis.",
+                parent=self.root)
+            self.notebook.select(self.tab1b_frame)
+            return
         # Guard: prevent launching a second worker while one is already running.
         if getattr(self, '_analysis_running', False):
             messagebox.showwarning(
@@ -497,6 +537,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             csp_criterion       = self.csp_criterion.get(),
             csp_significance    = self.csp_significance.get(),
             csp_n_boot          = self.csp_n_boot.get(),
+            csp_max_mep_offset_ms = self.csp_max_mep_offset_ms.get(),
             csp_types           = self.csp_types,
         )
         self.root.wait_window(inspector.top)
@@ -647,7 +688,8 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
 
         file_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="File", menu=file_menu)
-        file_menu.add_command(label="Open File...",  command=lambda: self.browse_file())
+        file_menu.add_command(label="Open File…",         command=lambda: self.browse_file())
+        file_menu.add_command(label="Set Derivatives Folder…", command=lambda: self.browse_derivatives_folder())
         file_menu.add_separator()
         file_menu.add_command(label="Save Session",  command=lambda: self.save_session())
         file_menu.add_command(label="Load Session",  command=lambda: self.load_session())
@@ -670,23 +712,19 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         help_menu.add_command(label="About", command=self._show_about)
 
     def setup_gui(self):
-        # ─── Input File Selection ────────────────────────────────────────────
-        tk.Label(self.main_frame, text="Select Input File:").pack(anchor='w', padx=10, pady=(10, 0))
-        path_frame = tk.Frame(self.main_frame)
-        path_frame.pack(fill='x', padx=10)
-        tk.Entry(path_frame, textvariable=self.file_path, width=50).pack(side='left', expand=True, fill='x')
-        tk.Button(path_frame, text="Browse", command=self.browse_file).pack(side='right')
-
-        # ─── Derivatives Folder Selection ────────────────────────────────────
-        tk.Label(self.main_frame,
-                 text="Derivatives Folder  (outputs saved here as: <folder>/derivatives/sub-XX/ses-XX/):")            .pack(anchor='w', padx=10, pady=(6, 0))
-        deriv_frame = tk.Frame(self.main_frame)
-        deriv_frame.pack(fill='x', padx=10)
-        tk.Entry(deriv_frame, textvariable=self.derivatives_path, width=50)            .pack(side='left', expand=True, fill='x')
-        tk.Button(deriv_frame, text="Browse", command=self.browse_derivatives_folder)            .pack(side='right')
-        tk.Label(self.main_frame,
-                 text="Leave blank to save beside the source .txt file.",
-                 fg="grey", font=("TkDefaultFont", 8)).pack(anchor='w', padx=10)
+        # ─── Input File + Channel (single compact row) ──────────────────────
+        file_row = tk.Frame(self.main_frame)
+        file_row.pack(fill='x', padx=10, pady=(10, 0))
+        tk.Label(file_row, text="Input file:").pack(side='left')
+        tk.Entry(file_row, textvariable=self.file_path, width=46).pack(
+            side='left', expand=True, fill='x', padx=(4, 4))
+        tk.Button(file_row, text="Browse…", command=self.browse_file).pack(side='left')
+        tk.Label(file_row, text="  Channel:").pack(side='left')
+        self.channel_var = tk.StringVar(value="—")
+        self.channel_dd  = ttk.Combobox(file_row, textvariable=self.channel_var,
+                                         state="disabled", width=14)
+        self.channel_dd.pack(side='left', padx=(4, 0))
+        self.channel_dd.bind("<<ComboboxSelected>>", self._on_channel_selected)
 
         # ─── Filter Parameter Setup (placeholders) ───────────────────────────
         self.apply_filter = tk.BooleanVar(value=True)
@@ -723,13 +761,14 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self.outlier_threshold = tk.DoubleVar(value=1.96)
         self.generate_individual_plots = tk.BooleanVar(value=True)
         self.apply_humbug = tk.BooleanVar(value=False)
-        self.csp_search_start_ms = tk.IntVar(value=40)
-        self.csp_search_end_ms   = tk.IntVar(value=400)
-        self.csp_min_silence_ms  = tk.IntVar(value=25)
-        self.csp_min_return_ms   = tk.IntVar(value=40)
-        self.csp_criterion       = tk.DoubleVar(value=1.96)
-        self.csp_significance    = tk.DoubleVar(value=0.99)
-        self.csp_n_boot          = tk.IntVar(value=1000)
+        self.csp_search_start_ms    = tk.IntVar(value=40)
+        self.csp_search_end_ms      = tk.IntVar(value=400)
+        self.csp_min_silence_ms     = tk.IntVar(value=25)
+        self.csp_min_return_ms      = tk.IntVar(value=40)
+        self.csp_criterion          = tk.DoubleVar(value=1.96)
+        self.csp_significance       = tk.DoubleVar(value=0.99)
+        self.csp_n_boot             = tk.IntVar(value=1000)
+        self.csp_max_mep_offset_ms  = tk.IntVar(value=40)  # cSP start must be within this many ms of 2nd MEP peak
 
         # ─── Log + Progress ─────────────────────────────────────────────────
         self.log_box = None
@@ -985,40 +1024,12 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         tk.Entry(csp_frame, textvariable=self.csp_significance, width=5).grid(row=2,column=3,sticky='w')
         tk.Label(csp_frame, text="Bootstrap iterations:").grid(row=3,column=0,sticky='e',padx=6)
         tk.Entry(csp_frame, textvariable=self.csp_n_boot, width=7).grid(row=3,column=1,sticky='w')
+        tk.Label(csp_frame, text="Max offset from MEP 2nd peak (ms):").grid(row=3,column=2,sticky='e',padx=6)
+        tk.Entry(csp_frame, textvariable=self.csp_max_mep_offset_ms, width=5).grid(row=3,column=3,sticky='w')
         tk.Label(csp_frame,
-            text="Z-score: threshold multiplier (1.96 = 95% CI)  ·  Significance: bootstrap percentile for min duration (0.99 = 99th pct)  ·  Min silence / Min return in ms",
+            text="Z-score: threshold multiplier (1.96 = 95% CI)  ·  Significance: bootstrap percentile for min duration (0.99 = 99th pct)  ·  "
+                 "Max offset: cSP start must fall within this many ms after the 2nd MEP peak (prevents unrealistic late placements)",
             fg="grey",font=("TkDefaultFont",9,"italic")).grid(row=4,column=0,columnspan=4,sticky='w',padx=6,pady=(2,0))
-
-        # ─── Normalisation Settings ────────────────────────────────────────────
-        norm_frame = tk.LabelFrame(
-            self.main_frame, text="Normalisation Settings (optional)",
-            padx=6, pady=8)
-        norm_frame.pack(padx=6, pady=(10,0), fill='x')
-
-        tk.Label(norm_frame,
-            text="Mmax normalisation and paired-pulse ratios are configured\n"
-                 "per-condition in the label setup dialog (shown after file selection).",
-            fg="grey", justify="left").grid(row=0, column=0, columnspan=4,
-                                             sticky="w", padx=4, pady=(0,4))
-
-        tk.Label(norm_frame, text="Mmax reference file:").grid(
-            row=1, column=0, sticky="e", padx=6)
-        tk.Entry(norm_frame, textvariable=self.mmax_file, width=40).grid(
-            row=1, column=1, sticky="ew", padx=4)
-        tk.Button(norm_frame, text="Browse",
-            command=self._browse_mmax_file).grid(row=1, column=2, padx=4)
-        tk.Button(norm_frame, text="Clear",
-            command=lambda: self.mmax_file.set("")).grid(row=1, column=3, padx=4)
-
-        tk.Label(norm_frame, text="Plateau tolerance (%):").grid(
-            row=2, column=0, sticky="e", padx=6)
-        tk.Spinbox(norm_frame, from_=1, to=30, increment=1, width=5,
-            textvariable=self.plateau_tolerance).grid(
-            row=2, column=1, sticky="w", pady=(4,0))
-        tk.Label(norm_frame,
-            text="Trials within this % of peak PTP count toward Mmax average.",
-            fg="grey", font=("TkDefaultFont",8)).grid(
-            row=2, column=1, columnspan=3, sticky="w", padx=(60,0))
 
         # ─── Outlier Detection ─────────────────────────────────────────────────
         out_frame = tk.LabelFrame(self.main_frame, text="Outlier Detection Settings",
@@ -1163,6 +1174,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                 "csp_significance":      self.csp_significance.get(),
                 "csp_min_return_ms":     self.csp_min_return_ms.get(),
                 "csp_n_boot":            self.csp_n_boot.get(),
+                "csp_max_mep_offset_ms": self.csp_max_mep_offset_ms.get(),
                 "csp_types":             list(self.csp_types),
             }
             session = {
@@ -1245,6 +1257,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
              "csp_significance":self.csp_significance.get(),
              "csp_min_return_ms":self.csp_min_return_ms.get(),
              "csp_n_boot":self.csp_n_boot.get(),
+             "csp_max_mep_offset_ms":self.csp_max_mep_offset_ms.get(),
              "csp_types":list(self.csp_types)}
         session={"version":"1.0","saved_at":datetime.datetime.now().isoformat(timespec="seconds"),
                  "file_path":fp,"marker_choice":self.marker_choice.get(),
@@ -1314,6 +1327,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self.csp_significance.set(_f("csp_significance",0.99))
         self.csp_min_return_ms.set(_i("csp_min_return_ms",40))
         self.csp_n_boot.set(_i("csp_n_boot",1000))
+        self.csp_max_mep_offset_ms.set(_i("csp_max_mep_offset_ms",40))
         self.csp_types = set(sess.get("csp_types", []))
         try: self.toggle_bandpass_fields(); self.toggle_bp_order_fields(); self.toggle_notch_fields(); self._toggle_humbug_fields()
         except Exception: pass
@@ -1351,59 +1365,79 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         # ── Build the modal window ──────────────────────────────────────────────
         top = tk.Toplevel(self.root);  top.title("Select one or more ranges")
         top.grab_set()
+        try:
+            import sys as _sys
+            if _sys.platform in ("win32", "darwin"):
+                top.state("zoomed")
+            else:
+                top.attributes("-zoomed", True)
+        except Exception:
+            pass
 
-        fig, ax = plt.subplots(figsize=(9, 3))
+        # ── Footer packed FIRST so canvas fills all remaining space ──────────
+        list_lbl = tk.StringVar()
+        footer = tk.Frame(top)
+        footer.pack(side="bottom", fill="x")
+        info = tk.Label(footer, textvariable=list_lbl, anchor="w")
+        info.pack(fill="x", padx=10, pady=(4, 2))
+        btn_frm = tk.Frame(footer)
+        btn_frm.pack(pady=(0, 8))
+
+        # ── Canvas fills all space above the footer ──────────────────────────────
+        # Create a figure sized to the screen. Do NOT use expand=True on the
+        # canvas widget — that makes the widget larger than the figure and
+        # causes matplotlib to tile the rendered image into the blank space.
+        _sw   = self.root.winfo_screenwidth()
+        _sh   = self.root.winfo_screenheight()
+        _dpi  = 96
+        fig   = matplotlib.figure.Figure(
+                    figsize=(_sw / _dpi, (_sh - 100) / _dpi), dpi=_dpi)
+        fig.subplots_adjust(left=0.05, right=0.998, top=0.93, bottom=0.12)
+        ax    = fig.add_subplot(111)
         canvas = FigureCanvasTkAgg(fig, master=top)
-        canvas.get_tk_widget().pack(fill="both", expand=True)
+        # expand=False prevents the Tk canvas widget from growing beyond the
+        # figure size, which would cause the rendered image to be tiled.
+        canvas.get_tk_widget().pack(fill="both", expand=False)
 
-        # ── Plot the full trace + stim ticks (identical to old code) ────────────
+        # ── Plot the full trace + stim ticks ──────────────────────────────────────
         ax.plot(t, emg, lw=0.4, color="0.3")
 
-        # 2️⃣  ★★ NEW – draw DigMark ticks + labels ★★
-        palette = plt.get_cmap("tab10").colors                 # 10 nice colours
+        palette = plt.get_cmap("tab10").colors
         col_for = {k: palette[i % len(palette)]
                 for i, k in enumerate(sorted(stim_dict))}
 
         y_min, y_max = emg.min(), emg.max()
-        pad = 0.05 * (y_max - y_min) or 1                      # ≥1 mV head‑room
-        ax.set_ylim(y_min, y_max + 3 * pad)                    # space for labels
+        pad = 0.05 * (y_max - y_min) or 1
+        ax.set_ylim(y_min, y_max + 3 * pad)
 
         for s_type, times in stim_dict.items():
             col = col_for[s_type]
             for x in times:
-                # coloured tick
                 ax.vlines(x, y_max + 0.2 * pad, y_max + 1.0 * pad,
                         color=col, lw=1.2, zorder=4)
-                # one‑letter label
                 ax.text(x, y_max + 1.2 * pad, s_type,
                         ha="center", va="bottom",
                         fontsize=12, weight="bold",
                         color=col, zorder=5)
 
-        # 3️⃣  Axis labels (your original lines)
         ax.set_xlabel("Time (s)")
         ax.set_ylabel(self._ylab())
-        fig.tight_layout()
+        canvas.draw_idle()
 
-        # ... (leave your existing stim‑tick code unchanged) ...
-        ax.set_xlabel("Time (s)")
-        ax.set_ylabel(self._ylab())
-        fig.tight_layout()
-
-        # ── State holders ───────────────────────────────────────────────────────
-        spans: list[tuple[float, float]] = []   # final list of (xmin,xmax)
-        patches = []                            # the Rectangle artists we draw
-        list_lbl = tk.StringVar()
+        # ── State holders ──────────────────────────────────────────────────────────
+        spans: list[tuple[float, float]] = []
+        patches = []
 
         def _update_list_label():
             if spans:
                 txt = "Selected ranges (s):  " + ",  ".join(
-                    f"[{s[0]:.2f} – {s[1]:.2f}]" for s in spans)
+                    f"[{s[0]:.2f} \u2013 {s[1]:.2f}]" for s in spans)
             else:
-                txt = "No ranges yet – drag on the plot."
+                txt = "No ranges yet \u2013 drag on the plot."
             list_lbl.set(txt)
+        _update_list_label()
 
-        # ── SpanSelector callback ───────────────────────────────────────────────
+        # ── SpanSelector ───────────────────────────────────────────────────────────
         def _on_span(x0, x1):
             xmin, xmax = sorted((x0, x1))
             spans.append((xmin, xmax))
@@ -1414,16 +1448,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
 
         span_sel = SpanSelector(
             ax, _on_span, "horizontal",
-            useblit=True,
+            useblit=False,
             props=dict(alpha=.30, facecolor="tab:blue"),
             interactive=False)
-
-        # ── Control buttons & info line ─────────────────────────────────────────
-        info = tk.Label(top, textvariable=list_lbl, anchor="w")
-        info.pack(fill="x", padx=10, pady=(6, 2))
-        _update_list_label()
-
-        btn_frm = tk.Frame(top);  btn_frm.pack(pady=8)
 
         def _undo():
             if spans:
@@ -1491,6 +1518,14 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         # ── 3. Reset GUI widgets ───────────────────────────────────────────────
         self.progress.set(0)
         self.log_box.delete('1.0', tk.END)
+        self._labels_tab_confirmed = False
+        # Reset channel dropdown to blank state
+        try:
+            self.channel_dd["values"] = []
+            self.channel_dd["state"]  = "disabled"
+            self.channel_var.set("—")
+        except Exception:
+            pass
 
         # ── 4. Close any still-open matplotlib figures (saves RAM) ─────────────
         # Deferred via after() so Tk-embedded canvases are not destroyed
@@ -1507,58 +1542,8 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
 
     def _open_preferences(self):
         """Open the preferences dialog."""
-        import tkinter.ttk as _ttk
-        win = tk.Toplevel(self.root)
-        win.title("Preferences")
-        win.resizable(False, False)
-        win.transient(self.root)
-
-        # Current value
-        _scale_var = tk.DoubleVar(value=prefs.font_scale)
-
-        tk.Label(win, text="UI & Font Scale", font=("TkDefaultFont", 10, "bold"))\
-            .grid(row=0, column=0, columnspan=3, padx=16, pady=(14,4), sticky="w")
-        tk.Label(win, text="Smaller", fg="grey").grid(row=1, column=0, padx=(16,4))
-        _slider = _ttk.Scale(win, from_=0.7, to=1.5, variable=_scale_var,
-                             orient="horizontal", length=220)
-        _slider.grid(row=1, column=1, padx=4)
-        tk.Label(win, text="Larger", fg="grey").grid(row=1, column=2, padx=(4,16))
-
-        _pct_lbl = tk.Label(win, text=f"{int(prefs.font_scale*100)}%")
-        _pct_lbl.grid(row=2, column=1, pady=(2,8))
-
-        def _on_slide(*_):
-            _pct_lbl.config(text=f"{int(_scale_var.get()*100)}%")
-        _scale_var.trace_add("write", _on_slide)
-
-        tk.Label(win, text="Affects fonts, buttons, padding and window sizes.",
-                 fg="grey", font=("TkDefaultFont", 8))\
-            .grid(row=3, column=0, columnspan=3, padx=16, pady=(0,10))
-
-        btn_row = tk.Frame(win); btn_row.grid(row=4, column=0, columnspan=3, pady=(0,12))
-
-        def _apply():
-            prefs.set_font_scale(_scale_var.get())
-            apply_scaling(self.root)
-            self.root.after(0, self._make_window_adaptive)
-            win.destroy()
-
-        def _reset():
-            _scale_var.set(1.0)
-            _pct_lbl.config(text="100%")
-
-        tk.Button(btn_row, text="Apply",          width=10, command=_apply)\
-            .pack(side="left", padx=6)
-        tk.Button(btn_row, text="Reset to 100%",  width=12, command=_reset)\
-            .pack(side="left", padx=6)
-        tk.Button(btn_row, text="Cancel",         width=10, command=win.destroy)\
-            .pack(side="left", padx=6)
-
-        win.update_idletasks()
-        _cx = self.root.winfo_rootx() + (self.root.winfo_width()  - win.winfo_width())  // 2
-        _cy = self.root.winfo_rooty() + (self.root.winfo_height() - win.winfo_height()) // 2
-        win.geometry(f"+{_cx}+{_cy}")
-        win.grab_set()
+        from .preferences import open_preferences_dialog
+        open_preferences_dialog(self.root, on_apply=lambda r: None)
 
     def _show_about(self):
         """Show About dialog."""
@@ -1652,13 +1637,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         elif marker_set:
             self.marker_choice.set(next(iter(marker_set)))
         
-        # ── prompt for channel choice (if >1)
+        # ── populate inline channel dropdown (always, regardless of count)
         chan_list = list_waveform_channels(fpath)
-        if len(chan_list) > 1:
-            self.prompt_channel_choice(chan_list)
-        else:
-            self.channel_choice.set(chan_list[0])
-            self.channel_idx = 0
+        self._populate_channel_dropdown(chan_list)
 
         # All channels loaded automatically — user selects in inspector dropdown
         self.extra_channel_indices = list(range(len(chan_list)))
@@ -1700,9 +1681,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         # ── prompt for study metadata (BIDS)
         self.prompt_study_metadata()
 
-        # ── prompt for custom labels / colours
+        # ── build / rebuild Tab 1b with per-stim config
         if stim_types_found:
-            self.prompt_for_custom_labels(sorted(stim_types_found))
+            self._build_labels_tab(sorted(stim_types_found))
 
     @staticmethod
     def _parse_bids_from_filename(fpath):
@@ -1996,181 +1977,240 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         win.grab_set()
         self.root.wait_window(win)
 
-    def prompt_channel_choice(self, channel_names):
-        win = tk.Toplevel(self.root)
-        win.title("Select EMG channel")
-        tk.Label(win, text="Choose waveform channel to analyse:")\
-           .pack(padx=10, pady=(10, 4))
-
+    def _populate_channel_dropdown(self, channel_names):
+        """Populate the inline channel combobox after file load."""
+        self.channel_dd["values"] = channel_names
+        self.channel_dd["state"]  = "readonly"
+        self.channel_var.set(channel_names[0])
+        self.channel_idx   = 0
         self.channel_choice.set(channel_names[0])
-        tk.OptionMenu(win, self.channel_choice, *channel_names)\
-           .pack(padx=10, pady=4)
 
-        tk.Button(win, text="OK", command=win.destroy)\
-           .pack(pady=(0, 10))
+    def _on_channel_selected(self, _event=None):
+        """Called when the user changes the channel combobox."""
+        name = self.channel_var.get()
+        names = list(self.channel_dd["values"])
+        if name in names:
+            self.channel_idx   = names.index(name)
+            self.channel_choice.set(name)
 
-        self._cap_toplevel(win, frac_h=0.5, frac_w=0.5)
-        self.root.wait_window(win)   # modal
-        # remember the index so we don’t have to rescan later
-        self.channel_idx = channel_names.index(self.channel_choice.get())
-
-    def prompt_for_custom_labels(self, stim_types):
+    # ──────────────────────────────────────────────────────────────────────
+    def _build_labels_tab(self, stim_types):
         """
-        Ask the user for:
-        • a pretty label                    (free-text)
-        • a colour                          (dropdown)
-        • include / exclude from combo plot (checkbox)
-        • gap (ms) to omit before stim      (float, 0 = no gap)
-        • detect CSP for this type          (checkbox)
-
-        Saves:
-            self.label_map     {letter: str}
-            self.color_map     {letter: str}
-            self.plot_included {letter: bool}
-            self.gap_ms_map    {letter: float}
-            self.csp_types     {letter}  (set of types with CSP enabled)
+        Build (or rebuild) the Stage 1b tab with per-stim configuration:
+          • label, colour, include in combined plot, gap (ms)
+          • detect CSP checkbox
+          • internal normalisation reference (ratio to another stim type)
+          • external Mmax file + plateau tolerance
+        Preserves existing settings for stim types that appear in both
+        the previous and new file (session-level persistence without restart).
+        Called from browse_file after stim types are discovered.
         """
-        # ───────────────────────── window / layout ──────────────────────────
-        win = tk.Toplevel(self.root)
-        win.title("Custom Stim Labels & Pre-Stim Gap for Baseline Analysis")
-        win.transient(self.root)
-        win.resizable(True, True)
+        import importlib
 
-        tk.Label(win, text="Edit labels, colours and analysis gaps (ms):")\
-            .grid(row=0, column=0, columnspan=6, pady=(10, 6))
+        # Clear existing tab content
+        for w in self.tab1b_frame.winfo_children():
+            w.destroy()
 
-        hdr = ["Stim", "Label", "Colour", "Include in combined", "Gap (ms)", "Detect CSP", "Normalisation"]
-        for c, txt in enumerate(hdr):
-            tk.Label(win, text=txt, font=("TkDefaultFont", 9, "bold"))\
-                .grid(row=1, column=c, padx=6, sticky="w")
+        # ── store stim types for validation ──────────────────────────────────
+        self._current_stim_types = list(sorted(stim_types))
 
-        # ───────────────────────── widgets per stimulus ─────────────────────
         colour_choices = [
-                # Top 5: very high neighbor contrast
-                "darkgreen",     # #006400
-                "deeppink",      # #FF1493
-                "gold",          # #FFD700
-                "black",         # #000000
-                "deepskyblue",   # #00BFFF
-                "maroon",        # #800000
-                "springgreen",   # #00FF7F
-                "mediumvioletred", # #C71585
-                "seagreen",      # #2E8B57
-                "hotpink",       # #FF69B4
-                "turquoise",     # #40E0D0
-                "navy",          # #000080
-                "orange",        # #FFA500
-                "indigo",        # #4B0082
-                "darkorange",    # #FF8C00
-                "midnightblue",  # #191970
-                "saddlebrown",   # #8B4513
-                "blue",          # #0000FF
-                "darkred",       # #8B0000
-                "royalblue",     # #4169E1
-                "firebrick",     # #B22222
-                "darkslategray", # #2F4F4F
-                "brown",         # #A52A2A
-                "slateblue",     # #6A5ACD
-                "purple",        # #800080
-            ]
+            "darkgreen","deeppink","brown","black","deepskyblue","maroon",
+            "springgreen","mediumvioletred","seagreen","hotpink","turquoise",
+            "navy","orange","indigo","darkorange","midnightblue","saddlebrown",
+            "blue","darkred","royalblue","firebrick","darkslategray","brown",
+            "slateblue","purple",
+        ]
 
-        entry_label, entry_colour, entry_include, entry_gap, entry_csp, entry_ref = {}, {}, {}, {}, {}, {}
+        # ── outer scroll area ─────────────────────────────────────────────────
+        outer = tk.Frame(self.tab1b_frame)
+        outer.pack(fill="both", expand=True)
+
+        vscroll = ttk.Scrollbar(outer, orient="vertical")
+        vscroll.pack(side="right", fill="y")
+        cv = tk.Canvas(outer, bd=0, highlightthickness=0,
+                       yscrollcommand=vscroll.set)
+        cv.pack(side="left", fill="both", expand=True)
+        vscroll.config(command=cv.yview)
+        inner = ttk.Frame(cv)
+        cv.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>",
+                   lambda e: cv.configure(scrollregion=cv.bbox("all")))
+
+        # ── header hint ───────────────────────────────────────────────────────
+        tk.Label(inner,
+            text="Configure labels, colours, and analysis options for each "
+                 "stimulus type found in the loaded file.\n"
+                 "Click  ✔  Confirm Setup  when ready — Run Analysis will "
+                 "not proceed until this is confirmed.\n"
+                 "Gap (ms): time blanked immediately before each stimulus pulse. "
+                 "Use this to exclude signal that would contaminate the pre-stimulus baseline. "
+                 "Example: in paired-pulse protocols (e.g., SICI, ICF) a conditioning pulse precedes "
+                 "the test pulse by a fixed interstimulus interval — setting the gap to just "
+                 "longer than that interval prevents the conditioning artefact from being included "
+                 "in the background EMG measurement. Leave at 0 if unused.",
+            fg="grey", justify="left", wraplength=900
+        ).grid(row=0, column=0, columnspan=9, sticky="w", padx=10, pady=(10,6))
+
+        # ── column headers ────────────────────────────────────────────────────
+        headers = ["Stim", "Label", "Colour", "In combined",
+                   "Gap (ms)", "Detect CSP", "Normalise to (internal)",
+                   "Normalise to (external)", "Plateau (%)"]
+        for c, h in enumerate(headers):
+            tk.Label(inner, text=h,
+                     font=("TkDefaultFont", 9, "bold"))\
+                .grid(row=1, column=c, padx=6, pady=(0,4), sticky="w")
+
+        # ── per-stim rows ─────────────────────────────────────────────────────
+        # Dicts keyed by stim letter; stored on self so _confirm_labels_tab
+        # can read them without closures going stale.
+        self._lab_entry_label   = {}
+        self._lab_entry_colour  = {}
+        self._lab_entry_include = {}
+        self._lab_entry_gap     = {}
+        self._lab_entry_csp     = {}
+        self._lab_entry_ref     = {}   # (StringVar, Combobox)
+        self._lab_entry_mmax    = {}   # StringVar per stim
+        self._lab_entry_plateau = {}   # DoubleVar per stim
 
         for r, stim in enumerate(sorted(stim_types), start=2):
-            tk.Label(win, text=f"{stim}:").grid(row=r, column=0, sticky="e", padx=(8,2))
+            tk.Label(inner, text=f"{stim}:")\
+                .grid(row=r, column=0, sticky="e", padx=(8,2))
 
-            v_lbl = tk.StringVar(value=stim)
-            tk.Entry(win, textvariable=v_lbl, width=18)\
+            # Label — preserve if seen before
+            v_lbl = tk.StringVar(
+                value=self.label_map.get(stim, stim))
+            tk.Entry(inner, textvariable=v_lbl, width=18)\
                 .grid(row=r, column=1, padx=4, sticky="w")
-            entry_label[stim] = v_lbl
+            self._lab_entry_label[stim] = v_lbl
 
-            v_col = tk.StringVar(value=colour_choices[(r-2) % len(colour_choices)])
-            tk.OptionMenu(win, v_col, *colour_choices)\
+            # Colour
+            v_col = tk.StringVar(
+                value=self.color_map.get(
+                    stim, colour_choices[(r-2) % len(colour_choices)]))
+            tk.OptionMenu(inner, v_col, *colour_choices)\
                 .grid(row=r, column=2, padx=4, sticky="w")
-            entry_colour[stim] = v_col
+            self._lab_entry_colour[stim] = v_col
 
-            v_inc = tk.BooleanVar(value=True)
-            tk.Checkbutton(win, variable=v_inc)\
+            # Include in combined plot
+            v_inc = tk.BooleanVar(
+                value=self.plot_included.get(stim, True))
+            tk.Checkbutton(inner, variable=v_inc)\
                 .grid(row=r, column=3, padx=10, sticky="w")
-            entry_include[stim] = v_inc
+            self._lab_entry_include[stim] = v_inc
 
-            v_gap = tk.DoubleVar(value=0.0)
-            tk.Entry(win, textvariable=v_gap, width=6)\
+            # Gap ms
+            v_gap = tk.DoubleVar(
+                value=self.gap_ms_map.get(stim, 0.0))
+            tk.Entry(inner, textvariable=v_gap, width=6)\
                 .grid(row=r, column=4, padx=4, sticky="w")
-            entry_gap[stim] = v_gap
+            self._lab_entry_gap[stim] = v_gap
 
-            v_csp = tk.BooleanVar(value=False)
-            tk.Checkbutton(win, variable=v_csp)\
+            # Detect CSP
+            v_csp = tk.BooleanVar(
+                value=(stim in self.csp_types))
+            tk.Checkbutton(inner, variable=v_csp)\
                 .grid(row=r, column=5, padx=10, sticky="w")
-            entry_csp[stim] = v_csp
+            self._lab_entry_csp[stim] = v_csp
 
-            # Reference dropdown — populated after all rows are created
-            v_ref = tk.StringVar(value=self.reference_map.get(stim, "None"))
-            ref_cb = ttk.Combobox(win, textvariable=v_ref, width=28, state="readonly")
+            # Internal normalisation reference (combobox, populated below)
+            v_ref = tk.StringVar(
+                value=self.reference_map.get(stim, "None"))
+            ref_cb = ttk.Combobox(inner, textvariable=v_ref,
+                                   width=26, state="readonly")
             ref_cb.grid(row=r, column=6, padx=6, sticky="w")
-            entry_ref[stim] = (v_ref, ref_cb)
+            self._lab_entry_ref[stim] = (v_ref, ref_cb)
 
-        # Populate reference dropdowns now that all stim labels are known
+            # External Mmax file (per-stim; shared mmax_file is used when blank)
+            v_mmax = tk.StringVar(value="")
+            mmax_frame = tk.Frame(inner)
+            mmax_frame.grid(row=r, column=7, padx=4, sticky="w")
+            tk.Entry(mmax_frame, textvariable=v_mmax, width=22)\
+                .pack(side="left")
+            tk.Button(mmax_frame, text="…", width=2,
+                command=lambda v=v_mmax: self._browse_mmax_for_var(v))\
+                .pack(side="left", padx=(2,0))
+            self._lab_entry_mmax[stim] = v_mmax
+
+            # Plateau tolerance (per-stim, default from global)
+            v_plat = tk.DoubleVar(value=self.plateau_tolerance.get())
+            tk.Spinbox(inner, from_=1, to=30, increment=1, width=5,
+                       textvariable=v_plat)\
+                .grid(row=r, column=8, padx=4, sticky="w")
+            self._lab_entry_plateau[stim] = v_plat
+
+        # ── populate reference dropdowns ──────────────────────────────────────
         def _build_ref_options():
-            for stim, (v_ref, ref_cb) in entry_ref.items():
-                others = [s for s in sorted(stim_types) if s != stim]
+            for stim, (v_ref, ref_cb) in self._lab_entry_ref.items():
+                others  = [s for s in sorted(stim_types) if s != stim]
                 options = ["None"] + [
-                    f"Normalise to {s}  ({entry_label[s].get() or s})"
+                    f"Normalise to {s}  ({self._lab_entry_label[s].get() or s})"
                     for s in others
                 ]
                 ref_cb["values"] = options
-                # Restore previous selection if valid
                 cur = v_ref.get()
                 if cur not in options:
                     v_ref.set("None")
         _build_ref_options()
-        # Re-build when any label changes (so SP ref names stay current)
-        for v_lbl in entry_label.values():
+        for v_lbl in self._lab_entry_label.values():
             v_lbl.trace_add("write", lambda *_: _build_ref_options())
 
-        # ───────────────────────── save & close ─────────────────────────────
-        def _save(_e=None):
-            self.label_map     = {k: (v.get().strip() or k) for k, v in entry_label.items()}
-            self.color_map     = {k: v.get()               for k, v in entry_colour.items()}
-            self.plot_included = {k: v.get()               for k, v in entry_include.items()}
-            self.gap_ms_map    = {k: float(v.get() or 0.)  for k, v in entry_gap.items()}
-            self.csp_types     = {k for k, v in entry_csp.items() if v.get()}
-            # Build reference_map — {stim: ref_stim_letter}
-            self.reference_map = {}
-            for k, (v_ref, _) in entry_ref.items():
-                sel = v_ref.get()
-                if sel and sel != "None" and sel.startswith("Normalise to "):
-                    # "Normalise to X  (label)" → extract X
-                    ref_letter = sel.split("to ")[1].strip().split(" ")[0]
-                    self.reference_map[k] = ref_letter
-            win.destroy()
-            self.log("🔍 Data loaded – ready to apply filter settings and start analysis…\n")
+        # ── global Mmax file row (shared fallback) ────────────────────────────
 
-        row_end = len(stim_types) + 2
-        tk.Button(win, text="OK", width=10, command=_save)\
-            .grid(row=row_end, column=0, columnspan=5, pady=12)
+        # ── confirm button ────────────────────────────────────────────────────
+        footer = tk.Frame(self.tab1b_frame, bd=1, relief="raised")
+        footer.pack(side="bottom", fill="x")
+        self._confirm_btn_var = tk.StringVar(value="⚠  Setup not confirmed")
+        confirm_btn = tk.Button(
+            footer,
+            textvariable=self._confirm_btn_var,
+            bg="#d9534f", fg="white",
+            font=("TkDefaultFont", 10, "bold"),
+            command=self._confirm_labels_tab)
+        confirm_btn.pack(side="left", padx=12, pady=6, ipadx=10)
+        self._confirm_btn_widget = confirm_btn
+        tk.Label(footer,
+            text="Confirm when you have finished configuring each stimulus type.",
+            fg="grey").pack(side="left", padx=6)
 
-        # Convenience bindings
-        win.bind("<Return>", _save)
-        win.bind("<Escape>", lambda _e: win.destroy())
+        self._labels_tab_built     = True
+        self._labels_tab_confirmed = False
+        self._confirm_btn_var.set("⚠  Setup not confirmed — click to confirm")
 
-        # ───────────────────────── center the dialog ─────────────────────────
-        # Do this AFTER widgets are laid out so sizes are accurate.
-        win.update_idletasks()
-        # Center relative to the main window (fallback to screen if needed)
-        try:
-            px, py = self.root.winfo_rootx(), self.root.winfo_rooty()
-            pw, ph = self.root.winfo_width(), self.root.winfo_height()
-            w, h   = win.winfo_width(), win.winfo_height()
-            x = px + (pw - w) // 2
-            y = py + (ph - h) // 2
-        except Exception:
-            sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
-            w, h   = win.winfo_width(), win.winfo_height()
-            x = (sw - w) // 2
-            y = (sh - h) // 2
-        win.geometry(f"+{x}+{y}")
-        win.lift(self.root)
-        self._cap_toplevel(win)
-        win.grab_set()                     # modal
-        self.root.wait_window(win)
+        # Switch to Tab 1b so user sees it immediately
+        self.notebook.select(self.tab1b_frame)
+
+    def _browse_mmax_for_var(self, string_var):
+        """Browse for a per-stim Mmax file and store in the given StringVar."""
+        from tkinter import filedialog as _fd
+        path = _fd.askopenfilename(
+            title="Select Mmax reference file",
+            filetypes=[("Spike2 export", "*.txt"), ("All files", "*.*")])
+        if path:
+            string_var.set(path)
+
+    def _confirm_labels_tab(self):
+        """Read Tab 1b widgets into self.* dicts and mark setup as confirmed."""
+        self.label_map     = {k: (v.get().strip() or k)
+                              for k, v in self._lab_entry_label.items()}
+        self.color_map     = {k: v.get()
+                              for k, v in self._lab_entry_colour.items()}
+        self.plot_included = {k: v.get()
+                              for k, v in self._lab_entry_include.items()}
+        self.gap_ms_map    = {k: float(v.get() or 0.)
+                              for k, v in self._lab_entry_gap.items()}
+        self.csp_types     = {k for k, v in self._lab_entry_csp.items()
+                              if v.get()}
+        self.reference_map = {}
+        for k, (v_ref, _) in self._lab_entry_ref.items():
+            sel = v_ref.get()
+            if sel and sel != "None" and sel.startswith("Normalise to "):
+                ref_letter = sel.split("to ")[1].strip().split(" ")[0]
+                self.reference_map[k] = ref_letter
+
+        self._labels_tab_confirmed = True
+        self._confirm_btn_var.set("✔  Setup confirmed")
+        self._confirm_btn_widget.config(bg="#5cb85c")
+        self.log("✔ Label & analysis setup confirmed — ready to run.\n")
+        # Switch back to Stage 1a so user can hit Run Analysis
+        self.notebook.select(0)

@@ -16,6 +16,23 @@ import gc as _gc
 _gc.disable()   # manual GC only — see app.py _poll_queue for the schedule
 del _gc
 
+# ── DPI awareness (Windows) ───────────────────────────────────────────────────
+# Must be called before the first Tk window is created so that Tkinter reports
+# the real physical DPI rather than the virtualised 96-DPI value.
+# PROCESS_PER_MONITOR_DPI_AWARE (value=2) is the highest level and correctly
+# handles mixed-DPI multi-monitor setups.
+import sys as _sys
+if _sys.platform == "win32":
+    try:
+        import ctypes as _ctypes
+        _ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            _ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+del _sys
+
 import numpy as np
 import tkinter as tk
 

@@ -47,6 +47,14 @@ class DraggablePoint:
     def _on_press(self, event):
         if event.inaxes is not self.point.axes:
             return
+        # Do not start a drag when the matplotlib toolbar is in zoom or pan
+        # mode — those modes need exclusive mouse control for their own interaction.
+        try:
+            toolbar = self.point.figure.canvas.toolbar
+            if toolbar is not None and toolbar.mode != '':
+                return
+        except Exception:
+            pass
         contains, _ = self.point.contains(event)
         if contains:
             # Disable dragging for all other points
@@ -119,13 +127,15 @@ class DataInspectorWindow:
                  csp_min_silence_ms=25, csp_min_return_ms=40,
                  csp_criterion=1.96, csp_significance=0.99,
                  csp_n_boot=1000, csp_rms_window_ms=10,
+                 csp_max_mep_offset_ms=40,
                  csp_types=None, analysis_pre_ms=None,
                  extra_segs=None, wide_window_s=3.0):
 
         # --------- book-keeping -----------------------------------------
         self.top = tk.Toplevel(master)
         self.top.title("Data Inspector – review")
-        self.top.transient(master)
+        # Note: transient(master) is intentionally NOT set here — it removes
+        # the minimise/maximise/restore buttons from the title bar on Windows.
         self.top.grab_set()
 
         self.segments  = segments_dict
@@ -143,25 +153,29 @@ class DataInspectorWindow:
         self.onset_method         = onset_method
         self.onset_bootstrap_crit = onset_bootstrap_crit
         self.onset_bootstrap_n    = onset_bootstrap_n
-        self.csp_search_start_ms = csp_search_start_ms
-        self.csp_search_end_ms   = csp_search_end_ms
-        self.csp_min_silence_ms  = csp_min_silence_ms
-        self.csp_min_return_ms   = csp_min_return_ms
-        self.csp_criterion       = csp_criterion
-        self.csp_significance    = csp_significance
-        self.csp_n_boot          = csp_n_boot
-        self.csp_rms_window_ms   = csp_rms_window_ms
-        self._analysis_pre_ms    = analysis_pre_ms
+        self.csp_search_start_ms  = csp_search_start_ms
+        self.csp_search_end_ms    = csp_search_end_ms
+        self.csp_min_silence_ms   = csp_min_silence_ms
+        self.csp_min_return_ms    = csp_min_return_ms
+        self.csp_criterion        = csp_criterion
+        self.csp_significance     = csp_significance
+        self.csp_n_boot           = csp_n_boot
+        self.csp_rms_window_ms    = csp_rms_window_ms
+        self.csp_max_mep_offset_ms = csp_max_mep_offset_ms
+        self._analysis_pre_ms     = analysis_pre_ms
         # extra_segs: {chan_name: {stim_type: [wide_seg_array]}}
-        self._extra_segs         = extra_segs or {}
-        self._wide_window_s      = wide_window_s
-        self._extra_axes         = []   # subplot axes for extra channels
+        self._extra_segs          = extra_segs or {}
+        self._wide_window_s       = wide_window_s
+        self._extra_axes          = []   # subplot axes for extra channels
         # Pre-populate silent period state from caller-specified csp_types.
         # Types in csp_types start ticked; all others start unticked.
         _csp_set = set(csp_types) if csp_types else set()
         self._silent_per_type = {
             k: (k in _csp_set) for k in segments_dict
         }
+        # Per-segment user-override flag: True = user explicitly set this
+        # checkbox themselves, so auto-sync logic must not overwrite it.
+        self._silent_user_override = {}   # {(stim_type, idx): bool}
 
         # --------- header bar -------------------------------------------
         self.hdr = tk.Frame(self.top)              
@@ -179,14 +193,25 @@ class DataInspectorWindow:
         self.btn_next = tk.Button(self.hdr, text="Next ▶", width=9, command=self._next)
         self.btn_next.pack(side="right", padx=(0, 4))
 
-        # --------- matplotlib figure (2 rows) ---------------------------
+        # --------- matplotlib figure + toolbar in a dedicated frame --------
         # Use plt.Figure (not plt.subplots) to avoid registering the figure
         # with the interactive TkAgg backend, which would create a ghost window.
-        self.fig = plt.Figure(figsize=(8, 4))
+        self.fig_frame = tk.Frame(self.top)
+        self.fig_frame.pack(fill="both", expand=True)
+
+        self.fig = plt.Figure(figsize=(12, 6))
         self.ax_raw = self.fig.add_subplot(111)
         self.ax_abs = None                                     # build on-demand
-        self.canvas = FigureCanvasTkAgg(self.fig, master=self.top)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=self.fig_frame)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
+
+        # Zoom/pan toolbar — pack_toolbar=False so we control placement.
+        # Must be packed AFTER canvas inside the same frame.
+        from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
+        self._toolbar = NavigationToolbar2Tk(self.canvas, self.fig_frame,
+                                             pack_toolbar=False)
+        self._toolbar.update()
+        self._toolbar.pack(fill="x", side="bottom")
 
         # --------- status bar -------------------------------------------
         self.status = tk.Label(self.top, anchor="w")
@@ -199,7 +224,7 @@ class DataInspectorWindow:
         self.enable_silent = tk.BooleanVar(value=True)
         self.enable_auc = tk.BooleanVar(value=False)
         self.exclude_var = tk.BooleanVar(value=False)
-        self.note_enable_var = tk.BooleanVar(value=False)
+        self.note_enable_var = tk.BooleanVar(value=True)
 
         tk.Checkbutton(self.btn_bar, text="Silent period",
                     variable=self.enable_silent,
@@ -246,9 +271,10 @@ class DataInspectorWindow:
             self._wide_var      = tk.DoubleVar(value=self._wide_window_s)
             self._flip_var      = tk.BooleanVar(value=False)
         
-        # small note box (hidden until checkbox is ticked)     
-        self.note_box = scrolledtext.ScrolledText(self.top, height=3)             
-        self.note_box_is_shown = False 
+        # Note box — visible by default
+        self.note_box = scrolledtext.ScrolledText(self.top, height=3)
+        self.note_box.pack(fill="x", padx=10, pady=(4, 6))
+        self.note_box_is_shown = True
 
         # --------- close ------------------------------------------------
         self.btn_row = tk.Button(self.top, text="Save edits & close",
@@ -263,10 +289,39 @@ class DataInspectorWindow:
         # Span selector (created on demand)
         self._auc_span = None
 
+        # Maximise the inspector window on open — gives the most room for
+        # the figure and makes marker placement much easier.
+        # _resize_window will skip geometry changes while the window is maximised.
+        import sys as _sys
+        try:
+            if _sys.platform in ("win32", "darwin"):
+                self.top.state("zoomed")
+            else:
+                self.top.attributes("-zoomed", True)
+        except Exception:
+            pass   # fallback: window opens at default size
+
         self._plot()      # first draw
     # ──────────────────────────────────────────────────────────────────────
     def _on_silent_toggle(self):
-        self._silent_per_type[self.cur_type] = self.enable_silent.get()
+        key = (self.cur_type, self.cur_idx)
+        new_state = self.enable_silent.get()
+        self._silent_per_type[self.cur_type] = new_state
+        # Record that the user explicitly set this segment's state.
+        self._silent_user_override[key] = new_state
+        if not new_state:
+            # User ticked OFF — remove markers so they don't persist in output.
+            m = self.meta.get(key, {})
+            m.pop('silent_start_idx',    None)
+            m.pop('silent_end_idx',      None)
+            m.pop('csp_detection_failed', None)
+        else:
+            # User ticked ON — clear any previous failure flag so detection
+            # will run fresh when _plot redraws below.
+            m = self.meta.get(key, {})
+            m.pop('csp_detection_failed', None)
+            m.pop('silent_start_idx',    None)
+            m.pop('silent_end_idx',      None)
         self._plot()
 
     def _first(self):
@@ -331,14 +386,23 @@ class DataInspectorWindow:
                 del self.meta[key]['note']
     
     def _resize_window(self):
-        """Resize the Toplevel so every widget (note box included) is visible."""
-        self.top.update_idletasks()       # make sure sizes are up‑to‑date
+        """Resize the Toplevel so every widget (note box included) is visible.
+        Skipped when the window is maximised — geometry() would un-maximise it."""
+        try:
+            state = self.top.state()
+            if state == "zoomed":
+                return
+        except Exception:
+            pass
+        try:
+            if self.top.attributes("-zoomed"):
+                return
+        except Exception:
+            pass
 
-        pieces = [self.hdr,
-                  self.canvas.get_tk_widget(),
-                  self.status,
-                  self.btn_bar,
-                  self.btn_row]
+        self.top.update_idletasks()
+
+        pieces = [self.hdr, self.fig_frame, self.status, self.btn_bar, self.btn_row]
         if self.note_box_is_shown:
             pieces.append(self.note_box)
 
@@ -377,17 +441,22 @@ class DataInspectorWindow:
         _type_wants_silent = self._silent_per_type.get(self.cur_type, False)
         _has_markers       = 'silent_start_idx' in m and 'silent_end_idx' in m
         _det_failed        = m.get('csp_detection_failed', False)
-        if _has_markers:
-            # Markers exist (auto-detected or manually placed) — show them
+        _user_set          = key in self._silent_user_override
+
+        if _user_set:
+            # User explicitly toggled this segment — honour their choice.
+            # Do not overwrite with auto-detection results or type defaults.
+            self.enable_silent.set(self._silent_user_override[key])
+        elif _has_markers:
+            # Markers exist (auto-detected or manually placed) — show them.
             self.enable_silent.set(True)
         elif _det_failed:
-            # Detection was attempted and failed for this segment —
-            # leave checkbox unticked so user can decide whether to
-            # manually place markers by ticking it themselves.
+            # Detection was attempted and failed — leave unticked so user
+            # can decide to manually place markers by ticking it themselves.
             self.enable_silent.set(False)
         else:
-            # Not yet attempted — will auto-detect below if CSP type
-            self.enable_silent.set(False)  # set after detection result
+            # Not yet attempted — checkbox will be set after detection below.
+            self.enable_silent.set(False)
 
         # ---------- sync “exclude” & note widgets ---------------------------
         self.exclude_var.set(m.get('exclude', False))
@@ -451,25 +520,58 @@ class DataInspectorWindow:
         m.setdefault('ptp_min_idx', p_min)
         m.setdefault('ptp_max_idx', p_max)
         m.setdefault('onset_idx',   onset)
-        # Auto-detect for CSP types on first display; also re-run if user
-        # manually ticks the checkbox on a previously-failed segment.
-        _user_manually_ticked = self.enable_silent.get() and _det_failed
-        if _user_manually_ticked:
-            m.pop('csp_detection_failed', None)   # allow fresh attempt
+
+        # ---------- decide whether to run CSP detection ---------------------
+        _user_set     = key in self._silent_user_override
+        _user_on      = _user_set and self._silent_user_override[key]
+        _user_off     = _user_set and not self._silent_user_override[key]
+
+
+        if _user_on and not _has_markers:
+            m.pop('csp_detection_failed', None)
             _det_failed = False
-        _should_detect = (_type_wants_silent or self.enable_silent.get()) \
-                         and not _has_markers and not _det_failed
+            _should_detect = True
+        elif _user_off:
+            _should_detect = False
+        elif not _user_set and _type_wants_silent and not _has_markers and not _det_failed:
+            _should_detect = True
+        else:
+            _should_detect = False
+
+
         if _should_detect:
-            if 'silent_start_idx' not in m and \
-                    not m.get('csp_detection_failed', False):
-                _csp_reason = []
+            _csp_reason = []
+
+            # ── MEP-anchored search cap ───────────────────────────────────
+            # Search starts immediately after the 2nd PTP landmark.
+            # Search end is capped at second_peak_ms + csp_max_mep_offset_ms
+            # to prevent unrealistically late cSP placements.
+            # Search starts immediately after the 2nd PTP landmark so the
+            # detector never places cSP onset before the MEP has finished.
+            # The end remains the full csp_search_end_ms — the max-offset cap
+            # caused the window to collapse to ~40 ms which is too narrow for
+            # reliable bootstrap suppression detection.
+            # The csp_max_mep_offset_ms GUI field is retained for the pipeline
+            # but is not applied here in the inspector search window.
+            _second_peak_idx = max(m['ptp_min_idx'], m['ptp_max_idx'])
+            _second_peak_ms  = float(self.t[_second_peak_idx])
+            _effective_start = _second_peak_ms
+            _effective_end   = min(self.csp_search_end_ms, float(self.t[-1]))
+
+            if _effective_start >= _effective_end:
+                m['csp_detection_failed'] = True
+                m['csp_reason'] = (
+                    f"Search window collapsed: 2nd MEP peak at "
+                    f"{_second_peak_ms:.0f} ms exceeds search end")
+                self.enable_silent.set(False)
+            else:
                 csp = detect_csp_bootstrap(
                     emg, fs, self.t,
                     pre_ms=(self._analysis_pre_ms
                             if self._analysis_pre_ms is not None
                             else abs(int(self.t[0]))),
-                    search_start_ms=self.csp_search_start_ms,
-                    search_end_ms=min(self.csp_search_end_ms, float(self.t[-1])),
+                    search_start_ms=_effective_start,
+                    search_end_ms=_effective_end,
                     min_silence_ms=self.csp_min_silence_ms,
                     min_return_ms=self.csp_min_return_ms,
                     criterion=self.csp_criterion,
@@ -480,10 +582,10 @@ class DataInspectorWindow:
                 m['csp_reason'] = _csp_reason[0] if _csp_reason else ''
                 if csp is not None:
                     m['silent_start_idx'], m['silent_end_idx'] = csp
-                    self.enable_silent.set(True)   # detection succeeded
+                    self.enable_silent.set(True)
+                    # Clear user override — detection succeeded
+                    self._silent_user_override.pop(key, None)
                 else:
-                    # Detection failed — untick so user sees it was attempted
-                    # but found nothing. User can manually tick to place markers.
                     m['csp_detection_failed'] = True
                     m.pop('silent_start_idx', None)
                     m.pop('silent_end_idx',   None)
@@ -579,41 +681,62 @@ class DataInspectorWindow:
                                           self.t[m["auc_end_idx"]])
 
         # ---------- figure geometry ------------------------------------------
+        # When maximised, let the figure fill the available canvas height
+        # rather than forcing a fixed inch value that leaves empty space.
+        try:
+            _canvas_h_px = self.canvas.get_tk_widget().winfo_height()
+            _canvas_w_px = self.canvas.get_tk_widget().winfo_width()
+            _dpi = self.fig.dpi
+            if _canvas_h_px > 100 and _canvas_w_px > 100:
+                _fig_h = _canvas_h_px / _dpi
+                _fig_w = _canvas_w_px / _dpi
+            else:
+                _fig_h = self.FIG_H_RAW + (self.FIG_H_EXTRA if show_auc else 0)
+                _fig_w = 12
+        except Exception:
+            _fig_h = self.FIG_H_RAW + (self.FIG_H_EXTRA if show_auc else 0)
+            _fig_w = 12
+
+        self.fig.set_size_inches(_fig_w, _fig_h)
+
         if show_auc:
-            self.fig.set_figheight(self.FIG_H_RAW + self.FIG_H_EXTRA)
-            self.canvas.get_tk_widget().configure(
-                height=int(self.fig.get_figheight() * self.fig.dpi))
-            self.ax_raw.set_position([0.12, 0.42, 0.85, 0.53])
-            self.ax_abs.set_position([0.12, 0.10, 0.85, 0.25])
+            self.ax_raw.set_position([0.07, 0.42, 0.90, 0.53])
+            self.ax_abs.set_position([0.07, 0.10, 0.90, 0.25])
         else:
-            self.fig.set_figheight(self.FIG_H_RAW)
-            self.canvas.get_tk_widget().configure(
-                height=int(self.fig.get_figheight() * self.fig.dpi))
-            self.ax_raw.set_position([0.12, 0.15, 0.85, 0.78])
+            self.ax_raw.set_position([0.07, 0.10, 0.90, 0.85])
         
         self._resize_window()
         self.canvas.draw_idle()
 
-        # ---------- resize top‑level window so the note box fits -------------
-        self.top.update_idletasks()
+        # ---------- resize top‑level window (only when not maximised) --------
+        _is_zoomed = False
+        try:
+            _is_zoomed = self.top.state() == "zoomed"
+        except Exception:
+            pass
+        try:
+            if not _is_zoomed:
+                _is_zoomed = bool(self.top.attributes("-zoomed"))
+        except Exception:
+            pass
 
-        need_h = (self.hdr.winfo_reqheight() +
-                  self.canvas.get_tk_widget().winfo_reqheight() +
-                  self.status.winfo_reqheight() +
-                  self.btn_bar.winfo_reqheight() +
-                  self.btn_row.winfo_reqheight() + 40)
-        if self.note_box_is_shown:
-            need_h += self.note_box.winfo_reqheight()
-
-        need_w = max(self.hdr.winfo_reqwidth(),
-                     self.canvas.get_tk_widget().winfo_reqwidth(),
-                     self.status.winfo_reqwidth(),
-                     self.btn_bar.winfo_reqwidth(),
-                     self.btn_row.winfo_reqwidth()) + 40
-        if self.note_box_is_shown:
-            need_w = max(need_w, self.note_box.winfo_reqwidth() + 40)
-
-        self.top.geometry(f"{need_w}x{need_h}")
+        if not _is_zoomed:
+            self.top.update_idletasks()
+            need_h = (self.hdr.winfo_reqheight() +
+                      self.fig_frame.winfo_reqheight() +
+                      self.status.winfo_reqheight() +
+                      self.btn_bar.winfo_reqheight() +
+                      self.btn_row.winfo_reqheight() + 40)
+            if self.note_box_is_shown:
+                need_h += self.note_box.winfo_reqheight()
+            need_w = max(self.hdr.winfo_reqwidth(),
+                         self.fig_frame.winfo_reqwidth(),
+                         self.status.winfo_reqwidth(),
+                         self.btn_bar.winfo_reqwidth(),
+                         self.btn_row.winfo_reqwidth()) + 40
+            if self.note_box_is_shown:
+                need_w = max(need_w, self.note_box.winfo_reqwidth() + 40)
+            self.top.geometry(f"{need_w}x{need_h}")
 
         # ---------- extra channel subplot -----------------------------------
         self._plot_extra_channel()
@@ -672,24 +795,32 @@ class DataInspectorWindow:
 
         # ── Layout: position ax_raw + ax_abs (AUC) + ax_ex (extra) ──────────
         show_auc = self.ax_abs is not None
-        FIG_ROWS = self.FIG_H_RAW  # base height
-        EXTRA_H  = self.FIG_H_EXTRA
+
+        try:
+            _canvas_h_px = self.canvas.get_tk_widget().winfo_height()
+            _canvas_w_px = self.canvas.get_tk_widget().winfo_width()
+            _dpi = self.fig.dpi
+            if _canvas_h_px > 100 and _canvas_w_px > 100:
+                _fig_h = _canvas_h_px / _dpi
+                _fig_w = _canvas_w_px / _dpi
+            else:
+                _fig_h = self.FIG_H_RAW + self.FIG_H_EXTRA * (2 if show_auc else 1)
+                _fig_w = 12
+        except Exception:
+            _fig_h = self.FIG_H_RAW + self.FIG_H_EXTRA * (2 if show_auc else 1)
+            _fig_w = 12
+
+        self.fig.set_size_inches(_fig_w, _fig_h)
 
         if show_auc:
             # AUC + extra channel: 3-panel layout
-            total_h = self.FIG_H_RAW + self.FIG_H_EXTRA * 2
-            self.fig.set_figheight(total_h)
-            self.canvas.get_tk_widget().configure(height=int(total_h * self.fig.dpi))
-            self.ax_raw.set_position([0.12, 0.62, 0.85, 0.33])
-            self.ax_abs.set_position([0.12, 0.36, 0.85, 0.22])
-            ax_ex = self.fig.add_axes([0.12, 0.07, 0.85, 0.22])
+            self.ax_raw.set_position([0.07, 0.62, 0.90, 0.33])
+            self.ax_abs.set_position([0.07, 0.36, 0.90, 0.22])
+            ax_ex = self.fig.add_axes([0.07, 0.07, 0.90, 0.22])
         else:
             # extra channel only: 2-panel layout
-            total_h = self.FIG_H_RAW + self.FIG_H_EXTRA
-            self.fig.set_figheight(total_h)
-            self.canvas.get_tk_widget().configure(height=int(total_h * self.fig.dpi))
-            self.ax_raw.set_position([0.12, 0.52, 0.85, 0.43])
-            ax_ex = self.fig.add_axes([0.12, 0.10, 0.85, 0.35])
+            self.ax_raw.set_position([0.07, 0.52, 0.90, 0.43])
+            ax_ex = self.fig.add_axes([0.07, 0.10, 0.90, 0.35])
 
         self._extra_axes.append(ax_ex)
         self._resize_window()
@@ -757,7 +888,7 @@ class DataInspectorWindow:
         self.status.config(text=(
             f"PTP:{ptp_amp:.2f} mV    "
             f"Latency:{lat_ms:.1f} ms"
-            f"{silent_txt}{auc_txt}"
+            f"{silent_txt}{auc_txt}{csp_note}"
         ))
 
 

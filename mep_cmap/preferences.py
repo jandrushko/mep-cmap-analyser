@@ -2,55 +2,33 @@
 mep_cmap.preferences
 ~~~~~~~~~~~~~~~~~~~~
 DPI-aware UI scaling and user preferences.
-
-Preferences are stored in ~/.mep_cmap/preferences.json and persist
-across sessions independently of project/data location.
-
-Usage
------
-    from .preferences import prefs, apply_scaling
-
-    # At app startup (after root Tk() is created):
-    apply_scaling(root)
-
-    # Get a scaled pixel value:
-    prefs.px(24)          # 24 base-px scaled to current DPI + user pref
-
-    # Get a scaled font size:
-    prefs.font(10)        # 10pt scaled
-
-    # After user changes preference:
-    prefs.set_font_scale(1.2)
-    apply_scaling(root)
 """
 from __future__ import annotations
-
-import json
-import os
-import platform
-import sys
+import json, platform, sys
 from pathlib import Path
-from typing import Optional
 
-
-# ── Preferences file location ─────────────────────────────────────────────────
 PREFS_DIR  = Path.home() / ".mep_cmap"
 PREFS_FILE = PREFS_DIR / "preferences.json"
+DEFAULTS   = {"font_scale": 1.0}
 
-DEFAULTS = {
-    "font_scale": 1.0,   # user multiplier  (0.7 – 1.5)
+BASE_FONT_SIZES = {
+    "TkDefaultFont":      11,
+    "TkTextFont":         11,
+    "TkFixedFont":        11,
+    "TkMenuFont":         11,
+    "TkHeadingFont":      12,
+    "TkCaptionFont":      12,
+    "TkSmallCaptionFont": 10,
+    "TkIconFont":         10,
+    "TkTooltipFont":      10,
 }
 
-
 class Preferences:
-    """Singleton that holds user preferences and computed DPI scale."""
-
     def __init__(self):
         self._data: dict = dict(DEFAULTS)
-        self._dpi_scale: float = 1.0   # set by detect_dpi()
+        self._dpi_scale: float = 1.0
         self.load()
 
-    # ── Persistence ───────────────────────────────────────────────────────────
     def load(self):
         try:
             if PREFS_FILE.exists():
@@ -59,15 +37,12 @@ class Preferences:
                     if k in DEFAULTS:
                         self._data[k] = v
         except Exception:
-            pass   # corrupt file → silently use defaults
+            pass
 
     def save(self):
         try:
             PREFS_DIR.mkdir(parents=True, exist_ok=True)
-            PREFS_FILE.write_text(
-                json.dumps(self._data, indent=2),
-                encoding="utf-8"
-            )
+            PREFS_FILE.write_text(json.dumps(self._data, indent=2), encoding="utf-8")
         except Exception:
             pass
 
@@ -75,7 +50,6 @@ class Preferences:
         self._data = dict(DEFAULTS)
         self.save()
 
-    # ── Accessors ─────────────────────────────────────────────────────────────
     @property
     def font_scale(self) -> float:
         return float(self._data.get("font_scale", 1.0))
@@ -84,121 +58,150 @@ class Preferences:
         self._data["font_scale"] = round(max(0.7, min(1.5, float(value))), 2)
         self.save()
 
-    # ── DPI detection ─────────────────────────────────────────────────────────
     def detect_dpi(self, root) -> float:
         """
-        Detect the physical screen DPI and store as _dpi_scale.
-        96 DPI = scale 1.0 (Windows standard baseline).
-        Returns the computed dpi_scale.
+        Use tk's own scaling to get physical DPI.
+        Called AFTER the window is visible so Tk reports the correct monitor.
+        tk scaling = pt/px.  At 96 DPI: 0.75 pt/px.
+        dpi = tk_scaling * 96 / 0.75
         """
-        dpi = 96.0  # safe fallback
-
         try:
-            system = platform.system()
-
-            if system == "Windows":
-                # Ask Windows for the real DPI before Tkinter's virtualisation
-                try:
-                    import ctypes
-                    ctypes.windll.shcore.SetProcessDpiAwareness(1)
-                    hdc = ctypes.windll.user32.GetDC(0)
-                    dpi = ctypes.windll.gdi32.GetDeviceCaps(hdc, 88)  # LOGPIXELSX
-                    ctypes.windll.user32.ReleaseDC(0, hdc)
-                except Exception:
-                    dpi = root.winfo_fpixels("1i")
-
-            elif system == "Darwin":
-                # winfo_fpixels is reliable on macOS / Retina
-                dpi = root.winfo_fpixels("1i")
-
-            else:
-                # Linux — winfo_fpixels usually works, fallback to 96
-                dpi = root.winfo_fpixels("1i")
-
+            tk_scale = float(root.tk.call('tk', 'scaling'))
+            dpi = tk_scale * 96.0 / 0.75
+            dpi = max(40.0, min(300.0, dpi))
         except Exception:
-            pass
-
-        # Clamp to a sane range (40–300 DPI)
-        dpi = max(40.0, min(300.0, float(dpi)))
+            dpi = 96.0
         self._dpi_scale = dpi / 96.0
         return self._dpi_scale
 
-    # ── Scaling helpers ───────────────────────────────────────────────────────
     @property
     def total_scale(self) -> float:
-        """Combined DPI scale × user font preference."""
         return self._dpi_scale * self.font_scale
 
     def font(self, base_pt: int) -> int:
-        """Return a font size in points scaled for current DPI + user pref."""
-        scaled = int(round(base_pt * self.total_scale))
-        return max(8, scaled)
+        return max(8, int(round(base_pt * self.total_scale)))
 
     def px(self, base_px: int) -> int:
-        """Return a pixel/padding value scaled for current DPI + user pref."""
-        scaled = int(round(base_px * self.total_scale))
-        return max(1, scaled)
+        return max(1, int(round(base_px * self.total_scale)))
 
     def fig_scale(self, gentle: bool = False) -> float:
-        """
-        Matplotlib figure scale factor.
-        gentle=True  → use 80% of total_scale (for filter preview / wavelet).
-        gentle=False → full total_scale.
-        """
         s = self.total_scale
-        return 0.8 + 0.2 * s if gentle else s   # gentler: 0.8–1.3 vs 0.7–1.5
+        return 0.8 + 0.2 * s if gentle else s
 
 
-# Module-level singleton
 prefs = Preferences()
 
 
-# ── Apply scaling to all named Tk fonts ───────────────────────────────────────
-def apply_scaling(root, base_sizes: Optional[dict] = None):
+def apply_scaling(root):
     """
-    Resize every named Tkinter font to match the current DPI + user preference.
-
-    base_sizes: optional dict mapping font name fragment → base pt size.
-                Defaults cover the standard Tk font names.
+    Scale all named Tk fonts AND ttk styles to match DPI + user preference.
+    Call AFTER the window is visible/maximised for accurate DPI detection.
     """
     from tkinter import font as tkfont
+    from tkinter import ttk as _ttk
 
-    if base_sizes is None:
-        base_sizes = {
-            "TkDefaultFont":    10,
-            "TkTextFont":       10,
-            "TkFixedFont":      10,
-            "TkMenuFont":       10,
-            "TkHeadingFont":    10,
-            "TkCaptionFont":    11,
-            "TkSmallCaptionFont": 9,
-            "TkIconFont":        9,
-            "TkTooltipFont":     9,
-        }
+    prefs.detect_dpi(root)
+    sz = prefs.font(11)
+    font_spec = ("TkDefaultFont", sz)
 
-    # Detect DPI on first call (root must already exist)
-    if prefs._dpi_scale == 1.0:
-        prefs.detect_dpi(root)
-
+    # Named Tk fonts
     for fname in tkfont.names():
         f = tkfont.nametofont(fname)
-        # Look up base size; fall back to current size / total_scale
-        # so already-scaled fonts don't drift on repeated calls
-        base = None
-        for key, size in base_sizes.items():
-            if key in fname:
-                base = size
-                break
+        base = next((size for key, size in BASE_FONT_SIZES.items()
+                     if key in fname), None)
         if base is None:
             try:
                 current = abs(f.cget("size"))
                 base = max(8, int(round(current / prefs.total_scale))) \
-                       if prefs.total_scale != 0 else current
+                       if prefs.total_scale > 0 else current
             except Exception:
-                base = 10
-
-        new_size = prefs.font(base)
+                base = 11
         try:
-            f.configure(size=new_size)
+            f.configure(size=prefs.font(base))
         except Exception:
             pass
+
+    # ttk styles — Combobox, Notebook tabs, Spinbox, etc.
+    style = _ttk.Style(root)
+    for s in ("TCombobox","TButton","TEntry","TLabel","TCheckbutton",
+              "TRadiobutton","TMenubutton","TSpinbox","TNotebook.Tab","Centered.TNotebook.Tab",
+              "TLabelframe.Label","Treeview","Treeview.Heading"):
+        try:
+            style.configure(s, font=font_spec)
+        except Exception:
+            pass
+
+    # Combobox dropdown popup listbox
+    try:
+        root.option_add("*TCombobox*Listbox.font", font_spec)
+    except Exception:
+        pass
+
+    # ── 3. Tk Menu widgets ────────────────────────────────────────────────────
+    # On Windows, Menu widgets ignore TkMenuFont and use the system menu font
+    # unless font= is set explicitly on each menu instance.
+    # We walk the widget tree and reconfigure every Menu widget found.
+    def _fix_menus(widget):
+        try:
+            if widget.winfo_class() == "Menu":
+                widget.configure(font=font_spec)
+        except Exception:
+            pass
+        try:
+            for child in widget.winfo_children():
+                _fix_menus(child)
+        except Exception:
+            pass
+    _fix_menus(root)
+
+    # Also set via option_add so future menus created after this call are correct
+    try:
+        root.option_add("*Menu.font", font_spec)
+    except Exception:
+        pass
+
+
+def open_preferences_dialog(root, on_apply=None):
+    import tkinter as tk
+    from tkinter import ttk
+
+    win = tk.Toplevel(root)
+    win.title("Preferences")
+    win.transient(root)
+    win.resizable(False, False)
+
+    tk.Label(win, text="UI & Font Scale",
+             font=("TkDefaultFont", 11, "bold")).pack(pady=(14, 4))
+
+    scale_var = tk.DoubleVar(value=prefs.font_scale * 100)
+    frm = tk.Frame(win); frm.pack(padx=20, pady=4)
+    tk.Label(frm, text="Smaller").pack(side="left")
+    tk.Scale(frm, from_=70, to=150, resolution=5, orient="horizontal",
+             variable=scale_var, length=220, showvalue=False).pack(side="left", padx=6)
+    tk.Label(frm, text="Larger").pack(side="left")
+
+    pct_lbl = tk.Label(win); pct_lbl.pack()
+    def _update_label(*_): pct_lbl.config(text=f"{int(scale_var.get())}%")
+    scale_var.trace_add("write", _update_label); _update_label()
+
+    tk.Label(win, text="Affects fonts, buttons, padding and window sizes.",
+             fg="grey").pack(pady=(2, 10))
+
+    def _apply():
+        prefs.set_font_scale(scale_var.get() / 100.0)
+        apply_scaling(root)
+        if on_apply: on_apply(root)
+
+    def _reset():
+        scale_var.set(100); _apply()
+
+    btn_row = tk.Frame(win); btn_row.pack(pady=(0, 12))
+    tk.Button(btn_row, text="Apply",        width=10, command=_apply).pack(side="left", padx=4)
+    tk.Button(btn_row, text="Reset to 100%",width=12, command=_reset).pack(side="left", padx=4)
+    tk.Button(btn_row, text="Cancel",       width=10, command=win.destroy).pack(side="left", padx=4)
+
+    win.update_idletasks()
+    x = root.winfo_rootx() + (root.winfo_width()  - win.winfo_width())  // 2
+    y = root.winfo_rooty() + (root.winfo_height() - win.winfo_height()) // 2
+    win.geometry(f"+{x}+{y}")
+    win.grab_set()
