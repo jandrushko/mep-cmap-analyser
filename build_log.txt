@@ -1,0 +1,100 @@
+Requirement already satisfied: numpy>=1.24 in ./venv_linux/lib/python3.12/site-packages (from -r requirements.txt (line 1)) (2.4.4)
+Requirement already satisfied: pandas>=1.5 in ./venv_linux/lib/python3.12/site-packages (from -r requirements.txt (line 2)) (3.0.3)
+Requirement already satisfied: matplotlib>=3.7 in ./venv_linux/lib/python3.12/site-packages (from -r requirements.txt (line 3)) (3.10.9)
+Requirement already satisfied: scipy>=1.10 in ./venv_linux/lib/python3.12/site-packages (from -r requirements.txt (line 4)) (1.17.1)
+Requirement already satisfied: PyWavelets>=1.4 in ./venv_linux/lib/python3.12/site-packages (from -r requirements.txt (line 5)) (1.9.0)
+Requirement already satisfied: Pillow>=9.0 in ./venv_linux/lib/python3.12/site-packages (from -r requirements.txt (line 6)) (12.2.0)
+Requirement already satisfied: pyinstaller>=5.13 in ./venv_linux/lib/python3.12/site-packages (from -r requirements.txt (line 7)) (6.20.0)
+Requirement already satisfied: python-dateutil>=2.8.2 in ./venv_linux/lib/python3.12/site-packages (from pandas>=1.5->-r requirements.txt (line 2)) (2.9.0.post0)
+Requirement already satisfied: contourpy>=1.0.1 in ./venv_linux/lib/python3.12/site-packages (from matplotlib>=3.7->-r requirements.txt (line 3)) (1.3.3)
+Requirement already satisfied: cycler>=0.10 in ./venv_linux/lib/python3.12/site-packages (from matplotlib>=3.7->-r requirements.txt (line 3)) (0.12.1)
+Requirement already satisfied: fonttools>=4.22.0 in ./venv_linux/lib/python3.12/site-packages (from matplotlib>=3.7->-r requirements.txt (line 3)) (4.62.1)
+Requirement already satisfied: kiwisolver>=1.3.1 in ./venv_linux/lib/python3.12/site-packages (from matplotlib>=3.7->-r requirements.txt (line 3)) (1.5.0)
+Requirement already satisfied: packaging>=20.0 in ./venv_linux/lib/python3.12/site-packages (from matplotlib>=3.7->-r requirements.txt (line 3)) (26.2)
+Requirement already satisfied: pyparsing>=3 in ./venv_linux/lib/python3.12/site-packages (from matplotlib>=3.7->-r requirements.txt (line 3)) (3.3.2)
+Requirement already satisfied: altgraph in ./venv_linux/lib/python3.12/site-packages (from pyinstaller>=5.13->-r requirements.txt (line 7)) (0.17.5)
+Requirement already satisfied: pyinstaller-hooks-contrib>=2026.4 in ./venv_linux/lib/python3.12/site-packages (from pyinstaller>=5.13->-r requirements.txt (line 7)) (2026.5)
+Requirement already satisfied: setuptools>=42.0.0 in ./venv_linux/lib/python3.12/site-packages (from pyinstaller>=5.13->-r requirements.txt (line 7)) (82.0.1)
+Requirement already satisfied: six>=1.5 in ./venv_linux/lib/python3.12/site-packages (from python-dateutil>=2.8.2->pandas>=1.5->-r requirements.txt (line 2)) (1.17.0)
+663 WARNING: Assuming this is not an Anaconda environment or an additional venv/pipenv/... environment manager is being used on top, because the conda-meta folder /mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/conda-meta does not exist.
+737 INFO: PyInstaller: 6.20.0, contrib hooks: 2026.5
+738 INFO: Python: 3.12.3 (conda)
+742 INFO: Platform: Linux-6.6.114.1-microsoft-standard-WSL2-x86_64-with-glibc2.35
+742 INFO: Python environment: /mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux
+921 INFO: Removing temporary files and cleaning cache in /home/jandrushko/.cache/pyinstaller
+323 WARNING: Assuming this is not an Anaconda environment or an additional venv/pipenv/... environment manager is being used on top, because the conda-meta folder /mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/conda-meta does not exist.
+1696 WARNING: Failed to collect submodules for 'matplotlib.tests' because importing 'matplotlib.tests' raised: OSError: The baseline image directory does not exist. This is most likely because the test data is not installed. You may need to install matplotlib from source to get the test data.
+321 WARNING: Assuming this is not an Anaconda environment or an additional venv/pipenv/... environment manager is being used on top, because the conda-meta folder /mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/conda-meta does not exist.
+5044 WARNING: Failed to collect submodules for 'scipy._lib.array_api_compat.torch' because importing 'scipy._lib.array_api_compat.torch' raised: ModuleNotFoundError: No module named 'torch'
+312 WARNING: Assuming this is not an Anaconda environment or an additional venv/pipenv/... environment manager is being used on top, because the conda-meta folder /mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/conda-meta does not exist.
+1475 WARNING: Failed to collect submodules for 'numpy.f2py.tests' because importing 'numpy.f2py.tests' raised: ModuleNotFoundError: No module named 'pytest'
+308 WARNING: Assuming this is not an Anaconda environment or an additional venv/pipenv/... environment manager is being used on top, because the conda-meta folder /mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/conda-meta does not exist.
+4513 WARNING: Failed to collect submodules for 'pandas.tests.extension.base' because importing 'pandas.tests.extension.base' raised: ModuleNotFoundError: No module named 'pytest'
+315 WARNING: Assuming this is not an Anaconda environment or an additional venv/pipenv/... environment manager is being used on top, because the conda-meta folder /mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/conda-meta does not exist.
+313 WARNING: Assuming this is not an Anaconda environment or an additional venv/pipenv/... environment manager is being used on top, because the conda-meta folder /mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/conda-meta does not exist.
+1733 WARNING: Failed to collect submodules for 'mpl_toolkits.mplot3d.tests' because importing 'mpl_toolkits.mplot3d.tests' raised: OSError: The baseline image directory does not exist. This is most likely because the test data is not installed. You may need to install matplotlib from source to get the test data.
+32450 INFO: Module search paths (PYTHONPATH):
+['/usr/local/fsl/lib/python312.zip',
+ '/usr/local/fsl/lib/python3.12',
+ '/usr/local/fsl/lib/python3.12/lib-dynload',
+ '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages',
+ '/mnt/d/MEP-CMAP_Analyser/modular_build']
+471 WARNING: Assuming this is not an Anaconda environment or an additional venv/pipenv/... environment manager is being used on top, because the conda-meta folder /mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/conda-meta does not exist.
+33781 INFO: Appending 'datas' from .spec
+35330 INFO: checking Analysis
+35332 INFO: Building Analysis because Analysis-00.toc is non existent
+35332 INFO: Looking for Python shared library...
+35338 INFO: Using Python shared library: /usr/local/fsl/lib/libpython3.12.so.1.0
+35338 INFO: Running Analysis Analysis-00.toc
+35338 INFO: Target bytecode optimization level: 0
+35338 INFO: Initializing module dependency graph...
+35339 INFO: Initializing module graph hook caches...
+35532 INFO: Analyzing modules for base_library.zip ...
+329 WARNING: Assuming this is not an Anaconda environment or an additional venv/pipenv/... environment manager is being used on top, because the conda-meta folder /mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/conda-meta does not exist.
+337 WARNING: Assuming this is not an Anaconda environment or an additional venv/pipenv/... environment manager is being used on top, because the conda-meta folder /mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/conda-meta does not exist.
+320 WARNING: Assuming this is not an Anaconda environment or an additional venv/pipenv/... environment manager is being used on top, because the conda-meta folder /mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/conda-meta does not exist.
+38198 INFO: Processing standard module hook 'hook-encodings.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+316 WARNING: Assuming this is not an Anaconda environment or an additional venv/pipenv/... environment manager is being used on top, because the conda-meta folder /mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/conda-meta does not exist.
+39890 INFO: Processing standard module hook 'hook-pickle.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+40643 INFO: Processing standard module hook 'hook-heapq.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+40976 INFO: Caching module dependency graph...
+41041 INFO: Analyzing /mnt/d/MEP-CMAP_Analyser/modular_build/launcher.py
+41079 INFO: Processing standard module hook 'hook-multiprocessing.util.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+41222 INFO: Processing standard module hook 'hook-xml.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+41420 INFO: Processing standard module hook 'hook-_ctypes.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+41446 INFO: Processing pre-find-module-path hook 'hook-tkinter.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks/pre_find_module_path'
+41465 INFO: TclTkInfo: initializing cached Tcl/Tk info...
+42181 INFO: Processing standard module hook 'hook-_tkinter.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+42246 INFO: Processing standard module hook 'hook-numpy.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+45745 INFO: Processing standard module hook 'hook-difflib.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+46604 INFO: Processing standard module hook 'hook-sysconfig.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+46690 INFO: Processing standard module hook 'hook-platform.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+48698 INFO: Processing pre-safe-import-module hook 'hook-typing_extensions.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks/pre_safe_import_module'
+48716 INFO: SetuptoolsInfo: initializing cached setuptools info...
+1329 WARNING: Assuming this is not an Anaconda environment or an additional venv/pipenv/... environment manager is being used on top, because the conda-meta folder /mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/conda-meta does not exist.
+58190 INFO: Processing standard module hook 'hook-pandas.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+306 WARNING: Assuming this is not an Anaconda environment or an additional venv/pipenv/... environment manager is being used on top, because the conda-meta folder /mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/conda-meta does not exist.
+64605 INFO: Processing standard module hook 'hook-zoneinfo.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'
+65083 INFO: Processing standard module hook 'hook-scipy.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+313 WARNING: Assuming this is not an Anaconda environment or an additional venv/pipenv/... environment manager is being used on top, because the conda-meta folder /mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/conda-meta does not exist.
+68643 INFO: Processing standard module hook 'hook-scipy.linalg.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+69043 INFO: Processing standard module hook 'hook-scipy.special._ufuncs.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+71600 INFO: Processing standard module hook 'hook-scipy.spatial._ckdtree.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+71707 INFO: Processing standard module hook 'hook-matplotlib.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+73503 INFO: Processing pre-safe-import-module hook 'hook-packaging.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks/pre_safe_import_module'
+73670 INFO: Processing pre-safe-import-module hook 'hook-gi.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks/pre_safe_import_module'
+74077 INFO: Processing standard module hook 'hook-matplotlib.backend_bases.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+74234 INFO: Processing standard module hook 'hook-PIL.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+74332 INFO: Processing standard module hook 'hook-PIL.Image.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+304 WARNING: Assuming this is not an Anaconda environment or an additional venv/pipenv/... environment manager is being used on top, because the conda-meta folder /mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/conda-meta does not exist.
+75265 INFO: Processing standard module hook 'hook-xml.etree.cElementTree.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+75482 INFO: Processing standard module hook 'hook-PIL.ImageFilter.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+76502 INFO: Processing standard module hook 'hook-matplotlib.backends.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+76612 INFO: Processing standard module hook 'hook-matplotlib.pyplot.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+77627 INFO: Processing standard module hook 'hook-dateutil.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'
+78513 INFO: Processing pre-safe-import-module hook 'hook-six.moves.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks/pre_safe_import_module'
+81554 INFO: Processing standard module hook 'hook-scipy.spatial.transform.rotation.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+82956 INFO: Processing standard module hook 'hook-scipy.stats._stats.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+83688 INFO: Processing standard module hook 'hook-scipy.sparse.csgraph.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+85245 INFO: Processing standard module hook 'hook-scipy.special._ellip_harm_2.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
+88476 INFO: Processing standard module hook 'hook-pandas.io.formats.style.py' from '/mnt/d/MEP-CMAP_Analyser/modular_build/venv_linux/lib/python3.12/site-packages/PyInstaller/hooks'
