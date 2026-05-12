@@ -137,24 +137,35 @@ def detect_csp_bootstrap(
     suppress_thresh = max(base_mu - criterion * base_sd, MIN_FRAC)
 
     n_pre = len(norm_pre)
+
+    # ── Vectorised CSP bootstrap ──────────────────────────────────────────────
+    # Generate all n_boot resamples at once: shape (n_boot, n_pre).
+    # Per-resample statistics computed with NumPy broadcasting — no Python loop.
+    # Run-length encoding replaced with np.diff on the boolean mask per resample.
+    all_idx    = rng.integers(0, n_pre, size=(n_boot, n_pre))
+    all_resamp = norm_pre[all_idx]                          # (n_boot, n_pre)
+
+    r_mu  = all_resamp.mean(axis=1, keepdims=True)         # (n_boot, 1)
+    r_sd  = all_resamp.std(axis=1, ddof=1, keepdims=True)  # (n_boot, 1)
+    r_sd  = np.maximum(r_sd, 1e-9)
+    lo    = np.maximum(r_mu - criterion * r_sd, MIN_FRAC)  # (n_boot, 1)
+    hi    = r_mu + criterion * r_sd                        # (n_boot, 1)
+
+    # sig_mask[b, i] = True when sample i in resample b is outside baseline CI
+    sig_mask = (all_resamp < lo) | (all_resamp > hi)       # (n_boot, n_pre)
+
+    # Run-length encoding: for each resample find lengths of True runs.
+    # Pad with False on both sides so diff catches runs at edges.
     chance_lengths = []
-    for _ in range(n_boot):
-        resamp   = norm_pre[rng.integers(0, n_pre, n_pre)]
-        r_mu     = float(resamp.mean())
-        r_sd     = max(float(resamp.std(ddof=1)) if n_pre > 1 else 1e-6, 1e-9)
-        lo       = max(r_mu - criterion * r_sd, MIN_FRAC)
-        hi       = r_mu + criterion * r_sd
-        sig_mask = (resamp < lo) | (resamp > hi)
-        run = 0
-        for v in sig_mask:
-            if v:
-                run += 1
-            else:
-                if run > 0:
-                    chance_lengths.append(run)
-                run = 0
-        if run > 0:
-            chance_lengths.append(run)
+    pad  = np.zeros((n_boot, 1), dtype=bool)
+    padded = np.concatenate([pad, sig_mask, pad], axis=1)  # (n_boot, n_pre+2)
+    diffs  = np.diff(padded.view(np.uint8), axis=1)        # (n_boot, n_pre+1)
+    # For each resample, extract run starts (+1) and ends (-1)
+    for b in range(n_boot):
+        starts = np.where(diffs[b] == 1)[0]
+        ends   = np.where(diffs[b] == 255)[0]   # uint8: -1 wraps to 255
+        runs   = ends - starts
+        chance_lengths.extend(runs.tolist())
 
     min_sil_samp      = max(2, int(min_silence_ms * fs / 1000))
     criterion_samples = max(
@@ -195,6 +206,42 @@ def detect_csp_bootstrap(
         reason_out.append(f"Detected - onset ~{t_on:.0f} ms, duration ~{dur:.0f} ms")
 
     return int(csp_start_idx), int(min(csp_end_idx, len(smooth) - 1))
+
+
+def compute_bootstrap_threshold(pre_abs, criterion=1.96, n_boot=500, seed=42):
+    """
+    Compute the bootstrap-calibrated onset threshold from pre-stimulus signal.
+
+    Separated from detect_mep_onset_bootstrap so it can be computed ONCE
+    per stim type and reused across all segments, rather than being
+    recomputed for every segment independently.
+
+    Parameters
+    ----------
+    pre_abs   : np.ndarray  absolute pre-stim signal
+    criterion : float       z-score multiplier (default 1.96)
+    n_boot    : int         bootstrap iterations (default 500)
+    seed      : int         RNG seed for reproducibility
+
+    Returns
+    -------
+    threshold : float  onset detection threshold, or None if invalid
+    mu_abs    : float  bootstrap median of |pre-stim|
+    sigma_abs : float  std of |pre-stim|
+    """
+    if len(pre_abs) < 5:
+        return None, None, None
+    rng      = np.random.default_rng(seed)
+    n_pre    = len(pre_abs)
+    boot_indices = rng.integers(0, n_pre, size=(n_boot, n_pre))
+    boot_med     = np.median(pre_abs[boot_indices], axis=1)
+    mu_abs    = float(np.median(boot_med))
+    sigma_abs = float(np.std(pre_abs, ddof=1)) if len(pre_abs) > 1 else mu_abs
+    if mu_abs < 1e-9:
+        return None, None, None
+    threshold = mu_abs + criterion * sigma_abs
+    threshold = float(np.clip(threshold, mu_abs * 1.5, mu_abs * 5.0))
+    return threshold, mu_abs, sigma_abs
 
 
 def detect_mep_onset_bootstrap(
@@ -270,17 +317,18 @@ def detect_mep_onset_bootstrap(
     if len(pre_abs) < 5:
         return None
 
-    rng      = np.random.default_rng(seed)
-    n_pre    = len(pre_abs)
-    boot_med = np.array([
-        np.median(pre_abs[rng.integers(0, n_pre, n_pre)])
-        for _ in range(n_boot)
-    ])
+    rng   = np.random.default_rng(seed)
+    n_pre = len(pre_abs)
+
+    # Vectorised bootstrap — all n_boot resamples in one NumPy call (~8-10x
+    # faster than a Python for-loop). Each threshold is per-segment so
+    # individual trial baseline variability is correctly captured.
+    boot_indices = rng.integers(0, n_pre, size=(n_boot, n_pre))
+    boot_med     = np.median(pre_abs[boot_indices], axis=1)
     mu_abs    = float(np.median(boot_med))
     sigma_abs = float(np.std(pre_abs, ddof=1)) if len(pre_abs) > 1 else mu_abs
     if mu_abs < 1e-9:
         return None
-
     threshold = mu_abs + criterion * sigma_abs
     threshold = float(np.clip(threshold, mu_abs * 1.5, mu_abs * 5.0))
 
@@ -295,23 +343,22 @@ def detect_mep_onset_bootstrap(
     peak_local  = int(np.argmax(search_win))
     peak_global = onset_search_start + peak_local   # index in full signal
 
-    # 2. Scan backward from just before the peak to find MEP onset.
+    # 2. Scan backward from before the peak to find onset.
     #
-    #    Strategy: at each candidate position i, compute the mean absolute
-    #    signal in a forward window [i : i+win_samp]. Starting win_samp
-    #    samples before the peak ensures the first window fully covers the
-    #    peak and is above threshold.
+    #    scan_start is placed 2×win_samp before the peak to give enough
+    #    room for the backward scan — this is critical for steep short-
+    #    duration responses (M-waves, fast MEPs) where the rise from
+    #    baseline to peak spans only a few milliseconds.
     #
-    #    To avoid placing onset on a background EMG noise spike, we require
-    #    SUSTAINED below-threshold signal: the forward window must be below
-    #    threshold for at least `sustain` consecutive positions before we
-    #    accept it as genuine baseline. This prevents a single noise oscillation
-    #    from triggering a false onset placement mid-slope.
+    #    sustain: number of consecutive below-threshold windows required
+    #    before accepting a position as genuine baseline. Scaled to the
+    #    available scan range so short responses don't fall back to floor.
     #
-    sustain     = max(2, win_samp // 2)   # consecutive below-threshold windows needed
-    scan_start  = max(onset_search_start, peak_global - win_samp)
-    onset_idx   = onset_search_start      # default: physiological floor
-    below_count = 0
+    scan_start    = max(onset_search_start, peak_global - 2 * win_samp)
+    scan_range    = max(1, peak_global - scan_start)
+    sustain       = max(1, min(win_samp // 2, scan_range // 3))
+    onset_idx     = onset_search_start   # default: physiological floor
+    below_count   = 0
 
     for i in range(scan_start, onset_search_start - 1, -1):
         i1 = min(len(signal), i + win_samp)
@@ -319,12 +366,10 @@ def detect_mep_onset_bootstrap(
         if win_mean < threshold:
             below_count += 1
             if below_count >= sustain:
-                # Sustained baseline found — onset is at the first above-threshold
-                # position after this baseline, i.e. i + sustain
                 onset_idx = min(i + sustain, peak_global)
                 break
         else:
-            below_count = 0   # reset — this was an above-threshold window
+            below_count = 0
     # If loop completes without break, onset stays at physiological floor
 
     latency_ms = (onset_idx - samples_before) * 1000.0 / fs

@@ -224,7 +224,7 @@ class DataInspectorWindow:
         self.btn_bar.pack(pady=(0, 6))
 
         self.enable_silent = tk.BooleanVar(value=True)
-        self.enable_auc = tk.BooleanVar(value=False)
+        self.enable_auc    = tk.BooleanVar(value=True)   # AUC on by default
         self.exclude_var = tk.BooleanVar(value=False)
         self.note_enable_var = tk.BooleanVar(value=True)
 
@@ -561,7 +561,10 @@ class DataInspectorWindow:
             _second_peak_idx = max(m['ptp_min_idx'], m['ptp_max_idx'])
             _second_peak_ms  = float(self.t[_second_peak_idx])
             _effective_start = _second_peak_ms
-            _effective_end   = min(self.csp_search_end_ms, float(self.t[-1]))
+            _cap_ms          = _second_peak_ms + self.csp_max_mep_offset_ms
+            _effective_end   = min(self.csp_search_end_ms,
+                                   float(self.t[-1]),
+                                   _cap_ms)
 
             if _effective_start >= _effective_end:
                 m['csp_detection_failed'] = True
@@ -612,7 +615,10 @@ class DataInspectorWindow:
                     _second_peak_idx = max(m['ptp_min_idx'], m['ptp_max_idx'])
                     _second_peak_ms  = float(self.t[_second_peak_idx])
                     _eff_start = _second_peak_ms
-                    _eff_end   = min(self.csp_search_end_ms, float(self.t[-1]))
+                    _cap_ms    = _second_peak_ms + self.csp_max_mep_offset_ms
+                    _eff_end   = min(self.csp_search_end_ms,
+                                    float(self.t[-1]),
+                                    _cap_ms)
                     if _eff_start < _eff_end:
                         _bg_csp = detect_csp_bootstrap(
                             emg, fs, self.t,

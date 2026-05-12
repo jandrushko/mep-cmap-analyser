@@ -13,6 +13,7 @@ import pathlib
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 
+import numpy as np
 import pandas as pd
 
 from .bids import StudyMetadata
@@ -26,7 +27,7 @@ class Stage2Mixin:
 
     def _on_tab_changed(self, event):
         """Build Stage 2 UI lazily on first visit."""
-        if self.notebook.index(self.notebook.select()) == 1:
+        if self.notebook.index(self.notebook.select()) == 2:
             if not self._stage2_built:
                 self._build_stage2()
                 self._stage2_built = True
@@ -50,6 +51,10 @@ class Stage2Mixin:
                   command=self._s2_save_design).pack(side="left", padx=(6, 0))
         tk.Button(toolbar, text="Load design",
                   command=self._s2_load_design).pack(side="left", padx=(2, 0))
+        tk.Button(toolbar, text="▶  Build group analysis file",
+                  command=self._s2_run,
+                  bg="#5cb85c", fg="white",
+                  font=("TkDefaultFont", 9, "bold")).pack(side="right", padx=(0, 4))
 
         # ── Group column manager ──────────────────────────────────────────────
         col_bar = tk.Frame(f)
@@ -98,6 +103,13 @@ class Stage2Mixin:
         # ── Internal state ────────────────────────────────────────────────────
         # group_columns: list of {"name": str, "type": "between"|"within"}
         self._s2_group_cols  = []
+
+        # If derivatives path already set from Stage 1, populate and auto-scan
+        _existing_deriv = self.derivatives_path.get() \
+            if hasattr(self, 'derivatives_path') else ""
+        if _existing_deriv:
+            self._s2_deriv_var.set(_existing_deriv)
+            self.root.after(100, self._s2_scan)
         # group_values: {col_name: [val1, val2, ...]}
         self._s2_group_vals  = {}
         # row data: list of dicts (one per session row)
@@ -129,21 +141,26 @@ class Stage2Mixin:
             # Try the folder itself as the derivatives root
             deriv_dir = root_dir
 
-        # Walk and find all *_trials_manual.json sidecars (one per session)
+        # Walk and find all *_All_stims_trial_summary.json sidecars (one per session)
         found = []
         for dirpath, dirnames, filenames in os.walk(deriv_dir):
             for fn in filenames:
-                if fn.endswith("_trials_manual.json"):
+                if fn.endswith("_All_stims_trial_summary.json"):
                     jpath = os.path.join(dirpath, fn)
                     try:
                         with open(jpath, encoding="utf-8") as jf:
                             meta = json.load(jf)
+                        # Fall back to parsing BIDS folder structure if metadata
+                        # fields are blank (e.g. files processed before this fix)
+                        _parts = pathlib.Path(dirpath).parts
+                        _sub = next((p for p in _parts if p.startswith("sub-")), "")
+                        _ses = next((p for p in _parts if p.startswith("ses-")), "")
                         found.append({
                             "include":        True,
-                            "participant_id": meta.get("participant_id", ""),
-                            "session":        meta.get("session", ""),
-                            "task":           meta.get("task", ""),
-                            "timepoint":      meta.get("timepoint", ""),
+                            "participant_id": meta.get("participant_id") or _sub,
+                            "session":        meta.get("session")        or _ses,
+                            "task":           meta.get("task",           ""),
+                            "timepoint":      meta.get("timepoint",      ""),
                             "_json_path":     jpath,
                             "_trials_csv":    jpath.replace(".json", ".csv"),
                         })
@@ -294,24 +311,20 @@ class Stage2Mixin:
 
     def _s2_open_configure(self, row_idx):
         """
-        Open the per-session Configure dialog.
-        Reads stim types from the session's trials_manual.csv, lets the user
-        assign roles (Reference, Conditioned, M-wave, None), configure M-wave
-        source and trial selection, and define paired-pulse pairings.
+        Per-session Configure dialog — Section 1 only: stim type role assignment.
+        Normalisation is already handled by Stage 1; role labels are the only
+        additional metadata needed at the group level.
         """
         row = self._s2_rows[row_idx]
         csv_path = row.get("_trials_csv", "")
 
-        # ── Load the trial CSV ────────────────────────────────────────────────
         if not csv_path or not os.path.isfile(csv_path):
-            # Try to find it by scanning the session folder
             json_path = row.get("_json_path", "")
             if json_path:
                 csv_path = json_path.replace(".json", ".csv")
             if not csv_path or not os.path.isfile(csv_path):
-                messagebox.showerror(
-                    "Could not locate the trials_manual.csv for this session. "
-                    "Please re-scan the derivatives folder.",
+                messagebox.showerror("File not found",
+                    "Could not locate the All_stims_trial_summary.csv for this session. "
                     "Please re-scan the derivatives folder.",
                     parent=self.root)
                 return
@@ -322,7 +335,6 @@ class Stage2Mixin:
             messagebox.showerror("CSV error", str(e), parent=self.root)
             return
 
-        # Stim types present in this session
         stim_types = sorted(df["StimType"].unique()) if "StimType" in df.columns else []
         if not stim_types:
             messagebox.showinfo("No stim types",
@@ -330,273 +342,55 @@ class Stage2Mixin:
                 parent=self.root)
             return
 
-        # Restore previous config if any
         cfg = row.setdefault("_config", {})
 
-        # ── Build dialog ──────────────────────────────────────────────────────
         title = " – ".join(filter(None, [
             row.get("participant_id",""), row.get("session",""),
             row.get("task",""), row.get("timepoint","")]))
         win = tk.Toplevel(self.root)
         win.title(f"Configure – {title}")
         win.transient(self.root)
-        win.resizable(True, True)
+        win.resizable(False, False)
 
-        ROLES = ["None", "Reference (single pulse)", "Conditioned", "M-wave"]
-        ROLE_COLOURS = {
-            "Reference (single pulse)": "#d4edda",
-            "Conditioned":              "#cce5ff",
-            "M-wave":                   "#fff3cd",
-            "None":                     "#ffffff",
-        }
+        ROLES = ["None", "Reference (single pulse)", "Conditioned", "M-wave", "Other"]
 
-        # ════════════════════════ Section 1: Stim roles ═══════════════════════
-        sec1 = tk.LabelFrame(win, text="Section 1 — Stim type roles", padx=8, pady=6)
-        sec1.pack(fill="x", padx=10, pady=(10,4))
+        sec1 = tk.LabelFrame(win, text="Stim type roles", padx=8, pady=6)
+        sec1.pack(fill="x", padx=10, pady=(10, 4))
 
-        tk.Label(sec1, text="Stim", width=8, anchor="w", font=("TkDefaultFont",9,"bold"))            .grid(row=0, column=0, sticky="w")
-        tk.Label(sec1, text="Label", width=14, anchor="w", font=("TkDefaultFont",9,"bold"))            .grid(row=0, column=1, sticky="w")
-        tk.Label(sec1, text="Role", width=28, anchor="w", font=("TkDefaultFont",9,"bold"))            .grid(row=0, column=2, sticky="w")
-        tk.Label(sec1, text="N trials", width=8, anchor="w", font=("TkDefaultFont",9,"bold"))            .grid(row=0, column=3, sticky="w")
+        tk.Label(sec1, text="Stim",     width=8,  anchor="w",
+                 font=("TkDefaultFont", 9, "bold")).grid(row=0, column=0, sticky="w")
+        tk.Label(sec1, text="Label",    width=16, anchor="w",
+                 font=("TkDefaultFont", 9, "bold")).grid(row=0, column=1, sticky="w")
+        tk.Label(sec1, text="Role",     width=28, anchor="w",
+                 font=("TkDefaultFont", 9, "bold")).grid(row=0, column=2, sticky="w")
+        tk.Label(sec1, text="N trials", width=8,  anchor="w",
+                 font=("TkDefaultFont", 9, "bold")).grid(row=0, column=3, sticky="w")
 
         role_vars = {}
         for r, st in enumerate(stim_types, start=1):
             n_trials = int((df["StimType"] == st).sum())
-            lbl = df.loc[df["StimType"]==st, "Stim_Label"].iloc[0]                   if "Stim_Label" in df.columns else st
-            tk.Label(sec1, text=st, width=8, anchor="w").grid(row=r, column=0, sticky="w")
-            tk.Label(sec1, text=str(lbl), width=14, anchor="w").grid(row=r, column=1, sticky="w")
+            lbl = (df.loc[df["StimType"] == st, "Stim_Label"].iloc[0]
+                   if "Stim_Label" in df.columns else st)
+            tk.Label(sec1, text=st,       width=8,  anchor="w").grid(row=r, column=0, sticky="w")
+            tk.Label(sec1, text=str(lbl), width=16, anchor="w").grid(row=r, column=1, sticky="w")
             v = tk.StringVar(value=cfg.get(f"role_{st}", "None"))
             role_vars[st] = v
-            cb = ttk.Combobox(sec1, textvariable=v, values=ROLES,
-                               state="readonly", width=26)
-            cb.grid(row=r, column=2, sticky="w", padx=4)
-            tk.Label(sec1, text=str(n_trials), width=8, anchor="w")                .grid(row=r, column=3, sticky="w")
+            ttk.Combobox(sec1, textvariable=v, values=ROLES,
+                         state="readonly", width=26).grid(row=r, column=2, sticky="w", padx=4)
+            tk.Label(sec1, text=str(n_trials), width=8, anchor="w").grid(row=r, column=3, sticky="w")
 
-        # ════════════════════════ Section 2: M-wave ═══════════════════════════
-        sec2 = tk.LabelFrame(win, text="Section 2 — M-wave / Mmax", padx=8, pady=6)
-        sec2.pack(fill="x", padx=10, pady=4)
+        tk.Label(win,
+            text="Stage 1 already handles normalisation. Roles are appended as\n"
+                 "metadata to help identify stim type function in the merged file.",
+            fg="grey", justify="left").pack(padx=10, pady=(4, 0), anchor="w")
 
-        mw_source = tk.StringVar(value=cfg.get("mwave_source", "stim_type"))
-        mw_manual_val = tk.DoubleVar(value=cfg.get("mwave_manual_value", 0.0))
-        mw_ext_path   = tk.StringVar(value=cfg.get("mwave_ext_path", ""))
-        mw_ext_stim   = tk.StringVar(value=cfg.get("mwave_ext_stim", ""))
-
-        tk.Radiobutton(sec2, text="Use stim type assigned above",
-                       variable=mw_source, value="stim_type",
-                       command=lambda: _refresh_mwave()).grid(
-                       row=0, column=0, sticky="w", columnspan=2)
-        tk.Radiobutton(sec2, text="Manual Mmax value (mV):",
-                       variable=mw_source, value="manual",
-                       command=lambda: _refresh_mwave()).grid(
-                       row=1, column=0, sticky="w")
-        mw_manual_entry = tk.Entry(sec2, textvariable=mw_manual_val, width=10)
-        mw_manual_entry.grid(row=1, column=1, sticky="w", padx=4)
-        tk.Radiobutton(sec2, text="Separate file:",
-                       variable=mw_source, value="ext_file",
-                       command=lambda: _refresh_mwave()).grid(
-                       row=2, column=0, sticky="w")
-        mw_ext_entry = tk.Entry(sec2, textvariable=mw_ext_path, width=34)
-        mw_ext_entry.grid(row=2, column=1, sticky="w", padx=4)
-        tk.Button(sec2, text="Browse", command=lambda: _browse_ext_mwave())            .grid(row=2, column=2, sticky="w")
-
-        # Ext file stim type selector
-        tk.Label(sec2, text="Stim type in file:").grid(row=3, column=0, sticky="e", padx=4)
-        mw_ext_stim_cb = ttk.Combobox(sec2, textvariable=mw_ext_stim,
-                                       state="readonly", width=12)
-        mw_ext_stim_cb.grid(row=3, column=1, sticky="w", padx=4)
-
-        # Trial PTP table for M-wave selection
-        mw_tbl_frame = tk.LabelFrame(sec2, text="Select plateau trials for Mmax mean", padx=4, pady=4)
-        mw_tbl_frame.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(6,0))
-
-        mw_tree = ttk.Treeview(mw_tbl_frame, columns=["trial","ptp","include"],
-                                show="headings", height=5)
-        mw_tree.heading("trial", text="Trial"); mw_tree.column("trial", width=50)
-        mw_tree.heading("ptp",   text="PTP (mV)"); mw_tree.column("ptp", width=80)
-        mw_tree.heading("include", text="Include"); mw_tree.column("include", width=60)
-        mw_tree.pack(fill="x")
-        mw_tree.bind("<Double-1>", lambda e: _toggle_mwave_trial(e))
-
-        mw_mean_lbl = tk.Label(sec2, text="Mmax mean: —")
-        mw_mean_lbl.grid(row=5, column=0, columnspan=3, sticky="w", pady=(4,0))
-
-        # Storage for mwave trial include state
-        _mw_trials = {}   # {trial_idx: {"ptp": float, "include": bool}}
-
-        def _load_mwave_trials(source_df, stim):
-            _mw_trials.clear()
-            for item in mw_tree.get_children():
-                mw_tree.delete(item)
-            if stim not in source_df["StimType"].values:
-                mw_mean_lbl.config(text="Mmax mean: — (stim type not found)")
-                return
-            trials = source_df[source_df["StimType"] == stim].reset_index(drop=True)
-            prev = cfg.get("mwave_trials", {})
-            for i, row_t in trials.iterrows():
-                ptp = row_t.get("PeakToPeak(mV)", float("nan"))
-                inc = prev.get(str(i), {}).get("include", True)
-                _mw_trials[i] = {"ptp": ptp, "include": inc}
-                mw_tree.insert("", "end", iid=str(i),
-                               values=[i+1, f"{ptp:.4f}", "☑" if inc else "☐"])
-            _update_mmax()
-
-        def _toggle_mwave_trial(event):
-            row_id = mw_tree.identify_row(event.y)
-            if row_id:
-                i = int(row_id)
-                _mw_trials[i]["include"] = not _mw_trials[i]["include"]
-                inc = _mw_trials[i]["include"]
-                ptp = _mw_trials[i]["ptp"]
-                mw_tree.item(row_id, values=[i+1, f"{ptp:.4f}", "☑" if inc else "☐"])
-                _update_mmax()
-
-        def _update_mmax():
-            vals = [v["ptp"] for v in _mw_trials.values()
-                    if v["include"] and not np.isnan(v["ptp"])]
-            if vals:
-                mean_v = float(np.mean(vals))
-                mw_mean_lbl.config(text=f"Mmax mean: {mean_v:.4f} mV  ({len(vals)} trials)")
-            else:
-                mw_mean_lbl.config(text="Mmax mean: — (no trials selected)")
-
-        def _browse_ext_mwave():
-            p = filedialog.askopenfilename(
-                title="Select external M-wave trials_manual.csv",
-                filetypes=[("CSV", "*.csv")])
-            if p:
-                mw_ext_path.set(p)
-                try:
-                    ext_df = pd.read_csv(p)
-                    stims = sorted(ext_df["StimType"].unique())                             if "StimType" in ext_df.columns else []
-                    mw_ext_stim_cb["values"] = stims
-                    if stims:
-                        mw_ext_stim.set(stims[0])
-                        _load_mwave_trials(ext_df, stims[0])
-                except Exception as ex:
-                    messagebox.showerror("Error", str(ex), parent=win)
-
-        def _refresh_mwave(*_):
-            src = mw_source.get()
-            mw_manual_entry.config(state="normal" if src == "manual" else "disabled")
-            mw_ext_entry.config(   state="normal" if src == "ext_file" else "disabled")
-            mw_ext_stim_cb.config( state="readonly" if src == "ext_file" else "disabled")
-            if src == "stim_type":
-                # Find the stim assigned M-wave role
-                mw_st = next((s for s,v in role_vars.items()
-                              if v.get() == "M-wave"), None)
-                if mw_st:
-                    _load_mwave_trials(df, mw_st)
-                else:
-                    for item in mw_tree.get_children():
-                        mw_tree.delete(item)
-                    mw_mean_lbl.config(text="Mmax mean: — (assign M-wave role above)")
-            elif src == "ext_file" and mw_ext_path.get() and os.path.isfile(mw_ext_path.get()):
-                try:
-                    ext_df = pd.read_csv(mw_ext_path.get())
-                    stims = sorted(ext_df["StimType"].unique())                             if "StimType" in ext_df.columns else []
-                    mw_ext_stim_cb["values"] = stims
-                    st = mw_ext_stim.get() or (stims[0] if stims else "")
-                    mw_ext_stim.set(st)
-                    _load_mwave_trials(ext_df, st)
-                except Exception:
-                    pass
-
-        # Bind role changes to refresh m-wave panel
-        for v in role_vars.values():
-            v.trace_add("write", _refresh_mwave)
-        mw_ext_stim.trace_add("write",
-            lambda *_: _refresh_mwave() if mw_source.get()=="ext_file" else None)
-
-        # ════════════════════════ Section 3: Paired pulse ═════════════════════
-        sec3 = tk.LabelFrame(win, text="Section 3 — Paired pulse pairings", padx=8, pady=6)
-        sec3.pack(fill="x", padx=10, pady=4)
-
-        tk.Label(sec3, text="Conditioned stim", width=18, anchor="w",
-                 font=("TkDefaultFont",9,"bold")).grid(row=0, column=0, sticky="w")
-        tk.Label(sec3, text="Reference stim", width=18, anchor="w",
-                 font=("TkDefaultFont",9,"bold")).grid(row=0, column=1, sticky="w")
-        tk.Label(sec3, text="Ratio preview", width=18, anchor="w",
-                 font=("TkDefaultFont",9,"bold")).grid(row=0, column=2, sticky="w")
-
-        pair_ref_vars = {}   # {cond_stim: StringVar for ref}
-        pair_ratio_lbls = {} # {cond_stim: Label}
-        pairs_frame = tk.Frame(sec3)
-        pairs_frame.grid(row=1, column=0, columnspan=3, sticky="ew")
-
-        def _rebuild_pairs(*_):
-            """Refresh Section 3 based on which stims are assigned Conditioned."""
-            for w in pairs_frame.winfo_children():
-                w.destroy()
-            pair_ref_vars.clear()
-            pair_ratio_lbls.clear()
-            cond_stims = [s for s,v in role_vars.items() if v.get()=="Conditioned"]
-            ref_stims  = [s for s,v in role_vars.items()
-                          if v.get()=="Reference (single pulse)"]
-            if not cond_stims:
-                tk.Label(pairs_frame, text="No conditioned stim types assigned yet.",
-                         fg="grey").grid(row=0, column=0, columnspan=3, sticky="w")
-                return
-            ref_choices = ref_stims or stim_types
-            for r, cs in enumerate(cond_stims):
-                tk.Label(pairs_frame, text=cs, width=18, anchor="w")                    .grid(row=r, column=0, sticky="w")
-                prev_ref = cfg.get(f"pair_ref_{cs}", ref_choices[0] if ref_choices else "")
-                v_ref = tk.StringVar(value=prev_ref)
-                pair_ref_vars[cs] = v_ref
-                ref_cb = ttk.Combobox(pairs_frame, textvariable=v_ref,
-                                      values=ref_choices, state="readonly", width=16)
-                ref_cb.grid(row=r, column=1, sticky="w", padx=4)
-                lbl = tk.Label(pairs_frame, text="—", width=20, anchor="w")
-                lbl.grid(row=r, column=2, sticky="w")
-                pair_ratio_lbls[cs] = lbl
-                v_ref.trace_add("write", lambda *_, c=cs: _update_ratio(c))
-                _update_ratio(cs)
-
-        def _update_ratio(cond_st):
-            lbl = pair_ratio_lbls.get(cond_st)
-            if lbl is None:
-                return
-            ref_st = pair_ref_vars[cond_st].get()
-            try:
-                cond_mean = df[df["StimType"]==cond_st]["PeakToPeak(mV)"].mean()
-                ref_mean  = df[df["StimType"]==ref_st ]["PeakToPeak(mV)"].mean()
-                ratio = (cond_mean / ref_mean) * 100 if ref_mean else float("nan")
-                lbl.config(text=f"{ratio:.1f}% (mean)")
-            except Exception:
-                lbl.config(text="—")
-
-        for v in role_vars.values():
-            v.trace_add("write", _rebuild_pairs)
-        _rebuild_pairs()
-
-        # ════════════════════════ Save / Cancel ═══════════════════════════════
         btn_row = tk.Frame(win)
         btn_row.pack(pady=10)
 
         def _save_config():
             new_cfg = {"_done": True}
-            # Roles
             for st, v in role_vars.items():
                 new_cfg[f"role_{st}"] = v.get()
-            # M-wave
-            new_cfg["mwave_source"] = mw_source.get()
-            new_cfg["mwave_manual_value"] = mw_manual_val.get()
-            new_cfg["mwave_ext_path"]     = mw_ext_path.get()
-            new_cfg["mwave_ext_stim"]     = mw_ext_stim.get()
-            new_cfg["mwave_trials"] = {
-                str(i): {"ptp": d["ptp"], "include": d["include"]}
-                for i, d in _mw_trials.items()
-            }
-            # Compute Mmax
-            if mw_source.get() == "manual":
-                new_cfg["mmax_ptp"] = mw_manual_val.get()
-            else:
-                included = [d["ptp"] for d in _mw_trials.values()
-                            if d["include"] and not np.isnan(d["ptp"])]
-                new_cfg["mmax_ptp"] = float(np.mean(included)) if included else None
-            # Paired pulse refs
-            for cs, v_ref in pair_ref_vars.items():
-                new_cfg[f"pair_ref_{cs}"] = v_ref.get()
-            # Store
             self._s2_rows[row_idx]["_config"] = new_cfg
             self._s2_refresh_tree()
             win.destroy()
@@ -605,9 +399,6 @@ class Stage2Mixin:
                   command=_save_config).pack(side="left", padx=6)
         tk.Button(btn_row, text="Cancel", width=10,
                   command=win.destroy).pack(side="left", padx=6)
-
-        # Initial state
-        _refresh_mwave()
         win.grab_set()
 
     def _s2_edit_cell(self, row_idx, col_name, gc_meta, x_root, y_root):
@@ -861,6 +652,131 @@ class Stage2Mixin:
                 gc["type"] = new_type
         self._s2_rebuild_tree_columns()
         self._s2_refresh_tree()
+
+    def _s2_run(self):
+        """
+        Merge all included sessions' trial-level CSVs into a single
+        group-level LME-ready file, appending study design columns.
+
+        Output: derivatives/group_level_LME_ready.csv
+        """
+        # ── Validate ──────────────────────────────────────────────────────────
+        included = [r for r in self._s2_rows if r.get("include", True)]
+        if not included:
+            messagebox.showwarning("Nothing included",
+                "No sessions are included. Use the checkboxes to include sessions.",
+                parent=self.root)
+            return
+
+        root_dir  = self._s2_deriv_var.get().strip()
+        deriv_dir = os.path.join(root_dir, "derivatives")
+        if not os.path.isdir(deriv_dir):
+            deriv_dir = root_dir
+        if not os.path.isdir(deriv_dir):
+            messagebox.showerror("No folder",
+                "Could not locate the derivatives folder.", parent=self.root)
+            return
+
+        # ── Identify design columns ───────────────────────────────────────────
+        group_cols  = [gc["name"] for gc in self._s2_group_cols]
+
+        # ── Load and annotate each session ────────────────────────────────────
+        all_frames = []
+        skipped    = []
+
+        for row in included:
+            csv_path = row.get("_trials_csv", "")
+            if not csv_path or not os.path.isfile(csv_path):
+                skipped.append(row.get("participant_id", "?") + "/" +
+                               row.get("session", "?"))
+                continue
+
+            try:
+                df = pd.read_csv(csv_path)
+            except Exception as e:
+                skipped.append(f"{row.get('participant_id','?')}: {e}")
+                continue
+
+            if df.empty:
+                skipped.append(row.get("participant_id", "?") + " (empty CSV)")
+                continue
+
+            # ── Append Stim_Role from Configure dialog ─────────────────────────
+            cfg = row.get("_config", {})
+            df["Stim_Role"] = df["StimType"].map(
+                lambda st: cfg.get(f"role_{st}", "None") if cfg else "None")
+
+            # ── Prepend design columns in correct order ────────────────────────
+            # Target order: File, participant_id, [group cols], session,
+            #               task, timepoint, StimType, Stim_Label, Segment ...
+            # Insert right-to-left so index 0 ends up as File
+            for gc_name in reversed(group_cols):
+                df.insert(1, gc_name, row.get(gc_name, ""))
+            df.insert(1, "participant_id", row.get("participant_id", ""))
+
+            # Move session/task/timepoint to just after participant/group cols
+            # They already exist in the CSV from Stage 1 if BIDS was set,
+            # otherwise add them from the study design
+            n_design = 2 + len(group_cols)  # File + participant_id + group cols
+            for i, col in enumerate(["session", "task", "timepoint"]):
+                if col in df.columns:
+                    # Move existing column to correct position
+                    s = df.pop(col)
+                    df.insert(n_design + i, col, row.get(col, "") or s)
+                else:
+                    df.insert(n_design + i, col, row.get(col, ""))
+
+            # ── Reorder columns ────────────────────────────────────────────────
+            # Final order: File, participant_id, [group cols], session, task,
+            # timepoint, Limb, StimType, Stim_Label, Segment, [metrics...]
+            if "Limb" in df.columns:
+                limb = df.pop("Limb")
+                # Insert after timepoint (n_design + 3 cols: session/task/timepoint)
+                df.insert(n_design + 3, "Limb", limb)
+
+            all_frames.append(df)
+
+        # ── Bail if nothing loaded ─────────────────────────────────────────────
+        if not all_frames:
+            messagebox.showerror("No data",
+                "Could not load any session CSVs. Check that Stage 1 has been "
+                "run and the derivatives folder is correct.", parent=self.root)
+            return
+
+        # ── Stack all sessions ─────────────────────────────────────────────────
+        # Use outer join so sessions with different columns don't crash —
+        # missing columns are filled with NaN.
+        merged = pd.concat(all_frames, axis=0, ignore_index=True, sort=False)
+
+        # Sort: participant → session → stim type → segment
+        sort_cols = [c for c in ["participant_id", "session", "StimType", "Segment"]
+                     if c in merged.columns]
+        if sort_cols:
+            merged = merged.sort_values(sort_cols).reset_index(drop=True)
+
+        # ── Write output ──────────────────────────────────────────────────────
+        out_path = os.path.join(deriv_dir, "group_level_LME_ready.csv")
+        try:
+            merged.to_csv(out_path, index=False)
+        except Exception as e:
+            messagebox.showerror("Write error", str(e), parent=self.root)
+            return
+
+        # ── Report ────────────────────────────────────────────────────────────
+        n_sessions = len(all_frames)
+        n_trials   = len(merged)
+        n_cols     = len(merged.columns)
+        msg = (f"Group analysis complete.\n\n"
+               f"Sessions merged:  {n_sessions}\n"
+               f"Total trials:     {n_trials}\n"
+               f"Columns:          {n_cols}\n\n"
+               f"Saved to:\n{out_path}")
+        if skipped:
+            msg += f"\n\nSkipped ({len(skipped)}):\n" + "\n".join(skipped)
+        messagebox.showinfo("Done", msg, parent=self.root)
+        self._s2_status.config(
+            text=f"✔  Exported {n_trials} trials from {n_sessions} sessions → "
+                 f"{os.path.basename(out_path)}")
 
     # ── Save / load study design ──────────────────────────────────────────────
 

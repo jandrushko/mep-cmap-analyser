@@ -69,8 +69,11 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self.crop_end          = None
         self.crop_ranges       = None
         self.gap_ms_map        = {}
-        self.reference_map         = {}
-        self.latency_map           = {}  # {stim: (min_ms, max_ms)}
+        self.reference_map     = {}
+        self._reference_display = {}
+        self.latency_map        = {}   # {stim: (min_ms, max_ms)}
+        self.latency_stim_map   = {}   # {stim: stim_type string e.g. "TMS"}
+        self.latency_muscle_map = {}   # {stim: muscle string e.g. "Hand / FDI"}
         self.mmax_file             = tk.StringVar()
         self.plateau_tolerance     = tk.DoubleVar(value=10.0)
         self.extra_channel_indices = []    # additional channels for inspector
@@ -320,7 +323,8 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self.notebook.configure(style="Centered.TNotebook")
 
         # ── Derivatives status bar ─────────────────────────────────────────────
-        # Always visible. Green when set, red/amber when not — clickable to browse.
+        # Persistent strip below tabs: red when unset, green when set.
+        # Clicking it opens the folder browser directly.
         self._deriv_status_bar = tk.Label(
             self.root,
             text="⚠  Derivatives folder not set — File → Set Derivatives Folder",
@@ -390,7 +394,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
 
         # ── Tab 2: Stage 2 (group analysis) ──────────────────────────────────
         self.tab2_frame = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab2_frame, text="Stage 2 – Group Analysis")
+        self.notebook.add(self.tab2_frame, text="Stage 2 – Group Analysis LME Setup")
         # Stage 2 content is built lazily on first tab switch
         self._stage2_built = False
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
@@ -412,7 +416,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         """Called by the green *Run Analysis* button (GUI thread)."""
 
 
-        # Guard: derivatives folder must be set
+        # Guard: derivatives folder must be set before running
         if not self.derivatives_path.get():
             messagebox.showwarning(
                 "Derivatives folder not set",
@@ -664,6 +668,14 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                 onset_bootstrap_crit = params["onset_bootstrap_crit"],
                 onset_bootstrap_n    = params["onset_bootstrap_n"],
                 latency_map          = params.get("latency_map", {}),
+                csp_types            = params.get("csp_types", set()),
+                csp_min_silence_ms   = params.get("csp_min_silence_ms", 25.0),
+                csp_min_return_ms    = params.get("csp_min_return_ms", 40.0),
+                csp_criterion        = params.get("csp_criterion", 1.96),
+                csp_significance     = params.get("csp_significance", 0.99),
+                csp_n_boot           = params.get("csp_n_boot", 1000),
+                csp_search_end_ms    = params.get("csp_search_end_ms", 400.0),
+                csp_max_mep_offset_ms= params.get("csp_max_mep_offset_ms", 100.0),
 
                 enable_inspector     = params["enable_inspector"],
                 channel_idx          = params["channel_idx"],
@@ -784,10 +796,6 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self.onset_method             = tk.StringVar(value="bootstrap")
         self.onset_bootstrap_crit     = tk.DoubleVar(value=1.96)
         self.onset_bootstrap_n        = tk.IntVar(value=500)
-        # Per-stim latency profile dicts — keyed by stim letter, populated in _build_labels_tab
-        # {stim: DoubleVar} for min/max latency bounds
-        self._lat_min_vars   = {}  # {stim: DoubleVar}
-        self._lat_max_vars   = {}  # {stim: DoubleVar}
         self.pre_time = tk.IntVar(value=20)
         self.post_time = tk.IntVar(value=400)
         self.ptp_start = tk.IntVar(value=10)
@@ -804,7 +812,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self.csp_criterion          = tk.DoubleVar(value=1.96)
         self.csp_significance       = tk.DoubleVar(value=0.99)
         self.csp_n_boot             = tk.IntVar(value=1000)
-        self.csp_max_mep_offset_ms  = tk.IntVar(value=40)  # cSP start must be within this many ms of 2nd MEP peak
+        self.csp_max_mep_offset_ms  = tk.IntVar(value=100)  # cSP start must be within this many ms of 2nd MEP peak
 
         # ─── Log + Progress ─────────────────────────────────────────────────
         self.log_box = None
@@ -933,7 +941,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             pf_row,
             text="Preview Filter",
             command=self.preview_filter_window
-        ).pack(side='left', padx=6)
+        ).pack()  # pack centers by default
 
         # initial states
         self.hp_order_entry.config(state='disabled')
@@ -1202,7 +1210,6 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                 "onset_method":          self.onset_method.get(),
                 "onset_bootstrap_crit":  self.onset_bootstrap_crit.get(),
                 "onset_bootstrap_n":     self.onset_bootstrap_n.get(),
-                "latency_map":           {k: list(v) for k, v in self.latency_map.items()},
                 "enable_inspector":      self.enable_inspector.get(),
                 "csp_search_start_ms":   self.csp_search_start_ms.get(),
                 "csp_search_end_ms":     self.csp_search_end_ms.get(),
@@ -1230,13 +1237,12 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                 "plot_included":    self.plot_included,
                 "gap_ms_map":       self.gap_ms_map,
                 "reference_map":    self.reference_map,
+                "reference_display": getattr(self, '_reference_display', {}),
                 "latency_map":      {k: list(v) for k, v in self.latency_map.items()},
+                "latency_stim_map":   dict(self.latency_stim_map),
+                "latency_muscle_map": dict(self.latency_muscle_map),
                 "mmax_file":        self.mmax_file.get(),
                 "plateau_tolerance":self.plateau_tolerance.get(),
-                "mmax_per_stim":    {k: v.get() for k, v in self._lab_entry_mmax.items()}
-                                    if hasattr(self, '_lab_entry_mmax') else {},
-                "plateau_per_stim": {k: v.get() for k, v in self._lab_entry_plateau.items()}
-                                    if hasattr(self, '_lab_entry_plateau') else {},
                 "extra_channel_indices": self.extra_channel_indices,
                 "wide_window_s":    self.wide_window_s.get(),
                 "derivatives_path": (self.derivatives_path.get()
@@ -1307,14 +1313,6 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                  "crop_ranges":self.crop_ranges,"crop_start":self.crop_start,"crop_end":self.crop_end,
                  "label_map":self.label_map,"color_map":self.color_map,
                  "plot_included":self.plot_included,"gap_ms_map":self.gap_ms_map,
-                 "reference_map":self.reference_map,
-                 "latency_map":{k: list(v) for k, v in self.latency_map.items()},
-                 "mmax_file":self.mmax_file.get(),
-                 "plateau_tolerance":self.plateau_tolerance.get(),
-                 "mmax_per_stim":{k: v.get() for k, v in self._lab_entry_mmax.items()}
-                                  if hasattr(self, '_lab_entry_mmax') else {},
-                 "plateau_per_stim":{k: v.get() for k, v in self._lab_entry_plateau.items()}
-                                     if hasattr(self, '_lab_entry_plateau') else {},
                  "derivatives_path":self.derivatives_path.get() if hasattr(self,"derivatives_path") else "",
                  "study_metadata":sm,"settings":s,"segments_metadata":meta_s}
         try:
@@ -1341,10 +1339,11 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self.label_map=sess.get("label_map",{}); self.color_map=sess.get("color_map",{})
         self.plot_included=sess.get("plot_included",{}); self.gap_ms_map=sess.get("gap_ms_map",{})
         self.reference_map=sess.get("reference_map",{})
+        self._reference_display=sess.get("reference_display",{})
         _lm = sess.get("latency_map", {})
         self.latency_map = {k: tuple(v) for k, v in _lm.items()} if _lm else {}
-        if sess.get("mmax_file"): self.mmax_file.set(sess["mmax_file"])
-        if sess.get("plateau_tolerance"): self.plateau_tolerance.set(sess["plateau_tolerance"])
+        self.latency_stim_map   = sess.get("latency_stim_map", {})
+        self.latency_muscle_map = sess.get("latency_muscle_map", {})
         if hasattr(self,"derivatives_path"):
             dp=sess.get("derivatives_path","")
             if dp: self.derivatives_path.set(dp)
@@ -1375,8 +1374,6 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self.onset_method.set(sess.get("settings",{}).get("onset_method","bootstrap"))
         self.onset_bootstrap_crit.set(_f("onset_bootstrap_crit",1.96))
         self.onset_bootstrap_n.set(int(_f("onset_bootstrap_n",500)))
-        _lm = s.get("latency_map", {})
-        self.latency_map = {k: tuple(v) for k, v in _lm.items()} if _lm else {}
         self.enable_inspector.set(_b("enable_inspector",True))
         self.csp_search_start_ms.set(_i("csp_search_start_ms",40))
         self.csp_search_end_ms.set(_i("csp_search_end_ms",400))
@@ -1458,7 +1455,34 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         canvas.get_tk_widget().pack(fill="both", expand=False)
 
         # ── Plot the full trace + stim ticks ──────────────────────────────────────
-        ax.plot(t, emg, lw=0.4, color="0.3")
+        # Min-max envelope downsampling: for each screen pixel-wide chunk, keep
+        # both the local min and max. This preserves the amplitude envelope of
+        # all events (including small-amplitude ones) at any zoom level, while
+        # keeping the point count low enough for fast blit-based interaction.
+        _max_pts = 4000  # ~2 points per pixel at 1920px width
+        if len(t) > _max_pts:
+            _chunk = len(t) // (_max_pts // 2)
+            _n_chunks = len(t) // _chunk
+            _t_ds, _emg_ds = [], []
+            for _i in range(_n_chunks):
+                _s = _i * _chunk
+                _e = _s + _chunk
+                _chunk_emg = emg[_s:_e]
+                _chunk_t   = t[_s:_e]
+                _imin = int(np.argmin(_chunk_emg))
+                _imax = int(np.argmax(_chunk_emg))
+                # Always put min before max in time order
+                if _imin <= _imax:
+                    _t_ds.extend([_chunk_t[_imin], _chunk_t[_imax]])
+                    _emg_ds.extend([_chunk_emg[_imin], _chunk_emg[_imax]])
+                else:
+                    _t_ds.extend([_chunk_t[_imax], _chunk_t[_imin]])
+                    _emg_ds.extend([_chunk_emg[_imax], _chunk_emg[_imin]])
+            t_plot   = np.array(_t_ds)
+            emg_plot = np.array(_emg_ds)
+        else:
+            t_plot, emg_plot = t, emg
+        ax.plot(t_plot, emg_plot, lw=0.4, color="0.3")
 
         palette = plt.get_cmap("tab10").colors
         col_for = {k: palette[i % len(palette)]
@@ -1506,7 +1530,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
 
         span_sel = SpanSelector(
             ax, _on_span, "horizontal",
-            useblit=False,
+            useblit=True,
             props=dict(alpha=.30, facecolor="tab:blue"),
             interactive=False)
 
@@ -1555,29 +1579,48 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         return bool(spans)
 
     def _reset_state_for_new_file(self):
-        """Forget everything that belongs to the *previous* file/run."""
-        # ── 1. Remove attributes that cache raw data or preview info ───────────
+        """
+        Forget everything that belongs to the *previous* file/run.
+
+        Two categories of state exist:
+        ┌─────────────────────────────────────────────────────────────────┐
+        │ FILE-LEVEL  (reset here)    │ SESSION-LEVEL (preserved)         │
+        ├─────────────────────────────────────────────────────────────────┤
+        │ segments_metadata           │ label_map / color_map             │
+        │  (all marker positions)     │ gap_ms_map / reference_map        │
+        │ _last_outlier_result        │ latency_map                       │
+        │ crop_ranges/start/end       │ csp_types                         │
+        │ raw_emg cache               │ filter settings                   │
+        │ channel selection           │ derivatives_path                  │
+        │ _labels_tab_confirmed       │ mmax_file / plateau_tolerance     │
+        │                             │ outlier settings                  │
+        └─────────────────────────────────────────────────────────────────┘
+        """
+        # ── 1. Clear file-level raw data caches ────────────────────────────────
         for attr in ('raw_emg', 'prev_fs', 'last_times', 'last_stim'):
             if hasattr(self, attr):
                 delattr(self, attr)
 
-        # ── 2. Clear user-editable maps & selections ───────────────────────────
-        self.label_map.clear()
-        self.color_map.clear()
-        self.plot_included.clear()
-        self.reference_map.clear()
-        self.mmax_file.set("")
-        self.extra_channel_indices = []
-        self.csp_types = set()   # event types where CSP detection is ON
-        self.marker_choice.set('')          # force new marker scan
-        self.crop_start = None
-        self.crop_end = None
+        # ── 2. Clear ALL marker metadata — this is the key fix ─────────────────
+        # segments_metadata holds PTP min/max, onset, cSP, AUC, notes and
+        # exclude flags for every segment. These are strictly file-specific
+        # and must never carry over to a new file.
+        self.segments_metadata = {}
+        self._last_outlier_result = None
 
-        # ── 3. Reset GUI widgets ───────────────────────────────────────────────
+        # ── 3. Clear file-specific selections ──────────────────────────────────
+        self.marker_choice.set('')   # force new marker scan on next file
+        self.crop_start   = None
+        self.crop_end     = None
+        self.crop_ranges  = None
+        self.extra_channel_indices = []
+
+        # ── 4. Reset GUI widgets ───────────────────────────────────────────────
         self.progress.set(0)
         self.log_box.delete('1.0', tk.END)
+        # Tab 1b must be re-confirmed for each new file (stim types may differ)
         self._labels_tab_confirmed = False
-        # Reset channel dropdown to blank state
+        # Reset channel dropdown — repopulated after file scan
         try:
             self.channel_dd["values"] = []
             self.channel_dd["state"]  = "disabled"
@@ -1585,9 +1628,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         except Exception:
             pass
 
-        # ── 4. Close any still-open matplotlib figures (saves RAM) ─────────────
-        # Deferred via after() so Tk-embedded canvases are not destroyed
-        # mid-event, which causes Tcl_AsyncDelete crashes on Windows.
+        # ── 5. Close any still-open matplotlib figures (saves RAM) ─────────────
         def _deferred_close():
             import matplotlib.pyplot as _plt
             _plt.close('all')
@@ -1879,10 +1920,12 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
 
     def _update_deriv_status(self):
         """Update the derivatives status bar colour and text."""
-        path = self.derivatives_path.get() if hasattr(self, 'derivatives_path') else ""
+        try:
+            path = self.derivatives_path.get()
+        except Exception:
+            path = ""
         if path:
-            # Truncate long paths for display
-            display = path if len(path) <= 60 else "…" + path[-57:]
+            display = path if len(path) <= 70 else "…" + path[-67:]
             self._deriv_status_bar.config(
                 text=f"✔  Derivatives: {display}",
                 bg="#5cb85c", fg="white")
@@ -2125,8 +2168,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             fg="grey", justify="left", wraplength=900
         ).grid(row=0, column=0, columnspan=9, sticky="w", padx=10, pady=(10,6))
 
-        # ── column headers ────────────────────────────────────────────────────
-        # ── Latency lookup table (module-level constant stored here for reuse) ──
+        # ── Latency lookup table ──────────────────────────────────────────────
         LATENCY_PROFILES = {
             ("TMS", "Hand / FDI"):                    (18, 30),
             ("TMS", "Forearm (FCR / ECR)"):            (14, 28),
@@ -2148,6 +2190,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self._LATENCY_PROFILES = LATENCY_PROFILES
         self._MUSCLE_OPTIONS   = MUSCLE_OPTIONS
 
+        # ── column headers ────────────────────────────────────────────────────
         headers = ["Stim", "Label", "Colour", "In combined",
                    "Gap (ms)", "Detect CSP", "Normalise to (internal)",
                    "Normalise to (external)", "Plateau (%)",
@@ -2158,16 +2201,18 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                 .grid(row=1, column=c, padx=6, pady=(0,4), sticky="w")
 
         # ── per-stim rows ─────────────────────────────────────────────────────
-        # Dicts keyed by stim letter; stored on self so _confirm_labels_tab
-        # can read them without closures going stale.
         self._lab_entry_label   = {}
         self._lab_entry_colour  = {}
         self._lab_entry_include = {}
         self._lab_entry_gap     = {}
         self._lab_entry_csp     = {}
-        self._lab_entry_ref     = {}   # (StringVar, Combobox)
-        self._lab_entry_mmax    = {}   # StringVar per stim
-        self._lab_entry_plateau = {}   # DoubleVar per stim
+        self._lab_entry_ref     = {}
+        self._lab_entry_mmax    = {}
+        self._lab_entry_plateau = {}
+        self._lat_min_vars      = {}
+        self._lat_max_vars      = {}
+        self._lat_stype_vars    = {}   # {stim: StringVar for stim type}
+        self._lat_muscle_vars   = {}   # {stim: StringVar for muscle group}
 
         for r, stim in enumerate(sorted(stim_types), start=2):
             tk.Label(inner, text=f"{stim}:")\
@@ -2209,9 +2254,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                 .grid(row=r, column=5, padx=10, sticky="w")
             self._lab_entry_csp[stim] = v_csp
 
-            # Internal normalisation reference (combobox, populated below)
-            v_ref = tk.StringVar(
-                value=self.reference_map.get(stim, "None"))
+            # Internal normalisation reference — restore full display string if saved
+            _ref_display = getattr(self, '_reference_display', {}).get(stim, "None")
+            v_ref = tk.StringVar(value=_ref_display)
             ref_cb = ttk.Combobox(inner, textvariable=v_ref,
                                    width=26, state="readonly")
             ref_cb.grid(row=r, column=6, padx=6, sticky="w")
@@ -2235,37 +2280,46 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                 .grid(row=r, column=8, padx=4, sticky="w")
             self._lab_entry_plateau[stim] = v_plat
 
-            # Stim type dropdown
-            _prev_stype = self._lat_min_vars.get(stim)  # preserve if rebuilding
-            v_stype = tk.StringVar(value="TMS")
+            # Stim type dropdown — restore from saved map if available
+            _prev_stype  = self.latency_stim_map.get(stim, "TMS")
+            _prev_muscle = self.latency_muscle_map.get(stim, "Hand / FDI")
+            _prev_lat    = self.latency_map.get(stim)  # (min_ms, max_ms) or None
+            v_stype = tk.StringVar(value=_prev_stype)
             stype_cb = ttk.Combobox(inner, textvariable=v_stype,
                                     values=list(MUSCLE_OPTIONS.keys()),
                                     state="readonly", width=14)
-            stype_cb.grid(row=r, column=9, padx=4, sticky='w')
+            stype_cb.grid(row=r, column=9, padx=4, sticky="w")
 
-            # Muscle group dropdown
-            v_muscle = tk.StringVar(value="Hand / FDI")
+            # Muscle group — restore saved value, ensuring it's valid for stim type
+            _muscle_opts = MUSCLE_OPTIONS.get(_prev_stype, ["Hand / FDI"])
+            if _prev_muscle not in _muscle_opts:
+                _prev_muscle = _muscle_opts[0]
+            v_muscle = tk.StringVar(value=_prev_muscle)
             muscle_cb = ttk.Combobox(inner, textvariable=v_muscle,
-                                     values=MUSCLE_OPTIONS["TMS"],
+                                     values=_muscle_opts,
                                      state="readonly", width=22)
-            muscle_cb.grid(row=r, column=10, padx=4, sticky='w')
+            muscle_cb.grid(row=r, column=10, padx=4, sticky="w")
 
-            # Min / max latency entries
-            v_min = tk.DoubleVar(value=18.0)
-            v_max = tk.DoubleVar(value=30.0)
-            tk.Entry(inner, textvariable=v_min, width=5).grid(
-                row=r, column=11, padx=4, sticky='w')
-            tk.Entry(inner, textvariable=v_max, width=5).grid(
-                row=r, column=12, padx=4, sticky='w')
+            self._lat_stype_vars[stim]  = v_stype
+            self._lat_muscle_vars[stim] = v_muscle
+
+            # Pre-fill min/max from saved latency_map if available
+            _def_min, _def_max = _prev_lat if _prev_lat else (18.0, 30.0)
+            v_min = tk.DoubleVar(value=_def_min)
+            v_max = tk.DoubleVar(value=_def_max)
+            tk.Entry(inner, textvariable=v_min, width=5)\
+                .grid(row=r, column=11, padx=4, sticky="w")
+            tk.Entry(inner, textvariable=v_max, width=5)\
+                .grid(row=r, column=12, padx=4, sticky="w")
 
             self._lat_min_vars[stim] = v_min
             self._lat_max_vars[stim] = v_max
 
-            # Wire stim type → muscle options + auto-fill latency
-            def _make_stim_callbacks(vs, vm, vmin, vmax):
+            # Wire stim type → muscle options → auto-fill latency
+            def _make_lat_callbacks(vs, vm, vmin, vmax, mcb, has_saved):
                 def _on_stype(*_):
                     opts = MUSCLE_OPTIONS.get(vs.get(), ["Custom"])
-                    muscle_cb["values"] = opts
+                    mcb["values"] = opts
                     if vm.get() not in opts:
                         vm.set(opts[0])
                     _on_muscle()
@@ -2276,8 +2330,10 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                         vmax.set(profile[1])
                 vs.trace_add("write", _on_stype)
                 vm.trace_add("write", _on_muscle)
-                _on_muscle()  # set initial values
-            _make_stim_callbacks(v_stype, v_muscle, v_min, v_max)
+                if not has_saved:
+                    _on_muscle()  # set defaults only if no saved value
+            _make_lat_callbacks(v_stype, v_muscle, v_min, v_max, muscle_cb,
+                                has_saved=bool(_prev_lat))
 
         # ── populate reference dropdowns ──────────────────────────────────────
         def _build_ref_options():
@@ -2317,7 +2373,8 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self._labels_tab_confirmed = False
         self._confirm_btn_var.set("⚠  Setup not confirmed — click to confirm")
 
-        # Switch to Tab 1b so user sees it immediately
+        # Switch to Tab 1b so user sees it immediately after file load
+        self.root.update_idletasks()
         self.notebook.select(self.tab1b_frame)
 
     def _browse_mmax_for_var(self, string_var):
@@ -2347,12 +2404,21 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             if sel and sel != "None" and sel.startswith("Normalise to "):
                 ref_letter = sel.split("to ")[1].strip().split(" ")[0]
                 self.reference_map[k] = ref_letter
+                # Also store the full display string so it can be restored on rebuild
+                self._reference_display = getattr(self, '_reference_display', {})
+                self._reference_display[k] = sel
 
-        # Per-stim latency bounds: {stim: (min_ms, max_ms)}
+        # Per-stim latency bounds + stim type/muscle selections
         self.latency_map = {
             k: (float(self._lat_min_vars[k].get()),
                 float(self._lat_max_vars[k].get()))
             for k in self._lat_min_vars
+        }
+        self.latency_stim_map = {
+            k: v.get() for k, v in self._lat_stype_vars.items()
+        }
+        self.latency_muscle_map = {
+            k: v.get() for k, v in self._lat_muscle_vars.items()
         }
 
         self._labels_tab_confirmed = True
