@@ -562,25 +562,39 @@ LAT_COLS = [
 ]
 
 
-def pipeline_write_outputs(summary_rows, with_out_rows,
-                            latency_manual,
-                            results_out, bids_prefix):
+def pipeline_write_outputs(latency_manual, results_out, bids_prefix):
     """Write all result CSVs to results_out directory.
 
     Outputs
     -------
-    <prefix>_ptp_results.csv               — clean-trial summary per stim type
-    <prefix>_ptp_results_with_outliers.csv — same including outlier trials
-    <prefix>_All_stims_trial_summary.csv   — trial-level LME-ready data
+    <prefix>_trials.csv               — trial-level data (all metrics, clean trials)
+    <prefix>_trials_with_outliers.csv — same including outlier trials
+    <prefix>_summary.csv              — mean ± SD per stim type (clean trials only)
+    <prefix>_summary_with_outliers.csv — same including outlier trials
     """
-    WITH_OUT_HDR = [
-        "File", "Stim_Type", "Stim_Label", "Num_Segments",
-        "Mean_PTP", "Std_PTP",
-        "Mean_Pre_Stim_RMS", "Std_Pre_Stim_RMS",
-        "Mean_Pre_Stim_PTP", "Std_Pre_Stim_PTP",
-        "Mean_latency", "Std_latency",
-        "Mean_cSP_Duration", "Std_cSP_Duration",
-        "Mean_AUC", "Std_AUC",
+    # Summary file headers — mirrors LAT_COLS with mean/SD for every metric,
+    # plus trial counts so both files report the same variables.
+    SUM_HDR = [
+        "File", "StimType", "Stim_Label",
+        "N_Total", "N_Included", "N_Outliers",
+        # Core MEP
+        "Mean_PTP(mV)", "SD_PTP(mV)",
+        "Mean_Latency(ms)", "SD_Latency(ms)",
+        # cSP
+        "Mean_cSP_Duration(ms)", "SD_cSP_Duration(ms)",
+        "Mean_cSP_MEP_Offset(ms)", "SD_cSP_MEP_Offset(ms)",
+        "Mean_cSP_EMG_Return(ms)", "SD_cSP_EMG_Return(ms)",
+        "Mean_MEP_cSP_Ratio", "SD_MEP_cSP_Ratio",
+        # AUC
+        "Mean_AUC(mV*s)", "SD_AUC(mV*s)",
+        # Baseline
+        "Mean_PreStimRMS", "SD_PreStimRMS",
+        "Mean_PreStimPTP", "SD_PreStimPTP",
+        # Normalisation
+        "Mean_Normalised_PTP", "SD_Normalised_PTP",
+        "Reference_Type", "Reference_Mean(mV)", "Reference_N",
+        # Detrended
+        "Mean_PTP_Detrended(mV)", "SD_PTP_Detrended(mV)",
     ]
 
     def _alpha_sort(df, col):
@@ -590,21 +604,79 @@ def pipeline_write_outputs(summary_rows, with_out_rows,
 
     def _p(name): return os.path.join(results_out, f"{bids_prefix}_{name}")
 
-    if summary_rows:
-        _alpha_sort(pd.DataFrame(summary_rows,    columns=WITH_OUT_HDR),
-                    "Stim_Type").to_csv(_p("ptp_results.csv"), index=False)
-    if with_out_rows:
-        _alpha_sort(pd.DataFrame(with_out_rows,   columns=WITH_OUT_HDR),
-                    "Stim_Type").to_csv(_p("ptp_results_with_outliers.csv"), index=False)
-    # Trial-level summary — manual metrics (with inspector overrides applied).
-    # The auto-metrics version is no longer written as a separate file since
-    # the manual file contains both auto and manual columns.
+    # ── Trial-level files ─────────────────────────────────────────────────────
     if latency_manual:
-        for row in latency_manual:
-            row += [""] * (len(LAT_COLS) - len(row))
-        _alpha_sort(pd.DataFrame(latency_manual,  columns=LAT_COLS),
-                    "StimType").sort_values(["StimType", "File", "Segment"]) \
-            .to_csv(_p("All_stims_trial_summary.csv"), index=False)
+        # Separate clean vs all-trials using Outlier_Decision column
+        df_all = _alpha_sort(
+            pd.DataFrame(latency_manual, columns=LAT_COLS),
+            "StimType").sort_values(["StimType", "File", "Segment"])
+        df_clean = df_all[df_all["Outlier_Decision"] != "Outlier"]
+        df_clean.to_csv(_p("trials.csv"),               index=False)
+        df_all.to_csv(  _p("trials_with_outliers.csv"), index=False)
+
+    # ── Summary files — build from trial-level data for consistency ───────────
+    # This ensures summary and trial files always report the same variables.
+    if latency_manual:
+        def _mn(vals):
+            try:
+                v = pd.to_numeric(vals, errors='coerce')
+                v = v.dropna().tolist() if hasattr(v, 'dropna') else [x for x in v if x == x]
+                return float(np.nanmean(v)) if v else np.nan
+            except Exception:
+                return np.nan
+
+        def _sd(vals):
+            try:
+                v = pd.to_numeric(vals, errors='coerce')
+                v = v.dropna().tolist() if hasattr(v, 'dropna') else [x for x in v if x == x]
+                return float(np.nanstd(v, ddof=1)) if len(v) > 1 else np.nan
+            except Exception:
+                return np.nan
+
+        def _col(grp, col):
+            """Extract a numeric column safely as a list of floats."""
+            return pd.to_numeric(grp[col], errors='coerce').dropna().tolist()
+
+        def _str_col(grp, col):
+            """Get first non-null string value from a column."""
+            vals = grp[col].dropna()
+            return vals.iloc[0] if len(vals) else ""
+
+        def _build_summary(df):
+            rows = []
+            for (fname, st, lbl), grp in df.groupby(
+                    ["File", "StimType", "Stim_Label"], sort=False):
+                clean = grp[grp["Outlier_Decision"] != "Outlier"]
+                n_tot = len(grp)
+                n_inc = len(clean)
+                n_out = n_tot - n_inc
+                rows.append([
+                    fname, st, lbl,
+                    n_tot, n_inc, n_out,
+                    _mn(_col(clean,"PTP(mV)")),         _sd(_col(clean,"PTP(mV)")),
+                    _mn(_col(clean,"Latency(ms)")),      _sd(_col(clean,"Latency(ms)")),
+                    _mn(_col(clean,"cSP_Duration(ms)")), _sd(_col(clean,"cSP_Duration(ms)")),
+                    _mn(_col(clean,"cSP_MEP_Offset(ms)")),_sd(_col(clean,"cSP_MEP_Offset(ms)")),
+                    _mn(_col(clean,"cSP_EMG_Return(ms)")),_sd(_col(clean,"cSP_EMG_Return(ms)")),
+                    _mn(_col(clean,"MEP_cSP_Ratio")),    _sd(_col(clean,"MEP_cSP_Ratio")),
+                    _mn(_col(clean,"AUC(mV*s)")),        _sd(_col(clean,"AUC(mV*s)")),
+                    _mn(_col(clean,"PreStimRMS")),       _sd(_col(clean,"PreStimRMS")),
+                    _mn(_col(clean,"PreStimPTP")),       _sd(_col(clean,"PreStimPTP")),
+                    _mn(_col(clean,"Normalised_PTP")),   _sd(_col(clean,"Normalised_PTP")),
+                    _str_col(clean,"Reference_Type"),
+                    _mn(_col(clean,"Reference_Mean(mV)")),
+                    _mn(_col(clean,"Reference_N")),
+                    _mn(_col(clean,"PTP_Detrended(mV)")),_sd(_col(clean,"PTP_Detrended(mV)")),
+                ])
+            return pd.DataFrame(rows, columns=SUM_HDR)
+
+        df_all = pd.DataFrame(latency_manual, columns=LAT_COLS)
+        df_clean_only = df_all[df_all["Outlier_Decision"] != "Outlier"]
+
+        _build_summary(df_clean_only) \
+            .to_csv(_p("summary.csv"),               index=False)
+        _build_summary(df_all) \
+            .to_csv(_p("summary_with_outliers.csv"), index=False)
 
 
 def pipeline_generate_plots(trace_stats, time_axis, segments_metadata,
@@ -1101,17 +1173,16 @@ def run_pipeline(input_path,
             log_callback=lambda _: None)
 
     # ── Stage 10: Write outputs ───────────────────────────────────────────────
-    pipeline_write_outputs(summary_rows, with_out_rows,
-                           latency_manual,
+    pipeline_write_outputs(latency_manual,
                            results_out, _bids_prefix)
 
-    # ── Write _All_stims_trial_summary.json sidecar ───────────────────────────
+    # ── Write _trials.json sidecar ────────────────────────────────────────────
     # This is the file Stage 2 scans for. It must be written alongside
-    # the All_stims_trial_summary.csv in the results/ folder.
-    _summary_csv = os.path.join(results_out, f"{_bids_prefix}_All_stims_trial_summary.csv")
-    if os.path.isfile(_summary_csv):
-        _write_sidecar(_summary_csv, extra={
-            "trials_csv": f"{_bids_prefix}_All_stims_trial_summary.csv",
+    # the trials.csv in the results/ folder.
+    _trials_csv = os.path.join(results_out, f"{_bids_prefix}_trials.csv")
+    if os.path.isfile(_trials_csv):
+        _write_sidecar(_trials_csv, extra={
+            "trials_csv": f"{_bids_prefix}_trials.csv",
         })
 
     # Auto-open combined figure

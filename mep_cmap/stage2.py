@@ -145,7 +145,7 @@ class Stage2Mixin:
         found = []
         for dirpath, dirnames, filenames in os.walk(deriv_dir):
             for fn in filenames:
-                if fn.endswith("_All_stims_trial_summary.json"):
+                if fn.endswith("_trials.json"):
                     jpath = os.path.join(dirpath, fn)
                     try:
                         with open(jpath, encoding="utf-8") as jf:
@@ -162,7 +162,7 @@ class Stage2Mixin:
                             "task":           meta.get("task",           ""),
                             "timepoint":      meta.get("timepoint",      ""),
                             "_json_path":     jpath,
-                            "_trials_csv":    jpath.replace(".json", ".csv"),
+                            "_trials_csv":    jpath.replace("_trials.json", "_trials.csv"),
                         })
                     except Exception:
                         pass
@@ -324,7 +324,7 @@ class Stage2Mixin:
                 csv_path = json_path.replace(".json", ".csv")
             if not csv_path or not os.path.isfile(csv_path):
                 messagebox.showerror("File not found",
-                    "Could not locate the All_stims_trial_summary.csv for this session. "
+                    "Could not locate the trials.csv for this session. "
                     "Please re-scan the derivatives folder.",
                     parent=self.root)
                 return
