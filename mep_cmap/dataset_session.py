@@ -143,6 +143,8 @@ class DatasetSession:
         # Normalisation map keyed by Stim_Label
         # {"SICI": "CSE", "ICF": "CSE", "CSE": "Mmax"}
         self.normalisation_map: dict = {}
+        # Paths explicitly removed by the user — never re-added by auto-scan
+        self.excluded_paths:    set  = set()
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
@@ -174,6 +176,7 @@ class DatasetSession:
             "shared_settings":   self.shared_settings,
             "stim_design":       self.stim_design,
             "normalisation_map": self.normalisation_map,
+            "excluded_paths":    list(getattr(self, 'excluded_paths', set())),
             "files":             [f.to_dict() for f in self.files],
         }
         try:
@@ -203,6 +206,7 @@ class DatasetSession:
             ds.shared_settings   = data.get("shared_settings", {})
             ds.stim_design       = data.get("stim_design", {})
             ds.normalisation_map = data.get("normalisation_map", {})
+            ds.excluded_paths    = set(data.get("excluded_paths", []))
             ds.files = [FileEntry.from_dict(f) for f in data.get("files", [])]
             for fe in ds.files:
                 fe.check_stale()

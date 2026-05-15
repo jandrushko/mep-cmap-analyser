@@ -11,6 +11,7 @@ Per-file analysis pipeline.
   • pipeline_review_outliers         — interactive review callback
   • pipeline_quantify_segments       — per-trial PTP / latency / CSP / AUC
   • pipeline_compute_pooled_stats    — pooled z-scores and detrending
+  • pipeline_bootstrap_comparisons   — pairwise bootstrap comparisons
   • pipeline_write_outputs           — CSV writing
   • pipeline_generate_plots          — figure generation
   • run_pipeline                     — top-level orchestrator
@@ -20,10 +21,10 @@ import os
 import gc
 import glob
 import json
+import itertools
 import pathlib
 import webbrowser
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -41,7 +42,6 @@ from .io import extract_emg_waveform_and_fs, extract_stim_times
 from .filters import adaptive_mains_cancel, design_notch_sos
 from .detection     import (detect_mep_onset_peak_fraction,
                              detect_mep_onset_bootstrap,
-                             detect_csp_bootstrap,
                              compute_bootstrap_threshold)
 from .normalisation import compute_mmax, apply_normalisation
 
@@ -80,14 +80,6 @@ class PipelineConfig:
     onset_bootstrap_crit:  float = 1.96
     onset_bootstrap_n:     int   = 500
     latency_map:           dict  = field(default_factory=dict)
-    csp_types:             set   = field(default_factory=set)
-    csp_min_silence_ms:    float = 25.0
-    csp_min_return_ms:     float = 40.0
-    csp_criterion:         float = 1.96
-    csp_significance:      float = 0.99
-    csp_n_boot:            int   = 1000
-    csp_search_end_ms:     float = 400.0
-    csp_max_mep_offset_ms: float = 100.0
     # Outlier detection
     outlier_threshold:     float = 1.96
     enable_outlier_review: bool  = True
@@ -108,6 +100,15 @@ class PipelineConfig:
     # Additional visual channels for inspector
     extra_channel_indices: list = field(default_factory=list)
     wide_window_s:      float = 3.0   # seconds either side of stim
+    # CSP detection
+    csp_types:             set   = field(default_factory=set)
+    csp_min_silence_ms:    float = 25.0
+    csp_min_return_ms:     float = 40.0
+    csp_criterion:         float = 1.96
+    csp_significance:      float = 0.99
+    csp_n_boot:            int   = 1000
+    csp_search_end_ms:     float = 400.0
+    csp_max_mep_offset_ms: float = 100.0
 
 
 def pipeline_load_file(file_path, channel_idx, marker_name,
@@ -346,55 +347,21 @@ def pipeline_quantify_segments(stim_type, segs_all, prestim_all,
 
         # ── silent period ────────────────────────────────────────────────
         silent_dur = "Not Marked"
-        sp_mep_offset_ms = None
-        sp_emg_return_ms = None
-
-        # Use inspector metadata if available, otherwise auto-detect silently
         if mk in segments_metadata and "silent_start_idx" in segments_metadata[mk]:
             md = segments_metadata[mk]
+            # Duration is a difference so offset cancels out
             silent_dur = round(
                 (md["silent_end_idx"] - md["silent_start_idx"]) * 1000 / fs, 2)
             silent_durs.append(silent_dur)
+            # Absolute timepoints relative to stim (using inspector segment offset)
             _insp_sb_sp = int(cfg.prestim_ms * fs / 1000)
             sp_mep_offset_ms = round(
                 (md["silent_start_idx"] - _insp_sb_sp) * 1000 / fs, 2)
             sp_emg_return_ms = round(
                 (md["silent_end_idx"] - _insp_sb_sp) * 1000 / fs, 2)
-        elif stim_type in (cfg.csp_types or set()):
-            # Auto-detect cSP for CSP-designated types not reviewed in inspector
-            try:
-                _ptp_max_idx = ptp_start_idx + int(np.argmax(
-                    np.abs(seg[ptp_start_idx:ptp_end_idx])))
-                _second_peak_ms = _ptp_max_idx * 1000 / fs - cfg.prestim_ms
-                _eff_start = max(0, _second_peak_ms)
-                _eff_end   = min(cfg.csp_search_end_ms,
-                                 _second_peak_ms + cfg.csp_max_mep_offset_ms)
-                if _eff_start < _eff_end:
-                    t_axis = np.linspace(-cfg.prestim_ms,
-                                         (len(seg) / fs * 1000) - cfg.prestim_ms,
-                                         len(seg), endpoint=False)
-                    _csp = detect_csp_bootstrap(
-                        seg, fs, t_axis,
-                        pre_ms=cfg.prestim_ms,
-                        search_start_ms=_eff_start,
-                        search_end_ms=_eff_end,
-                        min_silence_ms=cfg.csp_min_silence_ms,
-                        min_return_ms=cfg.csp_min_return_ms,
-                        criterion=cfg.csp_criterion,
-                        significance=cfg.csp_significance,
-                        n_boot=cfg.csp_n_boot,
-                    )
-                    if _csp is not None:
-                        _insp_sb_sp = int(cfg.prestim_ms * fs / 1000)
-                        silent_dur = round(
-                            (_csp[1] - _csp[0]) * 1000 / fs, 2)
-                        silent_durs.append(silent_dur)
-                        sp_mep_offset_ms = round(
-                            (_csp[0] - _insp_sb_sp) * 1000 / fs, 2)
-                        sp_emg_return_ms = round(
-                            (_csp[1] - _insp_sb_sp) * 1000 / fs, 2)
-            except Exception:
-                pass
+        else:
+            sp_mep_offset_ms = None
+            sp_emg_return_ms = None
 
         # ── AUC ──────────────────────────────────────────────────────────
         auc_val = None
@@ -403,18 +370,6 @@ def pipeline_quantify_segments(stim_type, segs_all, prestim_all,
             a1 = _ci(segments_metadata[mk]["auc_end_idx"])
             auc_val = float(_np_trapz(np.abs(seg[a0:a1]), dx=1 / fs))
             auc_vals_all.append(auc_val)
-        elif sp_mep_offset_ms is not None and auto_lat is not None:
-            # Auto AUC: onset → cSP start, for segments not reviewed in inspector
-            _onset_idx = int((auto_lat + cfg.prestim_ms) * fs / 1000) \
-                         if auto_lat is not None else None
-            _csp_start_ms = sp_mep_offset_ms  # already relative to stim
-            _csp_start_idx = int((_csp_start_ms + cfg.prestim_ms) * fs / 1000) \
-                             if _csp_start_ms is not None else None
-            if _onset_idx is not None and _csp_start_idx is not None \
-                    and 0 <= _onset_idx < _csp_start_idx <= len(seg):
-                auc_val = float(_np_trapz(np.abs(seg[_onset_idx:_csp_start_idx]),
-                                          dx=1 / fs))
-                auc_vals_all.append(auc_val)
 
         # ── outlier / exclusion flags ────────────────────────────────────
         is_removed   = idx in out_set
@@ -550,16 +505,45 @@ def pipeline_compute_pooled_stats(ptps_per_stim, latency_rows_auto, latency_rows
         cum_off += n
 
 
+def pipeline_bootstrap_comparisons(ptp_data, rms_data, preptp_data,
+                                    bootstrap_iter, rng):
+    """Bootstrap pairwise comparisons between stim types for PTP, RMS, PrePTP.
+
+    Returns list of rows for the bootstrap CSV.
+    """
+    rows = []
+    def _do(metric_dict, label):
+        for s1, s2 in itertools.combinations(metric_dict, 2):
+            d1, d2 = np.array(metric_dict[s1]), np.array(metric_dict[s2])
+            diffs  = np.array([
+                np.mean(rng.choice(d1, len(d1), True)) -
+                np.mean(rng.choice(d2, len(d2), True))
+                for _ in range(bootstrap_iter)
+            ])
+            ci_lo, ci_hi = np.percentile(diffs, [2.5, 97.5])
+            p = 2 * min(np.mean(diffs >= 0), np.mean(diffs <= 0))
+            rows.append([f"{s1} vs {s2}", label,
+                         round(float(np.mean(diffs)), 4),
+                         round(float(ci_lo), 4),
+                         round(float(ci_hi), 4),
+                         round(float(p),     4)])
+    _do(ptp_data,    "PTP")
+    _do(rms_data,    "PreStimRMS")
+    _do(preptp_data, "PreStimPTP")
+    return rows
+
+
+# Trial-level CSV column definitions — module-level so all pipeline stages can reference it
 LAT_COLS = [
     # Identification
     "File", "StimType", "Stim_Label", "Segment",
     "Limb", "Measure",
     # Core MEP metrics
     "PTP(mV)", "Latency(ms)",
-    "cSP_Duration(ms)",
-    "cSP_MEP_Offset(ms)",
-    "cSP_EMG_Return(ms)",
-    "MEP_cSP_Ratio",
+    "cSP_Duration(ms)",     # duration MEP offset → EMG return
+    "cSP_MEP_Offset(ms)",    # time of MEP offset (cSP onset) re: stim
+    "cSP_EMG_Return(ms)",    # time of EMG return (cSP offset) re: stim
+    "MEP_cSP_Ratio",        # PTP(mV) / cSP duration(ms), Orth & Rothwell 2004
     "AUC(mV*s)",
     # Pre-stimulus baseline
     "PreStimRMS", "PreStimPTP",
@@ -568,20 +552,19 @@ LAT_COLS = [
     "PTP_Detrended(mV)", "PTP_Detrended_Z",
     # Trial status
     "Outlier_Decision",
-    # Normalisation
-    "Reference_Type",
-    "Reference_Mean(mV)",
-    "Reference_N",
-    "Normalised_PTP",
-    # Annotations
+    # Normalisation (blank if not configured)
+    "Reference_Type",     # which condition was the denominator
+    "Reference_Mean(mV)", # mean amplitude of reference (plateau-detected if applicable)
+    "Reference_N",        # trials contributing to reference mean
+    "Normalised_PTP",     # PTP / Reference_Mean  (raw ratio)
+    # Annotations — always last
     "Manual_Note",
 ]
 
 
 def pipeline_write_outputs(summary_rows, with_out_rows,
                             latency_manual,
-                            results_out, bids_prefix,
-                            study_metadata=None):
+                            results_out, bids_prefix):
     """Write all result CSVs to results_out directory.
 
     Outputs
@@ -589,7 +572,6 @@ def pipeline_write_outputs(summary_rows, with_out_rows,
     <prefix>_ptp_results.csv               — clean-trial summary per stim type
     <prefix>_ptp_results_with_outliers.csv — same including outlier trials
     <prefix>_All_stims_trial_summary.csv   — trial-level LME-ready data
-    <prefix>_All_stims_trial_summary.json  — sidecar for Stage 2 discovery
     """
     WITH_OUT_HDR = [
         "File", "Stim_Type", "Stim_Label", "Num_Segments",
@@ -620,26 +602,9 @@ def pipeline_write_outputs(summary_rows, with_out_rows,
     if latency_manual:
         for row in latency_manual:
             row += [""] * (len(LAT_COLS) - len(row))
-        _trial_csv = _p("All_stims_trial_summary.csv")
         _alpha_sort(pd.DataFrame(latency_manual,  columns=LAT_COLS),
                     "StimType").sort_values(["StimType", "File", "Segment"]) \
-            .to_csv(_trial_csv, index=False)
-
-        # Write sidecar JSON for Stage 2 discovery
-        _meta = study_metadata
-        _sidecar = {
-            "participant_id": getattr(_meta, "participant_id", "") if _meta else "",
-            "session":        getattr(_meta, "session",        "") if _meta else "",
-            "task":           getattr(_meta, "task",           "") if _meta else "",
-            "timepoint":      getattr(_meta, "timepoint",      "") if _meta else "",
-            "trials_csv":     os.path.basename(_trial_csv),
-        }
-        _json_path = _trial_csv.replace(".csv", ".json")
-        try:
-            with open(_json_path, "w", encoding="utf-8") as jf:
-                json.dump(_sidecar, jf, indent=2)
-        except Exception:
-            pass
+            .to_csv(_p("All_stims_trial_summary.csv"), index=False)
 
 
 def pipeline_generate_plots(trace_stats, time_axis, segments_metadata,
@@ -726,11 +691,6 @@ def run_pipeline(input_path,
                  onset_bootstrap_crit=1.96,
                  onset_bootstrap_n=500,
                  latency_map=None,
-                 csp_types=None,
-                 csp_min_silence_ms=25.0, csp_min_return_ms=40.0,
-                 csp_criterion=1.96, csp_significance=0.99,
-                 csp_n_boot=1000, csp_search_end_ms=400.0,
-                 csp_max_mep_offset_ms=100.0,
                  filter_harmonics=False,
                  enable_inspector=False,
                  gui_root=None,
@@ -746,7 +706,13 @@ def run_pipeline(input_path,
                  reference_map=None, mmax_file="",
                  plateau_tolerance=0.10,
                  extra_channel_indices=None, wide_window_s=3.0,
-                 derivatives_root=None):
+                 derivatives_root=None,
+                 csp_types=None,
+                 csp_min_silence_ms=25.0, csp_min_return_ms=40.0,
+                 csp_criterion=1.96, csp_significance=0.99,
+                 csp_n_boot=1000, csp_search_end_ms=400.0,
+                 csp_max_mep_offset_ms=100.0,
+                 existing_segments_metadata=None):
     """
     Orchestrate the full per-file MEP/CMAP analysis pipeline.
 
@@ -772,14 +738,6 @@ def run_pipeline(input_path,
         onset_bootstrap_crit=onset_bootstrap_crit,
         onset_bootstrap_n=onset_bootstrap_n,
         latency_map=latency_map or {},
-        csp_types=set(csp_types) if csp_types else set(),
-        csp_min_silence_ms=csp_min_silence_ms,
-        csp_min_return_ms=csp_min_return_ms,
-        csp_criterion=csp_criterion,
-        csp_significance=csp_significance,
-        csp_n_boot=csp_n_boot,
-        csp_search_end_ms=csp_search_end_ms,
-        csp_max_mep_offset_ms=csp_max_mep_offset_ms,
         outlier_threshold=outlier_threshold,
         enable_outlier_review=enable_outlier_review,
         custom_labels=custom_labels or {},
@@ -795,14 +753,32 @@ def run_pipeline(input_path,
         measure=measure or "",
         cheby_ripple=cheby_ripple,
         filter_family=filter_family or "butter",
+        csp_types=set(csp_types) if csp_types else set(),
+        csp_min_silence_ms=csp_min_silence_ms,
+        csp_min_return_ms=csp_min_return_ms,
+        csp_criterion=csp_criterion,
+        csp_significance=csp_significance,
+        csp_n_boot=csp_n_boot,
+        csp_search_end_ms=csp_search_end_ms,
+        csp_max_mep_offset_ms=csp_max_mep_offset_ms,
     )
 
     # ── BIDS output paths ─────────────────────────────────────────────────────
     meta         = study_metadata or StudyMetadata()
     _source_dir  = os.path.dirname(input_path) or "."
-    _deriv_base  = (os.path.join(derivatives_root, "derivatives", meta.sub_ses_path())
-                    if derivatives_root
-                    else os.path.join(_source_dir, "derivatives", meta.sub_ses_path()))
+
+    def _make_deriv_base(root):
+        """Build the derivatives base path, avoiding derivatives/derivatives."""
+        norm = os.path.basename(os.path.normpath(root)).lower()
+        if norm == "derivatives":
+            # root IS the derivatives folder — don't append another level
+            return os.path.join(root, meta.sub_ses_path())
+        else:
+            return os.path.join(root, "derivatives", meta.sub_ses_path())
+
+    _deriv_base = (_make_deriv_base(derivatives_root)
+                   if derivatives_root
+                   else os.path.join(_source_dir, "derivatives", meta.sub_ses_path()))
     os.makedirs(_deriv_base, exist_ok=True)
     _bids_prefix = meta.bids_prefix() or pathlib.Path(input_path).stem
 
@@ -977,7 +953,10 @@ def run_pipeline(input_path,
                 full_ptp_data.setdefault(stim_type, []).extend(_full_ptps.tolist())
 
             # ── Stage 6: Data Inspector ───────────────────────────────────────
-            segments_metadata = {}
+            # Seed with any previously saved metadata so manual edits
+            # (adjusted markers, notes, exclusions) survive re-runs.
+            segments_metadata = dict(existing_segments_metadata) \
+                if existing_segments_metadata else {}
             if enable_inspector and show_inspector_cb and segments_final and file_i == 0:
                 # Build extra-channel wide segments for visual inspection
                 # {chan_name: {stim_type: [wide_seg_array]}}
@@ -1046,40 +1025,16 @@ def run_pipeline(input_path,
                     notes_map[(stype, idx)] = m["note"]
 
             # ── Stage 7: Quantify all segments ────────────────────────────────
-            # Each stim type is fully independent — parallelise with threads.
-            # ThreadPoolExecutor (not ProcessPoolExecutor) avoids pickling
-            # overhead; NumPy releases the GIL during compute so threads give
-            # real concurrency on the bootstrap and signal processing work.
             _ptps_per_stim = {}
-            _quant_args = {
-                stim_type: (
+            for stim_type, info in stats_per_type.items():
+                auto_r, man_r, sum_r, with_r, ptps_arr = pipeline_quantify_segments(
                     stim_type,
                     info["segs_all"], info["prestim_all"],
                     info["outlier_set"], excluded_sets[stim_type],
                     segments_metadata,
                     ptp_start_idx, ptp_end_idx,
-                    fs, cfg, custom_labels or {}, name
-                )
-                for stim_type, info in stats_per_type.items()
-            }
+                    fs, cfg, custom_labels or {}, name)
 
-            _n_workers = min(len(_quant_args), os.cpu_count() or 4)
-            _results = {}
-            with ThreadPoolExecutor(max_workers=_n_workers) as ex:
-                futures = {
-                    ex.submit(pipeline_quantify_segments, *args): st
-                    for st, args in _quant_args.items()
-                }
-                for fut in as_completed(futures):
-                    st = futures[fut]
-                    try:
-                        _results[st] = fut.result()
-                    except Exception as _qe:
-                        log_callback(f"⚠️  Quantification failed for {st}: {_qe}")
-
-            # Collect results in sorted order for consistent CSV row ordering
-            for stim_type in sorted(_results):
-                auto_r, man_r, sum_r, with_r, ptps_arr = _results[stim_type]
                 latency_auto.extend(auto_r)
                 latency_manual.extend(man_r)
                 summary_rows.append(sum_r)
@@ -1148,8 +1103,16 @@ def run_pipeline(input_path,
     # ── Stage 10: Write outputs ───────────────────────────────────────────────
     pipeline_write_outputs(summary_rows, with_out_rows,
                            latency_manual,
-                           results_out, _bids_prefix,
-                           study_metadata=study_metadata)
+                           results_out, _bids_prefix)
+
+    # ── Write _All_stims_trial_summary.json sidecar ───────────────────────────
+    # This is the file Stage 2 scans for. It must be written alongside
+    # the All_stims_trial_summary.csv in the results/ folder.
+    _summary_csv = os.path.join(results_out, f"{_bids_prefix}_All_stims_trial_summary.csv")
+    if os.path.isfile(_summary_csv):
+        _write_sidecar(_summary_csv, extra={
+            "trials_csv": f"{_bids_prefix}_All_stims_trial_summary.csv",
+        })
 
     # Auto-open combined figure
     if txt_files:

@@ -697,6 +697,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                 csp_n_boot           = params.get("csp_n_boot", 1000),
                 csp_search_end_ms    = params.get("csp_search_end_ms", 400.0),
                 csp_max_mep_offset_ms= params.get("csp_max_mep_offset_ms", 100.0),
+                existing_segments_metadata = dict(self.segments_metadata),
 
                 enable_inspector     = params["enable_inspector"],
                 channel_idx          = params["channel_idx"],
@@ -1183,7 +1184,12 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                            else source_dir)
 
             sub_ses     = meta.sub_ses_path() if meta else os.path.join("sub-unknown", "ses-01")
-            save_dir    = os.path.join(deriv_root, "derivatives", sub_ses)
+            # Avoid derivatives/derivatives/ — same fix as in pipeline.py
+            _deriv_base = os.path.basename(os.path.normpath(deriv_root)).lower()
+            if _deriv_base == "derivatives":
+                save_dir = os.path.join(deriv_root, sub_ses)
+            else:
+                save_dir = os.path.join(deriv_root, "derivatives", sub_ses)
             os.makedirs(save_dir, exist_ok=True)
             save_path   = os.path.join(save_dir, f"{bids_prefix}_session.json")
 
@@ -1234,6 +1240,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                 "onset_bootstrap_crit":  self.onset_bootstrap_crit.get(),
                 "onset_bootstrap_n":     self.onset_bootstrap_n.get(),
                 "enable_inspector":      self.enable_inspector.get(),
+                "generate_individual_plots": self.generate_individual_plots.get(),
                 "csp_search_start_ms":   self.csp_search_start_ms.get(),
                 "csp_search_end_ms":     self.csp_search_end_ms.get(),
                 "csp_min_silence_ms":    self.csp_min_silence_ms.get(),
@@ -1243,6 +1250,10 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                 "csp_n_boot":            self.csp_n_boot.get(),
                 "csp_max_mep_offset_ms": self.csp_max_mep_offset_ms.get(),
                 "csp_types":             list(self.csp_types),
+                "wide_window_s":         self.wide_window_s.get(),
+                "latency_map":           {k: list(v) for k, v in self.latency_map.items()},
+                "latency_stim_map":      dict(self.latency_stim_map),
+                "latency_muscle_map":    dict(self.latency_muscle_map),
             }
             session = {
                 "version":          "1.0",
@@ -1330,7 +1341,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
              "onset_peak_fraction":self.onset_peak_fraction.get(),
              "onset_min_amplitude":self.onset_min_amplitude.get(),
              "onset_slope_threshold":self.onset_slope_threshold.get(),
-             "enable_inspector":self.enable_inspector.get(),
+             "enable_inspector":self.enable_inspector.get(),"generate_individual_plots":self.generate_individual_plots.get(),
              "csp_search_start_ms":self.csp_search_start_ms.get(),
              "csp_search_end_ms":self.csp_search_end_ms.get(),
              "csp_min_silence_ms":self.csp_min_silence_ms.get(),
@@ -1384,44 +1395,62 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             except Exception: pass
         if sess.get("mmax_file"): self.mmax_file.set(sess["mmax_file"])
         if sess.get("plateau_tolerance"): self.plateau_tolerance.set(sess["plateau_tolerance"])
-        self.csp_types = set(sess.get("csp_types", []))
+        # csp_types is stored in the settings sub-dict
         s=sess.get("settings",{})
         _b=lambda k,d:bool(s.get(k,d)); _i=lambda k,d:int(s.get(k,d))
         _f=lambda k,d:float(s.get(k,d)); _s=lambda k,d:str(s.get(k,d))
+        self.csp_types = set(s.get("csp_types", sess.get("csp_types", [])))
         if s:
-            self.apply_filter.set(_b("apply_filter",True))
-            self.apply_bandpass.set(_b("apply_bandpass",True))
-            self.apply_notch.set(_b("apply_notch",False))
-            self.highpass.set(_i("highpass",20))
-            self.lowpass.set(_i("lowpass",450))
-            self.notch_freq.set(_i("notch_freq",50))
-            self.notch_q.set(_i("notch_q",30))
-            self.filter_order.set(_i("filter_order",2))
-            self.pre_time.set(_i("pre_time",20))
-            self.post_time.set(_i("post_time",400))
-            self.ptp_start.set(_i("ptp_start",10))
-            self.ptp_end.set(_i("ptp_end",50))
-            self.prestim_ms.set(_i("prestim_ms",100))
-            self.outlier_review.set(_b("outlier_review",True))
-            self.outlier_threshold.set(_f("outlier_threshold",1.96))
-            self.onset_method.set(_s("onset_method","bootstrap"))
-            self.onset_bootstrap_crit.set(_f("onset_bootstrap_crit",1.96))
-            self.onset_bootstrap_n.set(_i("onset_bootstrap_n",500))
-            self.onset_min_latency_ms.set(_f("onset_min_latency_ms", 10.0))
-            self.onset_max_latency_ms.set(_f("onset_max_latency_ms", 50.0))
-            self.csp_search_end_ms.set(_i("csp_search_end_ms",400))
-            self.csp_min_silence_ms.set(_i("csp_min_silence_ms",25))
-            self.csp_min_return_ms.set(_i("csp_min_return_ms",40))
-            self.csp_criterion.set(_f("csp_criterion",1.96))
-            self.csp_significance.set(_f("csp_significance",0.99))
-            self.csp_n_boot.set(_i("csp_n_boot",1000))
-            self.csp_max_mep_offset_ms.set(_i("csp_max_mep_offset_ms",100))
-            self.csp_types = set(sess.get("csp_types", []))
-            _lm2 = s.get("latency_map", {})
-            if _lm2:
-                self.latency_map = {k: tuple(v) for k, v in _lm2.items()}
-                self.latency_stim_map   = s.get("latency_stim_map", {})
-                self.latency_muscle_map = s.get("latency_muscle_map", {})
+            try:
+                self.apply_filter.set(_b("apply_filter",True))
+                self.apply_bandpass.set(_b("apply_bandpass",True))
+                self.apply_notch.set(_b("apply_notch",False))
+                self.highpass.set(_i("highpass",20))
+                self.lowpass.set(_i("lowpass",450))
+                self.notch_freq.set(_i("notch_freq",50))
+                self.notch_q.set(_i("notch_q",30))
+                self.filter_order.set(_i("filter_order",2))
+                self.filter_harmonics.set(_b("filter_harmonics",False))
+                self.filter_family.set(_s("filter_family","butter"))
+                self.cheby_ripple.set(_f("cheby_ripple",1.0))
+                self.use_advanced_bp.set(_b("use_advanced_bp",False))
+                self.hp_order_var.set(_i("hp_order",2))
+                self.lp_order_var.set(_i("lp_order",2))
+                self.apply_humbug.set(_b("apply_humbug",False))
+                self.humbug_harmonics.set(_i("humbug_harmonics",6))
+                self.pre_time.set(_i("pre_time",20))
+                self.post_time.set(_i("post_time",400))
+                self.ptp_start.set(_i("ptp_start",10))
+                self.ptp_end.set(_i("ptp_end",50))
+                self.prestim_ms.set(_i("prestim_ms",100))
+                self.outlier_review.set(_b("outlier_review",True))
+                self.outlier_threshold.set(_f("outlier_threshold",1.96))
+                self.onset_method.set(_s("onset_method","bootstrap"))
+                self.onset_bootstrap_crit.set(_f("onset_bootstrap_crit",1.96))
+                self.onset_bootstrap_n.set(_i("onset_bootstrap_n",500))
+                self.onset_peak_fraction.set(_f("onset_peak_fraction",0.15))
+                self.onset_min_amplitude.set(_f("onset_min_amplitude",0.1))
+                self.onset_slope_threshold.set(_f("onset_slope_threshold",0.08))
+                self.enable_inspector.set(_b("enable_inspector",True))
+                self.generate_individual_plots.set(_b("generate_individual_plots",True))
+                self.wide_window_s.set(_f("wide_window_s",3.0))
+                # onset_min_latency_ms / onset_max_latency_ms were removed in v0.8.4
+                # (replaced by per-stim latency_map) — skip silently for old sessions
+                self.csp_search_end_ms.set(_i("csp_search_end_ms",400))
+                self.csp_min_silence_ms.set(_i("csp_min_silence_ms",25))
+                self.csp_min_return_ms.set(_i("csp_min_return_ms",40))
+                self.csp_criterion.set(_f("csp_criterion",1.96))
+                self.csp_significance.set(_f("csp_significance",0.99))
+                self.csp_n_boot.set(_i("csp_n_boot",1000))
+                self.csp_max_mep_offset_ms.set(_i("csp_max_mep_offset_ms",100))
+                self.csp_types = set(s.get("csp_types", []))
+                _lm2 = s.get("latency_map", {})
+                if _lm2:
+                    self.latency_map = {k: tuple(v) for k, v in _lm2.items()}
+                    self.latency_stim_map   = s.get("latency_stim_map", {})
+                    self.latency_muscle_map = s.get("latency_muscle_map", {})
+            except Exception:
+                pass  # old session format — skip unrecognised settings
         restored={}
         for ks,m in sess.get("segments_metadata",{}).items():
             try:
@@ -1651,11 +1680,11 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             if hasattr(self, attr):
                 delattr(self, attr)
 
-        # ── 2. Clear ALL marker metadata — this is the key fix ─────────────────
-        # segments_metadata holds PTP min/max, onset, cSP, AUC, notes and
-        # exclude flags for every segment. These are strictly file-specific
-        # and must never carry over to a new file.
-        self.segments_metadata = {}
+        # ── 2. Clear ALL marker metadata ──────────────────────────────────────
+        # NOTE: segments_metadata is intentionally NOT cleared here.
+        # _load_file_entry calls _apply_loaded_session which restores it from
+        # the session JSON. For truly new files (not from queue), browse_file
+        # clears it explicitly below.
         self._last_outlier_result = None
 
         # ── 3. Clear file-specific selections ──────────────────────────────────
@@ -1791,7 +1820,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         tk.Button(q_toolbar, text="+ Add folder",
                   command=self.browse_folder).pack(side='left', padx=(0, 4))
         tk.Button(q_toolbar, text="🔄 Refresh",
-                  command=self._queue_refresh_from_raw).pack(side='left', padx=(0, 8))
+                  command=self._queue_refresh_from_raw).pack(side='left', padx=(0, 4))
+        tk.Button(q_toolbar, text="💾 Save queue",
+                  command=self._queue_save).pack(side='left', padx=(0, 8))
         tk.Button(q_toolbar, text="Remove selected",
                   command=self._queue_remove_selected).pack(side='left', padx=(0, 4))
         tk.Button(q_toolbar, text="▲",
@@ -1861,6 +1892,23 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             self._queue_tree.tag_configure(status, foreground=colour)
 
         self._queue_tree.bind("<Double-1>", self._queue_on_double_click)
+
+        # Right-click context menu
+        _ctx = tk.Menu(self._queue_tree, tearoff=0)
+        _ctx.add_command(label="Load & process", command=lambda: self._queue_on_double_click(None))
+        _ctx.add_command(label="Mark as rerun", command=self._queue_mark_rerun)
+        _ctx.add_separator()
+        _ctx.add_command(label="Remove selected", command=self._queue_remove_selected)
+
+        def _show_ctx(event):
+            iid = self._queue_tree.identify_row(event.y)
+            if iid:
+                self._queue_tree.selection_set(iid)
+            try:
+                _ctx.tk_popup(event.x_root, event.y_root)
+            finally:
+                _ctx.grab_release()
+        self._queue_tree.bind("<Button-3>", _show_ctx)
 
         self._queue_progress_var = tk.StringVar(value="No files loaded")
         tk.Label(parent, textvariable=self._queue_progress_var,
@@ -1942,6 +1990,12 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         if not ids or self._dataset is None:
             return
         for fid in ids:
+            fe = self._dataset.get_file(fid)
+            if fe:
+                # Remember this path was explicitly excluded so refresh doesn't re-add it
+                if not hasattr(self._dataset, 'excluded_paths'):
+                    self._dataset.excluded_paths = set()
+                self._dataset.excluded_paths.add(os.path.normpath(fe.path))
             self._dataset.remove_file(fid)
         self._dataset.save()
         self._queue_refresh()
@@ -1969,6 +2023,31 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         if fe:
             self._load_file_entry(fe)
 
+    def _queue_mark_rerun(self):
+        """Reset selected complete files to not_started so they can be reprocessed."""
+        ids = self._queue_selected_ids()
+        if not ids or self._dataset is None:
+            return
+        for fid in ids:
+            fe = self._dataset.get_file(fid)
+            if fe and fe.status == STATUS_COMPLETE:
+                fe.status = STATUS_NOT_STARTED
+        self._dataset.save()
+        self._queue_refresh()
+
+    def _queue_save(self):
+        """Explicitly save the current queue state to dataset_session.json."""
+        if self._dataset is None:
+            messagebox.showinfo("No dataset",
+                "No dataset loaded — add files first.", parent=self.root)
+            return
+        if self._dataset.save():
+            self.log(f"💾 Queue saved → {self._dataset.json_path}")
+        else:
+            messagebox.showerror("Save failed",
+                "Could not save the queue. Check that the derivatives folder is set.",
+                parent=self.root)
+
     def _queue_run_all(self):
         """Process all unprocessed files sequentially."""
         if self._dataset is None:
@@ -1977,8 +2056,14 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             return
         nxt = self._dataset.next_unprocessed()
         if nxt is None:
-            messagebox.showinfo("All done",
-                "All files in the queue have been processed.", parent=self.root)
+            # All complete — offer to rerun from start
+            resp = messagebox.askyesno(
+                "All done",
+                "All files in the queue have been processed.\n\n"
+                "Would you like to rerun from the beginning?",
+                parent=self.root)
+            if resp:
+                self._load_file_entry(self._dataset.files[0], auto_run=True)
             return
         self._load_file_entry(nxt, auto_run=True)
 
@@ -1991,15 +2076,29 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                    if self._dataset.get_file(fid) is not None]
         unprocessed = [fe for fe in entries
                        if fe.status not in ("complete", "skipped")]
+
         if not unprocessed:
-            messagebox.showinfo("Already done",
-                "All selected files are already complete.", parent=self.root)
+            # All selected files are complete — offer to rerun them
+            resp = messagebox.askyesno(
+                "Already done",
+                f"All {len(entries)} selected file(s) are already complete.\n\n"
+                "Would you like to rerun them anyway?\n"
+                "(Useful for changing settings or reviewing results)",
+                parent=self.root)
+            if resp:
+                # Reset status to allow reprocessing
+                for fe in entries:
+                    fe.status = STATUS_NOT_STARTED
+                self._dataset.save()
+                self._queue_refresh()
+                self._load_file_entry(entries[0], auto_run=True)
             return
         self._load_file_entry(unprocessed[0], auto_run=True)
 
     def _load_file_entry(self, fe: FileEntry, auto_run: bool = False):
         """Load a FileEntry into the Stage 1 processing pipeline."""
         self._reset_state_for_new_file()
+        self.segments_metadata = {}   # clear before restore
         self.file_path.set(fe.path)
         self._current_file_entry = fe
         self.log(f"📄 Loading: {fe.basename}")
@@ -2010,11 +2109,10 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                 import json as _json
                 with open(fe.derivatives_json, encoding="utf-8") as fh:
                     sess = _json.load(fh)
-                # Reuse the existing load_session internals
                 self._apply_loaded_session(sess)
-                self.log("💾 Restored previous session state")
-            except Exception:
-                pass
+                self.log(f"💾 Restored session — {len(self.segments_metadata)} segment(s) with saved edits")
+            except Exception as e:
+                self.log(f"⚠️  Could not restore session: {e}")
 
         # Update status
         if fe.status == STATUS_NOT_STARTED:
@@ -2075,7 +2173,8 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self._queue_refresh_from_raw()
 
     def _queue_refresh_from_raw(self):
-        """Scan the raw data folder and add any new .txt files to the queue."""
+        """Scan the raw data folder and add any new .txt files to the queue.
+        Files previously removed by the user are not re-added."""
         raw = self._rawdata_path.get()
         if not raw:
             messagebox.showinfo("No raw data folder",
@@ -2095,16 +2194,24 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                 parent=self.root)
             return
         ds = self._get_or_create_dataset()
+        excluded = getattr(ds, 'excluded_paths', set())
         added = 0
+        skipped_excluded = 0
         for fpath in files:
+            norm = os.path.normpath(fpath)
+            if norm in excluded:
+                skipped_excluded += 1
+                continue
             if ds.get_by_path(fpath) is None:
                 label = ds.label_from_bids(fpath)
                 ds.add_file(fpath, label=label)
                 added += 1
         ds.save()
         self._queue_refresh()
-        self.log(f"🔄 Refreshed queue: {added} new file(s) added "
-                 f"({len(files)} total found)")
+        msg = f"🔄 Refreshed: {added} new file(s) added ({len(files)} found)"
+        if skipped_excluded:
+            msg += f", {skipped_excluded} previously excluded skipped"
+        self.log(msg)
 
     def browse_folder(self):
         """Add all valid data .txt files from a selected folder (recursive)."""
@@ -2172,6 +2279,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         # Load the first newly added file (or re-load if already in queue)
         target = first_new or ds.get_by_path(fpaths[0])
         if target:
+            self.segments_metadata = {}   # fresh file — clear any stale edits
             self._load_file_entry(target)
 
     def _browse_file_path(self, fpath: str, auto_run: bool = False):
@@ -2234,27 +2342,113 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         elif marker_set:
             self.marker_choice.set(next(iter(marker_set)))
         
-        # ── populate inline channel dropdown (always, regardless of count)
+        # ── populate inline channel dropdown
         chan_list = list_waveform_channels(fpath)
         self._populate_channel_dropdown(chan_list)
 
-        # All channels loaded automatically — user selects in inspector dropdown
+        # ── prompt channel selection if more than one channel available
+        if len(chan_list) > 1:
+            # Show a dropdown dialog rather than a text entry
+            dlg = tk.Toplevel(self.root)
+            dlg.title("Select channel")
+            dlg.transient(self.root)
+            dlg.resizable(False, False)
+            dlg.grab_set()
+
+            tk.Label(dlg, text="Select the EMG channel to analyse:",
+                     padx=16, pady=(10)).pack()
+
+            chosen_var = tk.StringVar(value=chan_list[0])
+            cb = ttk.Combobox(dlg, textvariable=chosen_var,
+                              values=chan_list, state="readonly", width=28)
+            cb.pack(padx=16, pady=6)
+            cb.current(0)
+
+            def _ok():
+                dlg.destroy()
+            def _cancel():
+                chosen_var.set("")
+                dlg.destroy()
+
+            btn_row = tk.Frame(dlg)
+            btn_row.pack(pady=(0, 10))
+            tk.Button(btn_row, text="OK", width=10,
+                      command=_ok).pack(side='left', padx=6)
+            tk.Button(btn_row, text="Cancel", width=10,
+                      command=_cancel).pack(side='left', padx=6)
+
+            # Centre over main window
+            self.root.update_idletasks()
+            dlg.update_idletasks()
+            x = self.root.winfo_x() + (self.root.winfo_width() - dlg.winfo_width()) // 2
+            y = self.root.winfo_y() + (self.root.winfo_height() - dlg.winfo_height()) // 2
+            dlg.geometry(f"+{x}+{y}")
+            self.root.wait_window(dlg)
+
+            chosen = chosen_var.get()
+            if chosen and chosen in chan_list:
+                self.channel_var.set(chosen)
+                self.channel_idx = chan_list.index(chosen)
+
+        # All channels available in inspector extra channel dropdown
         self.extra_channel_indices = list(range(len(chan_list)))
 
-         # --------------------------------------------------------------------------
-        # Ask whether to analyse the whole file
-        whole = messagebox.askyesno(
-                    "Analyse whole recording?",
-                    "Analyse the entire file?\n"
-                    "Choose ‘No’ to pick a start- and end-point interactively.",
-                    parent=self.root)
-        if not whole:
-            # The helper below shows a plot where the user drags over
-            # the region of interest.
-            if not self._crop_selector(fpath):
-                # user cancelled → abort further set-up
-                return
-        # --------------------------------------------------------------------------
+        # ── Data range selection ───────────────────────────────────────────────
+        _saved_crop_ranges = getattr(self, "crop_ranges", None)
+        _saved_crop_start  = getattr(self, "crop_start", None)
+        _saved_crop_end    = getattr(self, "crop_end", None)
+        _has_saved_range   = bool(_saved_crop_ranges or
+                                  (_saved_crop_start is not None
+                                   and _saved_crop_end is not None))
+
+        if _has_saved_range:
+            if _saved_crop_ranges:
+                _range_desc = f"{len(_saved_crop_ranges)} range(s) previously selected"
+            else:
+                _range_desc = f"{_saved_crop_start:.1f}s – {_saved_crop_end:.1f}s"
+            dlg = tk.Toplevel(self.root)
+            dlg.title("Data range")
+            dlg.transient(self.root)
+            dlg.resizable(False, False)
+            dlg.grab_set()
+            tk.Label(dlg,
+                     text=f"A data range was previously saved:\n  {_range_desc}\n\nHow would you like to proceed?",
+                     padx=16, pady=10, justify="left").pack()
+            _choice = tk.StringVar(value="reuse")
+            btn_frame = tk.Frame(dlg)
+            btn_frame.pack(pady=(0, 12))
+            def _pick(val):
+                _choice.set(val)
+                dlg.destroy()
+            tk.Button(btn_frame, text="Use saved range", width=18,
+                      command=lambda: _pick("reuse")).pack(side="left", padx=6)
+            tk.Button(btn_frame, text="Select new range", width=18,
+                      command=lambda: _pick("new")).pack(side="left", padx=6)
+            tk.Button(btn_frame, text="Use whole file", width=18,
+                      command=lambda: _pick("whole")).pack(side="left", padx=6)
+            self.root.update_idletasks()
+            dlg.update_idletasks()
+            x = self.root.winfo_x() + (self.root.winfo_width()  - dlg.winfo_width())  // 2
+            y = self.root.winfo_y() + (self.root.winfo_height() - dlg.winfo_height()) // 2
+            dlg.geometry(f"+{x}+{y}")
+            self.root.wait_window(dlg)
+            choice = _choice.get()
+            if choice == "reuse":
+                pass
+            elif choice == "new":
+                self.crop_ranges = None; self.crop_start = None; self.crop_end = None
+                if not self._crop_selector(fpath):
+                    return
+            else:
+                self.crop_ranges = None; self.crop_start = None; self.crop_end = None
+        else:
+            whole = messagebox.askyesno(
+                "Analyse whole recording?",
+                "Analyse the entire file?\nChoose 'No' to pick a range interactively.",
+                parent=self.root)
+            if not whole:
+                if not self._crop_selector(fpath):
+                    return
 
         # ── Filter stim types to those with at least one event in the selected range
         if self.crop_ranges:
