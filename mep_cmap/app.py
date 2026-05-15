@@ -1899,6 +1899,8 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         _ctx.add_command(label="Mark as rerun", command=self._queue_mark_rerun)
         _ctx.add_separator()
         _ctx.add_command(label="Remove selected", command=self._queue_remove_selected)
+        _ctx.add_separator()
+        _ctx.add_command(label="Show excluded files…", command=self._queue_show_excluded)
 
         def _show_ctx(event):
             iid = self._queue_tree.identify_row(event.y)
@@ -2022,6 +2024,85 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         fe = self._dataset.get_file(fid)
         if fe:
             self._load_file_entry(fe)
+
+    def _queue_show_excluded(self):
+        """Show excluded files and allow user to re-include any of them."""
+        if self._dataset is None:
+            messagebox.showinfo("No dataset", "No dataset loaded.", parent=self.root)
+            return
+        excluded = getattr(self._dataset, 'excluded_paths', set())
+        if not excluded:
+            messagebox.showinfo("No excluded files",
+                "No files have been excluded from this dataset.",
+                parent=self.root)
+            return
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Excluded files")
+        dlg.transient(self.root)
+        dlg.resizable(True, True)
+        dlg.grab_set()
+
+        tk.Label(dlg,
+                 text="These files were previously removed from the queue.\n"
+                      "Tick any you want to re-include, then click Restore.",
+                 padx=12, pady=8, justify="left").pack(anchor="w")
+
+        # Scrollable frame for checkboxes
+        frame_outer = tk.Frame(dlg)
+        frame_outer.pack(fill="both", expand=True, padx=12, pady=4)
+        canvas = tk.Canvas(frame_outer, height=300)
+        vsb = ttk.Scrollbar(frame_outer, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        inner = tk.Frame(canvas)
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>",
+                   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+
+        vars_ = {}
+        for path in sorted(excluded):
+            v = tk.BooleanVar(value=False)
+            vars_[path] = v
+            row = tk.Frame(inner)
+            row.pack(fill="x", pady=1)
+            tk.Checkbutton(row, variable=v).pack(side="left")
+            tk.Label(row, text=os.path.basename(path),
+                     anchor="w", width=40).pack(side="left")
+            tk.Label(row, text=path, fg="grey",
+                     anchor="w").pack(side="left", padx=(4, 0))
+
+        def _restore():
+            to_restore = [p for p, v in vars_.items() if v.get()]
+            if not to_restore:
+                messagebox.showinfo("Nothing selected",
+                    "Tick at least one file to restore.", parent=dlg)
+                return
+            for path in to_restore:
+                self._dataset.excluded_paths.discard(path)
+                # Re-add to queue
+                if self._dataset.get_by_path(path) is None:
+                    label = self._dataset.label_from_bids(path)
+                    self._dataset.add_file(path, label=label)
+            self._dataset.save()
+            self._queue_refresh()
+            self.log(f"↩️  Restored {len(to_restore)} file(s) to the queue")
+            dlg.destroy()
+
+        btn_row = tk.Frame(dlg)
+        btn_row.pack(pady=8)
+        tk.Button(btn_row, text="Restore selected", command=_restore,
+                  bg="#5cb85c", fg="white").pack(side="left", padx=6)
+        tk.Button(btn_row, text="Cancel", command=dlg.destroy,
+                  width=10).pack(side="left", padx=6)
+
+        # Centre over main window
+        self.root.update_idletasks()
+        dlg.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width()  - dlg.winfo_width())  // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - dlg.winfo_height()) // 2
+        dlg.geometry(f"+{x}+{y}")
 
     def _queue_mark_rerun(self):
         """Reset selected complete files to not_started so they can be reprocessed."""

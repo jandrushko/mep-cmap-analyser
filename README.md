@@ -1,6 +1,6 @@
 # MEP-CMAP Analyser
 
-**Version 0.8.5 | May 2026**  
+**Version 0.8.6 | May 2026**  
 *Author: Justin Andrushko PhD, Northumbria University*
 
 A BIDS-compliant, open-source tool for processing and quantifying TMS-evoked motor evoked potentials (MEPs) and cortical silent periods (cSPs) from Spike-2 EMG recordings.
@@ -9,20 +9,20 @@ A BIDS-compliant, open-source tool for processing and quantifying TMS-evoked mot
 
 ## Features
 
-- **Dataset Setup** — multi-file session management with a persistent file queue, BIDS folder auto-detection, and processing status tracking across sessions
+- **Dataset Setup** — multi-file session management with a persistent file queue, BIDS folder auto-detection, processing status tracking, and excluded-file management across sessions
 - **BIDS-compliant** derivatives output with automatic participant/session naming
 - **Per-trial MEP quantification** — PTP amplitude, onset latency, AUC, cSP duration, paired-pulse ratios
 - **Physiologically-bounded MEP onset detection** — peak-anchored backward scan with per-stim-type latency profiles derived from published normative data (TMS: hand/FDI 18–30 ms, vastus lateralis 18–35 ms, leg 28–45 ms; peripheral nerve: upper limb 2–12 ms, lower limb 4–18 ms)
 - **Cortical silent period (cSP) detection** using a vectorised bootstrap threshold method with MEP-anchored search cap
-- **Auto AUC** — onset-to-cSP start computed automatically for all event types, including those without cSP selected; user can override via drag selector
+- **Auto AUC** — onset-to-cSP start computed automatically for all event types; user can override via drag selector
 - **Auto SP and AUC for unreviewed segments** — silent period and AUC computed in the pipeline for any segment not manually reviewed in the Data Inspector
 - **M-wave normalisation** with plateau-based Mmax detection
 - **Paired-pulse ratios** (SICI, ICF, etc.) with flexible per-stim reference assignment in Stage 1a
-- **Data Inspector** — interactive per-trial review with draggable markers, zoom toolbar, AUC selector, silent period annotation
+- **Data Inspector** — interactive per-trial review with draggable markers, zoom toolbar, AUC selector, silent period annotation; all edits persist across reruns
 - **Filter preview** — real-time frequency response and wavelet time-frequency display
 - **Outlier detection** with interactive review and Z-score thresholding
 - **Multi-channel support** — additional EMG and force channels for visual inspection
-- **Session save/load** — full session persistence including stim labels, latency profiles, normalisation settings, and inspector edits
+- **Full session persistence** — every adjustable setting (filters, onset detection, CSP, latency profiles, normalisation, inspector edits, analysis options) is saved and restored automatically per file
 - **Group analysis** — Stage 2 merges all processed sessions into a single LME-ready CSV with study design columns (between/within-subject factors, stim roles)
 - **LME-ready trial-level CSV output** with Z-scores, detrended values, normalised PTP, and pooled statistics
 - **Cross-platform** — Windows, macOS, and Linux supported
@@ -34,19 +34,28 @@ A BIDS-compliant, open-source tool for processing and quantifying TMS-evoked mot
 The tool is organised into four tabs:
 
 ### Dataset Setup
-Load a study folder or individual files. The tool auto-detects `rawdata/` and `derivatives/` subfolders (BIDS structure) or accepts manual folder selection. A persistent file queue tracks processing status across sessions — files are marked Not started, In progress, Needs review, Complete, or Stale. Double-click any file to load it; use **Run all unprocessed** to batch process.
+Load a study folder or individual files. The tool auto-detects `rawdata/` and `derivatives/` subfolders (BIDS structure) or accepts manual folder selection. The derivatives folder is always placed beside `rawdata/`, never inside it. A persistent file queue tracks processing status across sessions — files are marked Not started, In progress, Needs review, Complete, or Stale.
+
+- Double-click any file to load it
+- Use **Run all unprocessed** to batch process
+- Use **Refresh** to detect newly added files (previously excluded files are remembered and not re-added)
+- Right-click → **Show excluded files** to restore previously removed files
+- Queue state is saved to `dataset_session.json` in the derivatives folder
 
 ### Stage 1a — Labels & Analysis Setup
 Appears automatically after a file is loaded. Configure per-stim-type settings:
 - Label, colour, gap (ms), CSP detection toggle
 - Stimulation type and muscle group (sets physiological latency bounds for onset detection)
-- Internal and external normalisation references
-- Plateau tolerance for Mmax detection
+- Internal normalisation references and plateau tolerance for Mmax detection
 
-Settings persist between files within a session.
+Confirming setup auto-switches to Stage 1b. Settings persist between files.
 
 ### Stage 1b — Single File Processing
-Filter settings (bandpass, notch, mains noise canceller), time window and MEP onset detection parameters, CSP detection settings, outlier review, and analysis options. Click **Run Analysis** to process the active file.
+Filter settings (bandpass, notch, mains noise canceller), time window and MEP onset detection parameters, CSP detection settings, outlier review, and analysis options. All settings are saved per file and restored on reload.
+
+When reloading a previously processed file:
+- Option to reuse the saved data range, select a new range, or use the whole file
+- Previously adjusted marker positions, notes, exclusions, and AUC windows are restored and carried through the re-analysis
 
 ### Stage 2 — Group Analysis LME Setup
 Scan the derivatives folder to discover all processed sessions. Assign study design columns (e.g. Group, Condition, Timepoint), configure stim type roles (Reference, Conditioned, M-wave), and click **Build group analysis file** to merge all selected sessions into a single `group_level_LME_ready.csv`.
@@ -142,15 +151,17 @@ study/
 ├── rawdata/
 │   └── sub-001/ses-01/...
 └── derivatives/
-    ├── dataset_session.json          ← queue state and processing status
-    ├── group_level_LME_ready.csv     ← merged group-level output (Stage 2)
+    ├── dataset_session.json               ← queue state, processing status, excluded files
+    ├── group_level_LME_ready.csv          ← merged group-level output (Stage 2)
     └── sub-001/
         └── ses-01/
-            ├── sub-001_ses-01_limb-left_All_stims_trial_summary.csv
-            ├── sub-001_ses-01_limb-left_All_stims_trial_summary.json
-            ├── sub-001_ses-01_limb-left_ptp_results.csv
-            ├── sub-001_ses-01_limb-left_ptp_results_with_outliers.csv
-            └── figures/
+            ├── results/
+            │   ├── sub-001_ses-01_limb-left_All_stims_trial_summary.csv
+            │   ├── sub-001_ses-01_limb-left_All_stims_trial_summary.json
+            │   ├── sub-001_ses-01_limb-left_ptp_results.csv
+            │   └── sub-001_ses-01_limb-left_ptp_results_with_outliers.csv
+            ├── figures/
+            └── sub-001_ses-01_limb-left_session.json  ← per-file session state
 ```
 
 ### Trial-level CSV columns
@@ -209,7 +220,7 @@ python3 build_mac.py
 
 If you use this tool in your research, please cite:
 
-> Andrushko, J.W. (2026). MEP-CMAP Analyser (Version 0.8.5) [Software].
+> Andrushko, J.W. (2026). MEP-CMAP Analyser (Version 0.8.6) [Software].
 > Northumbria University. https://doi.org/10.5281/zenodo.XXXXXXX
 
 ---
