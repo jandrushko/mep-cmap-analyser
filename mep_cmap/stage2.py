@@ -27,7 +27,7 @@ class Stage2Mixin:
 
     def _on_tab_changed(self, event):
         """Build Stage 2 UI lazily on first visit."""
-        if self.notebook.index(self.notebook.select()) == 2:
+        if self.notebook.index(self.notebook.select()) == 3:
             if not self._stage2_built:
                 self._build_stage2()
                 self._stage2_built = True

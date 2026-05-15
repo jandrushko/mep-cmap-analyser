@@ -23,6 +23,7 @@ import json
 import time
 import queue
 import pathlib
+from pathlib import Path
 import datetime
 import threading
 import webbrowser
@@ -51,6 +52,10 @@ from tkinter import ttk, filedialog, messagebox, simpledialog, scrolledtext, fon
 
 from .compat import _np_trapz
 from .bids import StudyMetadata, _sanitise_bids_label, TOOL_VERSION
+from .dataset_session import (DatasetSession, FileEntry,
+                               STATUS_NOT_STARTED, STATUS_IN_PROGRESS,
+                               STATUS_NEEDS_REVIEW, STATUS_COMPLETE,
+                               STATUS_STALE, STATUS_LABELS, STATUS_COLOURS)
 from .io import (list_waveform_channels, extract_emg_waveform_and_fs,
                  extract_stim_times)
 from .filters import adaptive_mains_cancel
@@ -71,14 +76,22 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self.gap_ms_map        = {}
         self.reference_map     = {}
         self._reference_display = {}
-        self.latency_map        = {}   # {stim: (min_ms, max_ms)}
-        self.latency_stim_map   = {}   # {stim: stim_type string e.g. "TMS"}
-        self.latency_muscle_map = {}   # {stim: muscle string e.g. "Hand / FDI"}
+        self.latency_map        = {}
+        self.latency_stim_map   = {}
+        self.latency_muscle_map = {}
         self.mmax_file             = tk.StringVar()
         self.plateau_tolerance     = tk.DoubleVar(value=10.0)
-        self.extra_channel_indices = []    # additional channels for inspector
+        self.extra_channel_indices = []
         self.wide_window_s         = tk.DoubleVar(value=3.0)
         self.emg_unit          = None
+        # These must be initialised before _build_scrollable_container
+        # because _build_session_tab references them directly
+        self.file_path          = tk.StringVar()
+        self.derivatives_path   = tk.StringVar()
+        self._rawdata_path      = tk.StringVar()
+        self._dataset           = None
+        self._current_file_entry = None
+        self._queue_progress_var = tk.StringVar(value="No files loaded")
         # ── Build GUI ─────────────────────────────────────────────────────────
         self._build_menu()
         self._build_scrollable_container()
@@ -129,8 +142,15 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
 
                 elif msg == "done":
                     # Analysis finished — autosave regardless of whether the
-                    # inspector was used (previously only saved after inspector closed)
+                    # inspector was used
                     self._autosave_session()
+                    # Mark file complete in dataset queue
+                    if self._dataset is not None and hasattr(self, '_current_file_entry'):
+                        fe = self._current_file_entry
+                        if fe is not None:
+                            fe.mark_complete()
+                            self._dataset.save()
+                            self._queue_refresh()
 
         except queue.Empty:
             pass
@@ -335,9 +355,20 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self._deriv_status_bar.bind(
             "<Button-1>", lambda e: self.browse_derivatives_folder())
 
-        # ── Tab 1: Stage 1 (scrollable content + fixed footer) ───────────────
+        # ── Session tab (index 0) ──────────────────────────────────────────────
+        self.tab_session = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_session, text="Dataset Setup")
+        self._build_session_tab(self.tab_session)
+
+        # ── Stage 1a: Labels & Analysis Setup (index 1) ───────────────────────
+        self.tab1b_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab1b_frame, text="Stage 1a – Labels & Analysis Setup")
+        self._labels_tab_built = False
+        self._labels_tab_confirmed = False
+
+        # ── Stage 1b: Single File Processing (index 2) ────────────────────────
         tab1_outer = ttk.Frame(self.notebook)
-        self.notebook.add(tab1_outer, text="Stage 1a – Single File Processing")
+        self.notebook.add(tab1_outer, text="Stage 1b – Single File Processing")
 
         # Fixed footer — packed FIRST (before canvas) so it stays pinned
         # at the bottom regardless of scroll position.
@@ -378,30 +409,20 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         )
 
         def _on_mousewheel(event):
-            # Only scroll when Stage 1 tab is active
-            if self.notebook.index(self.notebook.select()) == 0:
+            # Only scroll when Stage 1b processing tab is active (index 2)
+            if self.notebook.index(self.notebook.select()) == 2:
                 delta = event.delta if event.delta else (-120 if event.num == 5 else 120)
                 self.canvas.yview_scroll(int(-delta / 120), "units")
         for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
             self.canvas.bind_all(seq, _on_mousewheel)
 
-        # ── Tab 1b: Stage 1b – Labels & Analysis Setup ──────────────────────────
-        self.tab1b_frame = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab1b_frame, text="Stage 1b – Labels & Analysis Setup")
-        # Tab 1b is populated by _build_labels_tab() after a file is loaded
-        self._labels_tab_built = False
-        self._labels_tab_confirmed = False  # True once user confirms setup
-
-        # ── Tab 2: Stage 2 (group analysis) ──────────────────────────────────
+        # ── Stage 2: Group Analysis (index 3) ────────────────────────────────
         self.tab2_frame = ttk.Frame(self.notebook)
         self.notebook.add(self.tab2_frame, text="Stage 2 – Group Analysis LME Setup")
-        # Stage 2 content is built lazily on first tab switch
         self._stage2_built = False
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         # ─── User Path & Data States ──────────────────────────────────────────
-        self.file_path = tk.StringVar()
-        self.derivatives_path = tk.StringVar()
         self.label_map = {}
         self.color_map = {}
         self.marker_choice = tk.StringVar()
@@ -757,12 +778,14 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
 
     def setup_gui(self):
         # ─── Input File + Channel (single compact row) ──────────────────────
+        # ── Active file indicator ─────────────────────────────────────────────
         file_row = tk.Frame(self.main_frame)
         file_row.pack(fill='x', padx=10, pady=(10, 0))
-        tk.Label(file_row, text="Input file:").pack(side='left')
-        tk.Entry(file_row, textvariable=self.file_path, width=46).pack(
+        tk.Label(file_row, text="Active file:").pack(side='left')
+
+        tk.Entry(file_row, textvariable=self.file_path, width=56,
+                 state="readonly", fg="#555").pack(
             side='left', expand=True, fill='x', padx=(4, 4))
-        tk.Button(file_row, text="Browse…", command=self.browse_file).pack(side='left')
         tk.Label(file_row, text="  Channel:").pack(side='left')
         self.channel_var = tk.StringVar(value="—")
         self.channel_dd  = ttk.Combobox(file_row, textvariable=self.channel_var,
@@ -1255,6 +1278,16 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             with open(save_path, "w", encoding="utf-8") as f:
                 json.dump(session, f, indent=2)
 
+            # Update the FileEntry in the dataset session
+            if self._dataset is not None and hasattr(self, '_current_file_entry'):
+                fe = self._current_file_entry
+                if fe is not None:
+                    fe.derivatives_json = save_path
+                    fe.stim_letters = sorted(self.label_map.keys())
+                    fe.stim_label_map = dict(self.label_map)
+                    self._dataset.save()
+                    self._queue_refresh()
+
             self._log_gui(
                 f"💾 Session auto-saved → "
                 f"{os.path.relpath(save_path, source_dir)}")
@@ -1321,16 +1354,12 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         except Exception as e:
             messagebox.showerror("Save failed",str(e),parent=self.root)
 
-    def load_session(self):
-        """Restore a previously saved JSON session."""
-        lp = filedialog.askopenfilename(title="Load session",defaultextension=".json",
-            filetypes=[("MEP-CMAP session","*.json"),("All files","*.*")],parent=self.root)
-        if not lp: return
-        try:
-            with open(lp,"r",encoding="utf-8") as f: sess=json.load(f)
-        except Exception as e:
-            messagebox.showerror("Load failed",str(e),parent=self.root); return
-        self._reset_state_for_new_file()
+    def _apply_loaded_session(self, sess: dict):
+        """
+        Apply a loaded session dict to the current GUI state.
+        Called by both load_session (user-initiated) and _load_file_entry
+        (automatic restore when jumping to a previously processed file).
+        """
         fp=sess.get("file_path",""); self.file_path.set(fp)
         self.marker_choice.set(sess.get("marker_choice",""))
         self.channel_idx=sess.get("channel_idx",0); self.channel_choice.set(sess.get("channel_choice",""))
@@ -1353,51 +1382,75 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             try:
                 self.study_metadata=StudyMetadata(**{k:v for k,v in sm.items() if k in StudyMetadata.__dataclass_fields__})
             except Exception: pass
+        if sess.get("mmax_file"): self.mmax_file.set(sess["mmax_file"])
+        if sess.get("plateau_tolerance"): self.plateau_tolerance.set(sess["plateau_tolerance"])
+        self.csp_types = set(sess.get("csp_types", []))
         s=sess.get("settings",{})
         _b=lambda k,d:bool(s.get(k,d)); _i=lambda k,d:int(s.get(k,d))
         _f=lambda k,d:float(s.get(k,d)); _s=lambda k,d:str(s.get(k,d))
-        self.pre_time.set(_i("pre_ms",20)); self.post_time.set(_i("post_ms",400))
-        self.ptp_start.set(_i("ptp_start",10)); self.ptp_end.set(_i("ptp_end",50))
-        self.prestim_ms.set(_i("prestim_ms",100)); self.apply_filter.set(_b("apply_filter",True))
-        self.apply_bandpass.set(_b("apply_bandpass",True)); self.apply_notch.set(_b("apply_notch",False))
-        self.highpass.set(_i("highpass",20)); self.lowpass.set(_i("lowpass",450))
-        self.notch_freq.set(_i("notch_freq",50)); self.notch_q.set(_i("notch_q",30))
-        self.filter_order.set(_i("filter_order",2)); self.filter_family.set(_s("filter_family","butter"))
-        self.cheby_ripple.set(_f("cheby_ripple",1.0)); self.use_advanced_bp.set(_b("use_advanced_bp",False))
-        self.hp_order_var.set(_i("hp_order",2)); self.lp_order_var.set(_i("lp_order",2))
-        self.filter_harmonics.set(_b("filter_harmonics",False)); self.apply_humbug.set(_b("apply_humbug",False))
-        self.humbug_harmonics.set(_i("humbug_harmonics",6)); self.outlier_review.set(_b("outlier_review",True))
-        self.outlier_threshold.set(_f("outlier_threshold",1.96))
-        self.onset_peak_fraction.set(_f("onset_peak_fraction",0.15))
-        self.onset_min_amplitude.set(_f("onset_min_amplitude",0.1))
-        self.onset_slope_threshold.set(_f("onset_slope_threshold",0.08))
-        self.onset_method.set(sess.get("settings",{}).get("onset_method","bootstrap"))
-        self.onset_bootstrap_crit.set(_f("onset_bootstrap_crit",1.96))
-        self.onset_bootstrap_n.set(int(_f("onset_bootstrap_n",500)))
-        self.enable_inspector.set(_b("enable_inspector",True))
-        self.csp_search_start_ms.set(_i("csp_search_start_ms",40))
-        self.csp_search_end_ms.set(_i("csp_search_end_ms",400))
-        self.csp_min_silence_ms.set(_i("csp_min_silence_ms",25))
-        self.csp_criterion.set(_f("csp_criterion",1.96))
-        self.csp_significance.set(_f("csp_significance",0.99))
-        self.csp_min_return_ms.set(_i("csp_min_return_ms",40))
-        self.csp_n_boot.set(_i("csp_n_boot",1000))
-        self.csp_max_mep_offset_ms.set(_i("csp_max_mep_offset_ms",40))
-        self.csp_types = set(sess.get("csp_types", []))
-        try: self.toggle_bandpass_fields(); self.toggle_bp_order_fields(); self.toggle_notch_fields(); self._toggle_humbug_fields()
-        except Exception: pass
+        if s:
+            self.apply_filter.set(_b("apply_filter",True))
+            self.apply_bandpass.set(_b("apply_bandpass",True))
+            self.apply_notch.set(_b("apply_notch",False))
+            self.highpass.set(_i("highpass",20))
+            self.lowpass.set(_i("lowpass",450))
+            self.notch_freq.set(_i("notch_freq",50))
+            self.notch_q.set(_i("notch_q",30))
+            self.filter_order.set(_i("filter_order",2))
+            self.pre_time.set(_i("pre_time",20))
+            self.post_time.set(_i("post_time",400))
+            self.ptp_start.set(_i("ptp_start",10))
+            self.ptp_end.set(_i("ptp_end",50))
+            self.prestim_ms.set(_i("prestim_ms",100))
+            self.outlier_review.set(_b("outlier_review",True))
+            self.outlier_threshold.set(_f("outlier_threshold",1.96))
+            self.onset_method.set(_s("onset_method","bootstrap"))
+            self.onset_bootstrap_crit.set(_f("onset_bootstrap_crit",1.96))
+            self.onset_bootstrap_n.set(_i("onset_bootstrap_n",500))
+            self.onset_min_latency_ms.set(_f("onset_min_latency_ms", 10.0))
+            self.onset_max_latency_ms.set(_f("onset_max_latency_ms", 50.0))
+            self.csp_search_end_ms.set(_i("csp_search_end_ms",400))
+            self.csp_min_silence_ms.set(_i("csp_min_silence_ms",25))
+            self.csp_min_return_ms.set(_i("csp_min_return_ms",40))
+            self.csp_criterion.set(_f("csp_criterion",1.96))
+            self.csp_significance.set(_f("csp_significance",0.99))
+            self.csp_n_boot.set(_i("csp_n_boot",1000))
+            self.csp_max_mep_offset_ms.set(_i("csp_max_mep_offset_ms",100))
+            self.csp_types = set(sess.get("csp_types", []))
+            _lm2 = s.get("latency_map", {})
+            if _lm2:
+                self.latency_map = {k: tuple(v) for k, v in _lm2.items()}
+                self.latency_stim_map   = s.get("latency_stim_map", {})
+                self.latency_muscle_map = s.get("latency_muscle_map", {})
         restored={}
         for ks,m in sess.get("segments_metadata",{}).items():
             try:
                 st,i_s=ks.rsplit(":",1); restored[(st,int(i_s))]=m
             except ValueError: continue
         self.segments_metadata=restored
-        self.log(f"\U0001f4c2 Loaded from {os.path.basename(lp)}\n"
+        try: self.toggle_bandpass_fields(); self.toggle_bp_order_fields(); self.toggle_notch_fields(); self._toggle_humbug_fields()
+        except Exception: pass
+
+    def load_session(self):
+        """Restore a previously saved JSON session."""
+        lp = filedialog.askopenfilename(title="Load session",defaultextension=".json",
+            filetypes=[("MEP-CMAP session","*.json"),("All files","*.*")],parent=self.root)
+        if not lp: return
+        try:
+            with open(lp,"r",encoding="utf-8") as f: sess=json.load(f)
+        except Exception as e:
+            messagebox.showerror("Load failed",str(e),parent=self.root); return
+        self._reset_state_for_new_file()
+        self._apply_loaded_session(sess)
+        fp = sess.get("file_path", "")
+        self.log(f"📂 Loaded from {os.path.basename(lp)}\n"
                  f"   File: {os.path.basename(fp) if fp else '(none)'}\n"
                  f"   Labels: {len(self.label_map)}  Inspector edits: {len(self.segments_metadata)}\n"
-                 f"   \u2705 Click Run Analysis to re-process.")
+                 f"   ✅ Click Run Analysis to re-process.")
         if fp and not os.path.isfile(fp):
-            messagebox.showwarning("File not found",f"Session references:\n  {fp}\n\nUse Browse to locate it.",parent=self.root)
+            messagebox.showwarning("File not found",
+                f"Session references:\n  {fp}\n\nUse Browse to locate it.",
+                parent=self.root)
 
 
     def _crop_selector(self, txt_file) -> bool:
@@ -1455,11 +1508,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         canvas.get_tk_widget().pack(fill="both", expand=False)
 
         # ── Plot the full trace + stim ticks ──────────────────────────────────────
-        # Min-max envelope downsampling: for each screen pixel-wide chunk, keep
-        # both the local min and max. This preserves the amplitude envelope of
-        # all events (including small-amplitude ones) at any zoom level, while
-        # keeping the point count low enough for fast blit-based interaction.
-        _max_pts = 4000  # ~2 points per pixel at 1920px width
+        # Min-max envelope downsampling — preserves amplitude envelope of all
+        # events while keeping point count low for fast blit interaction.
+        _max_pts = 4000
         if len(t) > _max_pts:
             _chunk = len(t) // (_max_pts // 2)
             _n_chunks = len(t) // _chunk
@@ -1471,7 +1522,6 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                 _chunk_t   = t[_s:_e]
                 _imin = int(np.argmin(_chunk_emg))
                 _imax = int(np.argmax(_chunk_emg))
-                # Always put min before max in time order
                 if _imin <= _imax:
                     _t_ds.extend([_chunk_t[_imin], _chunk_t[_imax]])
                     _emg_ds.extend([_chunk_emg[_imin], _chunk_emg[_imax]])
@@ -1677,17 +1727,465 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             self.mmax_file.set(path)
             self.log(f"📐 Mmax reference file: {os.path.basename(path)}")
 
+    def _build_session_tab(self, parent: tk.Frame):
+        """Build the Dataset Setup tab."""
+
+        # ── Step 1: Dataset Setup ─────────────────────────────────────────────
+        setup_frame = tk.LabelFrame(parent, text="Step 1 — Open Dataset",
+                                    padx=8, pady=6)
+        setup_frame.pack(fill='x', padx=10, pady=(10, 4))
+
+        study_row = tk.Frame(setup_frame)
+        study_row.pack(fill='x', pady=(0, 6))
+        tk.Button(study_row, text="📂  Open study folder",
+                  font=("TkDefaultFont", 9, "bold"),
+                  command=self._open_study_folder).pack(side='left', padx=(0, 8))
+        tk.Label(study_row,
+                 text="Auto-detects rawdata/ and derivatives/ subfolders",
+                 fg="grey").pack(side='left')
+
+        ttk.Separator(setup_frame, orient='horizontal').pack(fill='x', pady=4)
+        tk.Label(setup_frame, text="Or set manually:", fg="#555").pack(anchor='w')
+
+        raw_row = tk.Frame(setup_frame)
+        raw_row.pack(fill='x', pady=(4, 2))
+        tk.Label(raw_row, text="Raw data folder:", width=18, anchor='w').pack(side='left')
+        self._rawdata_path = tk.StringVar()
+        self._raw_status_lbl = tk.Label(raw_row, text="Not set", fg="#888", width=6)
+        self._raw_status_lbl.pack(side='right')
+        tk.Button(raw_row, text="Browse…",
+                  command=self._browse_raw_folder).pack(side='right', padx=(4, 0))
+        tk.Entry(raw_row, textvariable=self._rawdata_path,
+                 state="readonly", fg="#555").pack(side='left', fill='x', expand=True, padx=(4, 4))
+
+        deriv_row2 = tk.Frame(setup_frame)
+        deriv_row2.pack(fill='x', pady=(2, 4))
+        tk.Label(deriv_row2, text="Derivatives folder:", width=18, anchor='w').pack(side='left')
+        self._deriv_status_lbl2 = tk.Label(deriv_row2, text="Not set", fg="#888", width=6)
+        self._deriv_status_lbl2.pack(side='right')
+        tk.Button(deriv_row2, text="Browse…",
+                  command=self.browse_derivatives_folder).pack(side='right', padx=(4, 0))
+        tk.Entry(deriv_row2, textvariable=self.derivatives_path,
+                 state="readonly", fg="#555").pack(side='left', fill='x', expand=True, padx=(4, 4))
+
+        def _update_status(*_):
+            self._raw_status_lbl.config(
+                **({"text": "✅", "fg": "#5cb85c"} if self._rawdata_path.get()
+                   else {"text": "Not set", "fg": "#888"}))
+            self._deriv_status_lbl2.config(
+                **({"text": "✅", "fg": "#5cb85c"} if self.derivatives_path.get()
+                   else {"text": "Not set", "fg": "#888"}))
+        self._rawdata_path.trace_add("write", _update_status)
+        self.derivatives_path.trace_add("write", _update_status)
+
+        # ── Step 2: File Queue ────────────────────────────────────────────────
+        queue_frame = tk.LabelFrame(parent,
+            text="Step 2 — File Queue  (double-click a file to load it)",
+            padx=6, pady=4)
+        queue_frame.pack(fill='both', expand=True, padx=10, pady=(0, 6))
+
+        q_toolbar = tk.Frame(queue_frame)
+        q_toolbar.pack(fill='x', pady=(0, 4))
+        tk.Button(q_toolbar, text="+ Add file(s)",
+                  command=self.browse_file).pack(side='left', padx=(0, 4))
+        tk.Button(q_toolbar, text="+ Add folder",
+                  command=self.browse_folder).pack(side='left', padx=(0, 4))
+        tk.Button(q_toolbar, text="🔄 Refresh",
+                  command=self._queue_refresh_from_raw).pack(side='left', padx=(0, 8))
+        tk.Button(q_toolbar, text="Remove selected",
+                  command=self._queue_remove_selected).pack(side='left', padx=(0, 4))
+        tk.Button(q_toolbar, text="▲",
+                  command=self._queue_move_up, width=2).pack(side='left')
+        tk.Button(q_toolbar, text="▼",
+                  command=self._queue_move_down, width=2).pack(side='left', padx=(2, 0))
+        tk.Button(q_toolbar, text="▶  Run all unprocessed",
+                  command=self._queue_run_all,
+                  bg="#5cb85c", fg="white",
+                  font=("TkDefaultFont", 9, "bold")).pack(side='right', padx=(0, 4))
+        tk.Button(q_toolbar, text="▶  Run selected",
+                  command=self._queue_run_selected).pack(side='right', padx=(0, 4))
+
+        q_cols = ("status", "sub", "ses", "limb", "label",
+                  "stim_types", "last_processed", "size", "date", "path")
+        tree_frame = tk.Frame(queue_frame)
+        tree_frame.pack(fill='both', expand=True)
+        self._queue_tree = ttk.Treeview(tree_frame, columns=q_cols,
+            show="headings", height=14, selectmode="extended")
+
+        _sort_state = {}
+        def _sort_by(col):
+            reverse = _sort_state.get(col, False)
+            items = [(self._queue_tree.set(iid, col), iid)
+                     for iid in self._queue_tree.get_children()]
+            items.sort(reverse=reverse)
+            for i, (_, iid) in enumerate(items):
+                self._queue_tree.move(iid, "", i)
+            _sort_state[col] = not reverse
+            arrow = " ▲" if not reverse else " ▼"
+            for c in q_cols:
+                self._queue_tree.heading(c,
+                    text=self._queue_tree.heading(c)["text"].rstrip(" ▲▼"))
+            self._queue_tree.heading(col,
+                text=self._queue_tree.heading(col)["text"] + arrow)
+
+        for col, text, width in [
+            ("status",         "Status",        120),
+            ("sub",            "Subject",         80),
+            ("ses",            "Session",         60),
+            ("limb",           "Limb",            70),
+            ("label",          "File",           260),
+            ("stim_types",     "Stim types",     150),
+            ("last_processed", "Last processed", 130),
+            ("size",           "Size",            70),
+            ("date",           "Modified",       130),
+            ("path",           "Path",           500),
+        ]:
+            self._queue_tree.heading(col, text=text, command=lambda c=col: _sort_by(c))
+            self._queue_tree.column(col, width=width, stretch=False, minwidth=30)
+        self._queue_tree.column("path", width=500, stretch=True, minwidth=200)
+
+        q_vs = ttk.Scrollbar(tree_frame, orient="vertical",   command=self._queue_tree.yview)
+        q_hs = ttk.Scrollbar(tree_frame, orient="horizontal",  command=self._queue_tree.xview)
+        self._queue_tree.configure(yscrollcommand=q_vs.set, xscrollcommand=q_hs.set)
+        self._queue_tree.grid(row=0, column=0, sticky="nsew")
+        q_vs.grid(row=0, column=1, sticky="ns")
+        q_hs.grid(row=1, column=0, sticky="ew")
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+
+        for status, colour in {
+            "not_started": "#888888", "in_progress": "#f0a500",
+            "needs_review": "#d9534f", "complete": "#5cb85c",
+            "stale": "#8b6914", "skipped": "#aaaaaa",
+        }.items():
+            self._queue_tree.tag_configure(status, foreground=colour)
+
+        self._queue_tree.bind("<Double-1>", self._queue_on_double_click)
+
+        self._queue_progress_var = tk.StringVar(value="No files loaded")
+        tk.Label(parent, textvariable=self._queue_progress_var,
+                 fg="grey", anchor="w").pack(fill='x', padx=10, pady=(0, 4))
+
+    def _get_or_create_dataset(self) -> DatasetSession:
+        """Return current dataset session, creating one if needed."""
+        if self._dataset is None:
+            deriv = self.derivatives_path.get()
+            root  = deriv if deriv else os.path.expanduser("~")
+            self._dataset = DatasetSession.load_or_create(root)
+        return self._dataset
+
+    def _queue_refresh(self):
+        """Redraw the queue treeview from current dataset state."""
+        if not hasattr(self, '_queue_tree'):
+            return
+        tree = self._queue_tree
+        tree.delete(*tree.get_children())
+
+        ds = self._dataset
+        if ds is None or not ds.files:
+            self._queue_progress_var.set("No files loaded")
+            return
+
+        for fe in ds.files:
+            status_label = STATUS_LABELS.get(fe.status, fe.status)
+            stim_str     = ", ".join(
+                f"{v}({k})" for k, v in fe.stim_label_map.items()
+            ) if fe.stim_label_map else (
+                ", ".join(fe.stim_letters) if fe.stim_letters else "—"
+            )
+            last = fe.last_processed[:16].replace("T", " ") if fe.last_processed else "—"
+
+            # Parse BIDS fields from path
+            bn = os.path.basename(fe.path)
+            import re as _re
+            _sub  = next((_re.sub(r'^sub-','',p) for p in bn.split('_') if p.startswith('sub-')), "—")
+            _ses  = next((_re.sub(r'^ses-','',p) for p in bn.split('_') if p.startswith('ses-')), "—")
+            _limb = next((p.split('-',1)[1] for p in bn.split('_') if p.startswith('limb-')), "—")
+
+            # File size and modification date
+            try:
+                _stat  = os.stat(fe.path)
+                _bytes = _stat.st_size
+                if _bytes >= 1_073_741_824:
+                    _size = f"{_bytes/1_073_741_824:.1f} GB"
+                elif _bytes >= 1_048_576:
+                    _size = f"{_bytes/1_048_576:.1f} MB"
+                else:
+                    _size = f"{_bytes/1024:.0f} KB"
+                from datetime import datetime as _dt
+                _date = _dt.fromtimestamp(_stat.st_mtime).strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                _size = "—"
+                _date = "—"
+
+            tree.insert("", "end", iid=fe.id,
+                        values=(status_label, _sub, _ses, _limb,
+                                fe.label or fe.basename,
+                                stim_str, last, _size, _date, fe.path),
+                        tags=(fe.status,))
+
+        n_done  = ds.n_complete
+        n_total = ds.n_total
+        self._queue_progress_var.set(
+            f"{n_done} / {n_total} files complete"
+            + (" — ✅ All done!" if ds.all_complete else ""))
+
+    def _queue_selected_ids(self) -> list:
+        return list(self._queue_tree.selection())
+
+    def _queue_selected_id(self) -> str | None:
+        sel = self._queue_selected_ids()
+        return sel[0] if sel else None
+
+    def _queue_remove_selected(self):
+        ids = self._queue_selected_ids()
+        if not ids or self._dataset is None:
+            return
+        for fid in ids:
+            self._dataset.remove_file(fid)
+        self._dataset.save()
+        self._queue_refresh()
+
+    def _queue_move_up(self):
+        fid = self._queue_selected_id()
+        if fid and self._dataset:
+            self._dataset.move_up(fid)
+            self._queue_refresh()
+            self._queue_tree.selection_set(fid)
+
+    def _queue_move_down(self):
+        fid = self._queue_selected_id()
+        if fid and self._dataset:
+            self._dataset.move_down(fid)
+            self._queue_refresh()
+            self._queue_tree.selection_set(fid)
+
+    def _queue_on_double_click(self, event):
+        """Load the double-clicked file and switch to Labels tab."""
+        fid = self._queue_selected_id()
+        if not fid or self._dataset is None:
+            return
+        fe = self._dataset.get_file(fid)
+        if fe:
+            self._load_file_entry(fe)
+
+    def _queue_run_all(self):
+        """Process all unprocessed files sequentially."""
+        if self._dataset is None:
+            messagebox.showwarning("No dataset",
+                "Add files to the queue first.", parent=self.root)
+            return
+        nxt = self._dataset.next_unprocessed()
+        if nxt is None:
+            messagebox.showinfo("All done",
+                "All files in the queue have been processed.", parent=self.root)
+            return
+        self._load_file_entry(nxt, auto_run=True)
+
+    def _queue_run_selected(self):
+        """Process only the selected files."""
+        ids = self._queue_selected_ids()
+        if not ids or self._dataset is None:
+            return
+        entries = [self._dataset.get_file(fid) for fid in ids
+                   if self._dataset.get_file(fid) is not None]
+        unprocessed = [fe for fe in entries
+                       if fe.status not in ("complete", "skipped")]
+        if not unprocessed:
+            messagebox.showinfo("Already done",
+                "All selected files are already complete.", parent=self.root)
+            return
+        self._load_file_entry(unprocessed[0], auto_run=True)
+
+    def _load_file_entry(self, fe: FileEntry, auto_run: bool = False):
+        """Load a FileEntry into the Stage 1 processing pipeline."""
+        self._reset_state_for_new_file()
+        self.file_path.set(fe.path)
+        self._current_file_entry = fe
+        self.log(f"📄 Loading: {fe.basename}")
+
+        # Restore per-file session if available
+        if fe.derivatives_json and os.path.isfile(fe.derivatives_json):
+            try:
+                import json as _json
+                with open(fe.derivatives_json, encoding="utf-8") as fh:
+                    sess = _json.load(fh)
+                # Reuse the existing load_session internals
+                self._apply_loaded_session(sess)
+                self.log("💾 Restored previous session state")
+            except Exception:
+                pass
+
+        # Update status
+        if fe.status == STATUS_NOT_STARTED:
+            fe.mark_in_progress()
+            if self._dataset:
+                self._dataset.save()
+            self._queue_refresh()
+
+        # Trigger the normal file loading flow
+        self._browse_file_path(fe.path, auto_run=auto_run)
+
+    def _open_study_folder(self):
+        """Open a BIDS-style study folder — auto-detects rawdata/ and derivatives/."""
+        folder = filedialog.askdirectory(title="Select study root folder")
+        if not folder:
+            return
+        # Auto-detect rawdata/ subfolder
+        raw_candidate = os.path.join(folder, "rawdata")
+        if os.path.isdir(raw_candidate):
+            self._rawdata_path.set(Path(raw_candidate).as_posix())
+            study_root = folder
+            self.log(f"📂 Raw data: {raw_candidate}")
+        else:
+            # No rawdata/ subfolder — treat the folder itself as raw data
+            self._rawdata_path.set(Path(folder).as_posix())
+            study_root = str(Path(folder).parent)
+            self.log(f"📂 Raw data: {folder}")
+
+        # Derivatives always sits beside rawdata/ at the same level
+        deriv_candidate = str(Path(study_root) / "derivatives")
+        self.derivatives_path.set(Path(deriv_candidate).as_posix())
+        os.makedirs(deriv_candidate, exist_ok=True)
+        self.log(f"📁 Derivatives: {deriv_candidate}")
+        self._update_deriv_status()
+        self._dataset = DatasetSession.load_or_create(deriv_candidate)
+        self._queue_refresh_from_raw()
+
+    def _browse_raw_folder(self):
+        """Manually set the raw data folder — derivatives defaults to sibling folder."""
+        folder = filedialog.askdirectory(title="Select raw data folder")
+        if not folder:
+            return
+        self._rawdata_path.set(Path(folder).as_posix())
+        self.log(f"📂 Raw data folder: {Path(folder).as_posix()}")
+
+        # Default derivatives to ../derivatives (beside rawdata, not inside it)
+        parent = str(Path(folder).parent)
+        deriv_default = str(Path(parent) / "derivatives")
+
+        # Only auto-set if derivatives not already configured
+        if not self.derivatives_path.get():
+            self.derivatives_path.set(Path(deriv_default).as_posix())
+            os.makedirs(deriv_default, exist_ok=True)
+            self.log(f"📁 Derivatives auto-set: {deriv_default}")
+            self._update_deriv_status()
+            self._dataset = DatasetSession.load_or_create(deriv_default)
+
+        self._queue_refresh_from_raw()
+
+    def _queue_refresh_from_raw(self):
+        """Scan the raw data folder and add any new .txt files to the queue."""
+        raw = self._rawdata_path.get()
+        if not raw:
+            messagebox.showinfo("No raw data folder",
+                "Set a raw data folder first using Step 1.", parent=self.root)
+            return
+        EXCLUDE = ("metric_definitions", "metrics_definitions",
+                   "channel_info", "_readme")
+        import glob as _glob
+        all_txt = _glob.glob(os.path.join(raw, "**", "*.txt"), recursive=True)
+        files = sorted(
+            f for f in all_txt
+            if not any(p in os.path.basename(f).lower() for p in EXCLUDE)
+        )
+        if not files:
+            messagebox.showinfo("No files found",
+                "No .txt data files found in the raw data folder.",
+                parent=self.root)
+            return
+        ds = self._get_or_create_dataset()
+        added = 0
+        for fpath in files:
+            if ds.get_by_path(fpath) is None:
+                label = ds.label_from_bids(fpath)
+                ds.add_file(fpath, label=label)
+                added += 1
+        ds.save()
+        self._queue_refresh()
+        self.log(f"🔄 Refreshed queue: {added} new file(s) added "
+                 f"({len(files)} total found)")
+
+    def browse_folder(self):
+        """Add all valid data .txt files from a selected folder (recursive)."""
+        folder = filedialog.askdirectory(
+            title="Select folder or BIDS rawdata root")
+        if not folder:
+            return
+
+        # Recursively find all .txt files, excluding known non-data files
+        EXCLUDE_PATTERNS = (
+            "metric_definitions",
+            "metrics_definitions",
+            "channel_info",
+            "events",
+            "_readme",
+        )
+        import glob as _glob
+        all_txt = _glob.glob(os.path.join(folder, "**", "*.txt"), recursive=True)
+        files = sorted(
+            f for f in all_txt
+            if not any(p in os.path.basename(f).lower() for p in EXCLUDE_PATTERNS)
+        )
+
+        if not files:
+            messagebox.showinfo("No files found",
+                "No data .txt files found in that folder or its subfolders.\n\n"
+                "If your files are in a different format, use '+ Add file(s)' instead.",
+                parent=self.root)
+            return
+
+        ds = self._get_or_create_dataset()
+        added = 0
+        for fpath in files:
+            if ds.get_by_path(fpath) is None:
+                label = ds.label_from_bids(fpath)
+                ds.add_file(fpath, label=label)
+                added += 1
+
+        ds.save()
+        self._queue_refresh()
+        self.log(f"📂 Added {added} file(s) from {os.path.basename(folder)}"
+                 + (f" ({len(files)-added} already in queue)" if len(files) > added else ""))
+
     def browse_file(self):
-        fpath = filedialog.askopenfilename(
-            title="Select a Spike2 .txt file",
+        """Add one or more files to the queue and load the first one."""
+        fpaths = filedialog.askopenfilenames(
+            title="Select Spike2 .txt file(s)",
             filetypes=[("Spike2 export", "*.txt")]
         )
-        if not fpath:
+        if not fpaths:
             return
-        self._reset_state_for_new_file()
-        # Remember the chosen file
-        self.file_path.set(fpath)
-        self.log(f"📄 Selected file: {os.path.basename(fpath)}")
+
+        ds = self._get_or_create_dataset()
+        first_new = None
+        for fpath in fpaths:
+            fe = ds.get_by_path(fpath)
+            if fe is None:
+                label = ds.label_from_bids(fpath)
+                fe = ds.add_file(fpath, label=label)
+                if first_new is None:
+                    first_new = fe
+        ds.save()
+        self._queue_refresh()
+
+        # Load the first newly added file (or re-load if already in queue)
+        target = first_new or ds.get_by_path(fpaths[0])
+        if target:
+            self._load_file_entry(target)
+
+    def _browse_file_path(self, fpath: str, auto_run: bool = False):
+        # Guard: skip non-data files that may have been added to the queue
+        EXCLUDE = ("metric_definitions", "metrics_definitions",
+                   "channel_info", "_readme")
+        if any(p in os.path.basename(fpath).lower() for p in EXCLUDE):
+            self.log(f"⏭  Skipping non-data file: {os.path.basename(fpath)}")
+            if self._dataset and hasattr(self, '_current_file_entry')                     and self._current_file_entry:
+                self._current_file_entry.status = "skipped"
+                self._dataset.save()
+                self._queue_refresh()
+            return
+
         # Auto-detect M-wave reference file in same folder
         if not self.mmax_file.get():
             import glob as _glob
@@ -1732,7 +2230,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         
         # ── prompt for marker choice (if >1)
         if len(marker_set) > 1:
-            self.prompt_marker_choice(sorted(marker_set))
+            self._ask_marker_gui(sorted(marker_set))
         elif marker_set:
             self.marker_choice.set(next(iter(marker_set)))
         
@@ -1913,10 +2411,27 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             title="Select derivatives root folder",
             mustexist=False,
         )
-        if folder:
-            self.derivatives_path.set(folder)
-            self.log(f"📁 Derivatives folder: {folder}")
-            self._update_deriv_status()
+        if not folder:
+            return
+        # Safeguard: warn if derivatives would be inside rawdata
+        raw = self._rawdata_path.get() if hasattr(self, '_rawdata_path') else ""
+        if raw and os.path.normpath(folder).startswith(os.path.normpath(raw)):
+            if not messagebox.askyesno(
+                "Derivatives inside raw data?",
+                f"The selected folder is inside your raw data folder:\n\n"
+                f"  Raw:         {raw}\n"
+                f"  Derivatives: {folder}\n\n"
+                f"It is strongly recommended to keep derivatives beside rawdata/, "
+                f"not inside it.\n\nUse this folder anyway?",
+                parent=self.root):
+                return
+        folder = str(Path(folder))
+        self.derivatives_path.set(Path(folder).as_posix())
+        os.makedirs(folder, exist_ok=True)
+        self.log(f"📁 Derivatives folder: {Path(folder).as_posix()}")
+        self._update_deriv_status()
+        self._dataset = DatasetSession.load_or_create(folder)
+        self._queue_refresh()
 
     def _update_deriv_status(self):
         """Update the derivatives status bar colour and text."""
@@ -2373,7 +2888,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self._labels_tab_confirmed = False
         self._confirm_btn_var.set("⚠  Setup not confirmed — click to confirm")
 
-        # Switch to Tab 1b so user sees it immediately after file load
+        # Switch to Stage 1a Labels tab so user can configure stim types
         self.root.update_idletasks()
         self.notebook.select(self.tab1b_frame)
 
@@ -2426,4 +2941,4 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self._confirm_btn_widget.config(bg="#5cb85c")
         self.log("✔ Label & analysis setup confirmed — ready to run.\n")
         # Switch back to Stage 1a so user can hit Run Analysis
-        self.notebook.select(0)
+        self.notebook.select(2)

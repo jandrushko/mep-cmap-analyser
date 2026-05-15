@@ -1,6 +1,6 @@
 # MEP-CMAP Analyser
 
-**Version 0.8.4 | May 2026**  
+**Version 0.8.5 | May 2026**  
 *Author: Justin Andrushko PhD, Northumbria University*
 
 A BIDS-compliant, open-source tool for processing and quantifying TMS-evoked motor evoked potentials (MEPs) and cortical silent periods (cSPs) from Spike-2 EMG recordings.
@@ -9,17 +9,47 @@ A BIDS-compliant, open-source tool for processing and quantifying TMS-evoked mot
 
 ## Features
 
+- **Dataset Setup** — multi-file session management with a persistent file queue, BIDS folder auto-detection, and processing status tracking across sessions
 - **BIDS-compliant** derivatives output with automatic participant/session naming
-- **Per-trial MEP quantification** — PTP amplitude, onset latency, AUC
-- **Cortical silent period (cSP) detection** using a bootstrap threshold method
+- **Per-trial MEP quantification** — PTP amplitude, onset latency, AUC, cSP duration, paired-pulse ratios
+- **Physiologically-bounded MEP onset detection** — peak-anchored backward scan with per-stim-type latency profiles derived from published normative data (TMS: hand/FDI 18–30 ms, vastus lateralis 18–35 ms, leg 28–45 ms; peripheral nerve: upper limb 2–12 ms, lower limb 4–18 ms)
+- **Cortical silent period (cSP) detection** using a vectorised bootstrap threshold method with MEP-anchored search cap
+- **Auto AUC** — onset-to-cSP start computed automatically for all event types, including those without cSP selected; user can override via drag selector
+- **Auto SP and AUC for unreviewed segments** — silent period and AUC computed in the pipeline for any segment not manually reviewed in the Data Inspector
 - **M-wave normalisation** with plateau-based Mmax detection
-- **Paired-pulse ratios** (SICI, ICF, etc.) with flexible reference assignment
-- **Data Inspector** — interactive per-trial review with draggable markers
+- **Paired-pulse ratios** (SICI, ICF, etc.) with flexible per-stim reference assignment in Stage 1a
+- **Data Inspector** — interactive per-trial review with draggable markers, zoom toolbar, AUC selector, silent period annotation
 - **Filter preview** — real-time frequency response and wavelet time-frequency display
-- **Outlier detection** with interactive review
+- **Outlier detection** with interactive review and Z-score thresholding
 - **Multi-channel support** — additional EMG and force channels for visual inspection
-- **Session save/load** — resume analysis across sessions
-- **LME-ready trial-level CSV output** with Z-scores, detrended values, and pooled statistics
+- **Session save/load** — full session persistence including stim labels, latency profiles, normalisation settings, and inspector edits
+- **Group analysis** — Stage 2 merges all processed sessions into a single LME-ready CSV with study design columns (between/within-subject factors, stim roles)
+- **LME-ready trial-level CSV output** with Z-scores, detrended values, normalised PTP, and pooled statistics
+- **Cross-platform** — Windows, macOS, and Linux supported
+
+---
+
+## Workflow
+
+The tool is organised into four tabs:
+
+### Dataset Setup
+Load a study folder or individual files. The tool auto-detects `rawdata/` and `derivatives/` subfolders (BIDS structure) or accepts manual folder selection. A persistent file queue tracks processing status across sessions — files are marked Not started, In progress, Needs review, Complete, or Stale. Double-click any file to load it; use **Run all unprocessed** to batch process.
+
+### Stage 1a — Labels & Analysis Setup
+Appears automatically after a file is loaded. Configure per-stim-type settings:
+- Label, colour, gap (ms), CSP detection toggle
+- Stimulation type and muscle group (sets physiological latency bounds for onset detection)
+- Internal and external normalisation references
+- Plateau tolerance for Mmax detection
+
+Settings persist between files within a session.
+
+### Stage 1b — Single File Processing
+Filter settings (bandpass, notch, mains noise canceller), time window and MEP onset detection parameters, CSP detection settings, outlier review, and analysis options. Click **Run Analysis** to process the active file.
+
+### Stage 2 — Group Analysis LME Setup
+Scan the derivatives folder to discover all processed sessions. Assign study design columns (e.g. Group, Condition, Timepoint), configure stim type roles (Reference, Conditioned, M-wave), and click **Build group analysis file** to merge all selected sessions into a single `group_level_LME_ready.csv`.
 
 ---
 
@@ -82,7 +112,6 @@ run_pipeline(
     ptp_start    = 10,
     ptp_end      = 50,
     prestim_ms   = 100,
-    bootstrap_iter = 1000,
     marker_name  = "Keyboard",
 )
 ```
@@ -100,20 +129,28 @@ Files should follow BIDS naming conventions for automatic metadata parsing:
 sub-001_ses-01_limb-left_recording.txt
 ```
 
+Single-file recordings with multiple stimulus types and multi-file sessions (one file per condition) are both supported.
+
 ---
 
 ## Output
 
-Results are saved to a `derivatives/` folder alongside the input file, following BIDS structure:
+Results are saved to a `derivatives/` folder beside (not inside) the raw data folder, following BIDS structure:
 
 ```
-derivatives/
-└── sub-001/
-    └── ses-01/
-        ├── sub-001_ses-01_limb-left_All_stims_trial_summary.csv
-        ├── sub-001_ses-01_limb-left_ptp_results.csv
-        ├── sub-001_ses-01_limb-left_bootstrap_comparisons.csv
-        └── figures/
+study/
+├── rawdata/
+│   └── sub-001/ses-01/...
+└── derivatives/
+    ├── dataset_session.json          ← queue state and processing status
+    ├── group_level_LME_ready.csv     ← merged group-level output (Stage 2)
+    └── sub-001/
+        └── ses-01/
+            ├── sub-001_ses-01_limb-left_All_stims_trial_summary.csv
+            ├── sub-001_ses-01_limb-left_All_stims_trial_summary.json
+            ├── sub-001_ses-01_limb-left_ptp_results.csv
+            ├── sub-001_ses-01_limb-left_ptp_results_with_outliers.csv
+            └── figures/
 ```
 
 ### Trial-level CSV columns
@@ -123,12 +160,30 @@ derivatives/
 | `PTP(mV)` | MEP peak-to-peak amplitude |
 | `Latency(ms)` | MEP onset latency |
 | `cSP_Duration(ms)` | Cortical silent period duration |
-| `cSP_MEP_Offset(ms)` | Time of MEP offset (cSP onset) relative to stim |
-| `cSP_EMG_Return(ms)` | Time of EMG return (cSP offset) relative to stim |
+| `cSP_MEP_Offset(ms)` | Time from stim to cSP onset |
+| `cSP_EMG_Return(ms)` | Time from stim to EMG return after cSP |
 | `MEP_cSP_Ratio` | PTP / cSP duration (Orth & Rothwell, 2004) |
-| `Normalised_PTP` | PTP / reference mean (Mmax or SP reference) |
+| `AUC(mV*s)` | Area under the rectified EMG curve (onset to cSP start) |
+| `Normalised_PTP` | PTP / reference mean (Mmax or single-pulse reference) |
+| `Reference_Type` | How the reference mean was computed |
+| `Reference_Mean(mV)` | Reference amplitude used for normalisation |
+| `Z_PTP_Within` | Z-score within stim type |
 | `Z_PTP_Pooled` | Z-score pooled across all conditions |
 | `PTP_Detrended(mV)` | Linearly detrended PTP amplitude |
+| `Outlier_Decision` | Include / Exclude / Reviewed |
+| `Manual_Note` | Annotator note from Data Inspector |
+
+### Group-level CSV additional columns
+
+| Column | Description |
+|--------|-------------|
+| `participant_id` | BIDS participant identifier |
+| `session` | Session label |
+| `task` | Task label (if assigned) |
+| `timepoint` | Timepoint label (if assigned) |
+| `Limb` | Limb identifier parsed from filename |
+| `Stim_Role` | Role assigned in Stage 2 (Reference, Conditioned, M-wave, etc.) |
+| `[custom columns]` | User-defined between/within-subject factors |
 
 ---
 
@@ -154,7 +209,7 @@ python3 build_mac.py
 
 If you use this tool in your research, please cite:
 
-> Andrushko, J.W. (2026). MEP-CMAP Analyser (Version 0.8.4) [Software].
+> Andrushko, J.W. (2026). MEP-CMAP Analyser (Version 0.8.5) [Software].
 > Northumbria University. https://doi.org/10.5281/zenodo.XXXXXXX
 
 ---
