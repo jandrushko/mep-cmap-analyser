@@ -57,7 +57,7 @@ from .dataset_session import (DatasetSession, FileEntry,
                                STATUS_NEEDS_REVIEW, STATUS_COMPLETE,
                                STATUS_STALE, STATUS_LABELS, STATUS_COLOURS)
 from .io import (list_waveform_channels, extract_emg_waveform_and_fs,
-                 extract_stim_times)
+                 extract_stim_times, detect_format)
 from .filters import adaptive_mains_cancel
 from .detection import detect_mep_onset_peak_fraction
 from .inspector import DataInspectorWindow
@@ -416,7 +416,13 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
             self.canvas.bind_all(seq, _on_mousewheel)
 
-        # ── Stage 2: Group Analysis (index 3) ────────────────────────────────
+        # ── Stage 1c: Normalisation — Optional (index 3) ─────────────────────
+        self.tab1c_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab1c_frame,
+                          text="Stage 1c – Normalisation (optional)")
+        self._build_normalisation_tab()
+
+        # ── Stage 2: Group Analysis (index 4) ────────────────────────────────
         self.tab2_frame = ttk.Frame(self.notebook)
         self.notebook.add(self.tab2_frame, text="Stage 2 – Group Analysis LME Setup")
         self._stage2_built = False
@@ -1746,6 +1752,252 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         win.geometry(f"+{_cx}+{_cy}")
         win.grab_set()
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # Stage 1c — External normalisation (optional)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _build_normalisation_tab(self):
+        """Build the Stage 1c normalisation tab."""
+        f = self.tab1c_frame
+        for w in f.winfo_children():
+            w.destroy()
+
+        tk.Label(f,
+            text="Optional: normalise processed results using a reference file's PTP values.\n"
+                 "Both files must be fully processed first (Stage 1a/1b).\n"
+                 "Select the _trials.csv files from the derivatives/results folder.\n"
+                 "The reference mean is computed using the same plateau detection as "
+                 "internal normalisation: if the reference data has a reliable plateau "
+                 "within the tolerance threshold, the plateau mean is used; "
+                 "otherwise the peak value is used.\n"
+                 "Results are written back into the main file's _trials.csv in-place.",
+            justify="left", wraplength=950, fg="grey",
+            font=("TkDefaultFont", 9, "italic")
+        ).pack(anchor="w", padx=16, pady=(12, 6))
+
+        # ── Plateau tolerance ─────────────────────────────────────────────────
+        tol_row = tk.Frame(f)
+        tol_row.pack(anchor="w", padx=16, pady=(0, 8))
+        tk.Label(tol_row, text="Plateau tolerance (%):").pack(side="left")
+        self._norm1c_plateau = tk.DoubleVar(value=self.plateau_tolerance.get())
+        tk.Spinbox(tol_row, from_=1, to=50, increment=1, width=5,
+                   textvariable=self._norm1c_plateau).pack(side="left", padx=6)
+        tk.Label(tol_row,
+            text="Trials within this % of the peak are averaged to form the "
+                 "plateau mean. If fewer than 2 trials qualify, the peak is used.",
+            fg="grey", font=("TkDefaultFont", 8)
+        ).pack(side="left", padx=(4, 0))
+
+        # ── Column headers ────────────────────────────────────────────────────
+        hdr = tk.Frame(f)
+        hdr.pack(fill="x", padx=16, pady=(4, 0))
+        tk.Label(hdr, text="File to normalise  (_trials.csv)",
+                 font=("TkDefaultFont", 9, "bold"), width=52, anchor="w")\
+            .grid(row=0, column=0, padx=4, sticky="w")
+        tk.Label(hdr, text="Reference file  (_trials.csv)",
+                 font=("TkDefaultFont", 9, "bold"), width=52, anchor="w")\
+            .grid(row=0, column=2, padx=4, sticky="w")
+
+        # ── Pairing table ─────────────────────────────────────────────────────
+        self._norm_pairs = []
+        self._norm_pair_frame = tk.Frame(f)
+        self._norm_pair_frame.pack(fill="x", padx=16, pady=4)
+
+        # ── Buttons ───────────────────────────────────────────────────────────
+        btn_row = tk.Frame(f)
+        btn_row.pack(anchor="w", padx=16, pady=8)
+        tk.Button(btn_row, text="+ Add normalisation pair",
+                  command=self._norm_add_pair).pack(side="left", padx=(0, 8))
+        tk.Button(btn_row, text="▶ Apply normalisation",
+                  bg="#5cb85c", fg="white",
+                  command=self._norm_apply_all).pack(side="left")
+
+        self._norm_log_var = tk.StringVar(value="")
+        tk.Label(f, textvariable=self._norm_log_var,
+                 fg="grey", justify="left")\
+            .pack(anchor="w", padx=16, pady=4)
+
+    def _norm_add_pair(self):
+        """Add a new main→reference file pair row."""
+        from tkinter import filedialog as _fd
+        row = len(self._norm_pairs) + 1
+
+        main_var = tk.StringVar()
+        ref_var  = tk.StringVar()
+        self._norm_pairs.append((main_var, ref_var))
+
+        pf = self._norm_pair_frame
+
+        tk.Entry(pf, textvariable=main_var, width=48, state="readonly")\
+            .grid(row=row, column=0, padx=4, pady=2, sticky="w")
+        tk.Button(pf, text="…", width=2,
+                  command=lambda v=main_var: v.set(
+                      _fd.askopenfilename(
+                          title="Select trials CSV to normalise",
+                          filetypes=[("CSV files", "*_trials.csv"),
+                                     ("All CSV", "*.csv")]) or v.get()))\
+            .grid(row=row, column=1, padx=2)
+
+        tk.Entry(pf, textvariable=ref_var, width=48, state="readonly")\
+            .grid(row=row, column=2, padx=4, pady=2, sticky="w")
+        tk.Button(pf, text="…", width=2,
+                  command=lambda v=ref_var: v.set(
+                      _fd.askopenfilename(
+                          title="Select reference trials CSV",
+                          filetypes=[("CSV files", "*_trials.csv"),
+                                     ("All CSV", "*.csv")]) or v.get()))\
+            .grid(row=row, column=3, padx=2)
+
+        tk.Button(pf, text="✕", fg="red", width=2,
+                  command=lambda r=row, p=(main_var, ref_var):
+                      self._norm_remove_pair(r, p))\
+            .grid(row=row, column=4, padx=4)
+
+    def _norm_remove_pair(self, row, pair):
+        if pair in self._norm_pairs:
+            self._norm_pairs.remove(pair)
+        for w in self._norm_pair_frame.grid_slaves(row=row):
+            w.destroy()
+
+    def _norm_apply_all(self):
+        """Apply normalisation for all configured pairs."""
+        import pandas as _pd
+        import numpy as _np
+
+        results = []
+        for main_path, ref_path in [(m.get(), r.get())
+                                     for m, r in self._norm_pairs]:
+            if not main_path or not ref_path:
+                results.append("⚠️  Skipped — missing file path")
+                continue
+            if not os.path.isfile(main_path):
+                results.append(f"⚠️  Not found: {os.path.basename(main_path)}")
+                continue
+            if not os.path.isfile(ref_path):
+                results.append(f"⚠️  Not found: {os.path.basename(ref_path)}")
+                continue
+            try:
+                msg = self._apply_normalisation_pair(main_path, ref_path)
+                results.append(msg)
+            except Exception as e:
+                results.append(f"❌ {os.path.basename(main_path)}: {e}")
+
+        self._norm_log_var.set("\n".join(results))
+
+    def _apply_normalisation_pair(self, main_csv: str, ref_csv: str) -> str:
+        """Apply normalisation from ref_csv to main_csv using the same
+        plateau-detection logic as internal normalisation.
+        Updates Normalised_PTP, Reference_Type, Reference_Mean(mV),
+        Reference_N in the main CSV in-place.
+        """
+        import pandas as _pd
+        import numpy as _np
+
+        df_main = _pd.read_csv(main_csv)
+        df_ref  = _pd.read_csv(ref_csv)
+
+        # Get clean reference PTPs (exclude outliers)
+        _ref_ptps = _pd.to_numeric(
+            df_ref.loc[df_ref["Outlier_Decision"] != "Outlier", "PTP(mV)"],
+            errors='coerce').dropna().tolist()
+
+        if not _ref_ptps:
+            return (f"⚠️  {os.path.basename(ref_csv)}: "
+                    f"no clean trials found in reference file")
+
+        # Run the same plateau detection as internal normalisation
+        from .normalisation import compute_mmax as _cmmax
+        plateau_tol = self._norm1c_plateau.get() / 100.0
+        _result = _cmmax(_ref_ptps, plateau_tolerance=plateau_tol)
+        ref_mean = _result["mmax"]
+        ref_n    = _result["n_plateau"]
+        ref_type = _result["method"]
+
+        if ref_mean is None or ref_mean <= 0:
+            return (f"⚠️  {os.path.basename(ref_csv)}: "
+                    f"could not compute reference mean")
+
+        # Apply to all clean trials in main file
+        _col_idx = {c: i for i, c in enumerate(df_main.columns)}
+        _ptp_col = "PTP(mV)"
+        _norm_col = "Normalised_PTP"
+        _rtype_col = "Reference_Type"
+        _rmean_col = "Reference_Mean(mV)"
+        _rn_col    = "Reference_N"
+
+        for col in [_norm_col, _rtype_col, _rmean_col, _rn_col]:
+            if col not in df_main.columns:
+                df_main[col] = ""
+            df_main[col] = df_main[col].astype(object)
+
+        mask = df_main["Outlier_Decision"] != "Outlier"
+        ptps = _pd.to_numeric(df_main.loc[mask, _ptp_col], errors='coerce')
+        df_main.loc[mask, _norm_col]  = (ptps / ref_mean).round(4)
+        df_main.loc[mask, _rtype_col] = ref_type
+        df_main.loc[mask, _rmean_col] = round(ref_mean, 4)
+        df_main.loc[mask, _rn_col]    = ref_n
+
+        df_main.to_csv(main_csv, index=False)
+
+        # Also update the _trials_with_outliers.csv if it exists
+        _with_out = main_csv.replace("_trials.csv", "_trials_with_outliers.csv")
+        if os.path.isfile(_with_out):
+            df_all = _pd.read_csv(_with_out)
+            for col in [_norm_col, _rtype_col, _rmean_col, _rn_col]:
+                if col not in df_all.columns:
+                    df_all[col] = ""
+                df_all[col] = df_all[col].astype(object)
+            _mask_all = df_all["Outlier_Decision"] != "Outlier"
+            _ptps_all = _pd.to_numeric(
+                df_all.loc[_mask_all, _ptp_col], errors='coerce')
+            df_all.loc[_mask_all, _norm_col]  = (_ptps_all / ref_mean).round(4)
+            df_all.loc[_mask_all, _rtype_col] = ref_type
+            df_all.loc[_mask_all, _rmean_col] = round(ref_mean, 4)
+            df_all.loc[_mask_all, _rn_col]    = ref_n
+            df_all.to_csv(_with_out, index=False)
+
+        # ── Update summary files ──────────────────────────────────────────────
+        # Recompute Mean/SD Normalised_PTP from the updated trials data,
+        # grouped by StimType — same logic as pipeline_write_outputs.
+        def _update_summary(summary_csv, trials_df):
+            if not os.path.isfile(summary_csv):
+                return
+            df_sum = _pd.read_csv(summary_csv)
+            # Ensure columns exist
+            for col in ["Mean_Normalised_PTP", "SD_Normalised_PTP",
+                        "Reference_Type", "Reference_Mean(mV)", "Reference_N"]:
+                if col not in df_sum.columns:
+                    df_sum[col] = _np.nan
+                df_sum[col] = df_sum[col].astype(object)
+
+            clean = trials_df[trials_df["Outlier_Decision"] != "Outlier"].copy()
+            clean[_norm_col] = _pd.to_numeric(clean[_norm_col], errors='coerce')
+
+            for idx, row in df_sum.iterrows():
+                st = row.get("StimType", row.get("Stim_Type", ""))
+                grp = clean[clean["StimType"] == st][_norm_col].dropna()
+                if len(grp) > 0:
+                    df_sum.at[idx, "Mean_Normalised_PTP"] = round(float(grp.mean()), 4)
+                    df_sum.at[idx, "SD_Normalised_PTP"]   = round(float(grp.std(ddof=1)), 4) \
+                                                             if len(grp) > 1 else _np.nan
+                    df_sum.at[idx, "Reference_Type"]      = ref_type
+                    df_sum.at[idx, "Reference_Mean(mV)"]  = round(ref_mean, 4)
+                    df_sum.at[idx, "Reference_N"]         = ref_n
+            df_sum.to_csv(summary_csv, index=False)
+
+        _summary_csv      = main_csv.replace("_trials.csv", "_summary.csv")
+        _summary_with_out = main_csv.replace("_trials.csv", "_summary_with_outliers.csv")
+
+        # Use the updated trials data for summary recomputation
+        _update_summary(_summary_csv, df_main)
+        if os.path.isfile(_with_out):
+            _update_summary(_summary_with_out,
+                            _pd.read_csv(_with_out))
+
+        return (f"✅ {os.path.basename(main_csv)}: "
+                f"normalised to {ref_type} = {ref_mean:.4f} mV "
+                f"(N={ref_n}, from {os.path.basename(ref_csv)})")
+
     def _browse_mmax_file(self):
         """Browse for an external M-wave reference file."""
         path = filedialog.askopenfilename(
@@ -2390,38 +2642,43 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                          f"{os.path.basename(_candidates[0])}")
 
         marker_set = set()
-        # Map each stim type to all its timestamps (seconds) across the whole file.
-        # We filter to the crop range later, after the user has selected it.
         stim_events: dict[str, list[float]] = {}
-        stim_pattern = re.compile(r'^([\d.]+)\s+"(.{1})\?\?\?"')
 
-        # ── scan the single file
-        try:
-            with open(fpath, 'r') as f:
-                lines = f.readlines()
-                # Detect marker sources
+        # ── Detect file format and scan accordingly ───────────────────────────
+        _fmt = detect_format(fpath)
+
+        if _fmt == 'labchart':
+            # LabChart: stim times come from the analogue stim channel.
+            # No DigMark channels — marker_choice is unused for LabChart.
+            # Set to 'A' so extract_stim_times gets label 'A' (not 'L').
+            self.marker_choice.set('A')
+            self.log("📋 LabChart format detected — stim times from analogue trigger channel")
+            # stim_events populated later via extract_stim_times in pipeline
+        else:
+            # Spike2: scan for DigMark channels and stim type timestamps
+            stim_pattern = re.compile(r'^([\d.]+)\s+"(.{1})\?\?\?"')
+            try:
+                with open(fpath, 'r') as f:
+                    lines = f.readlines()
                 for i in range(len(lines)):
                     if lines[i].strip().startswith('"Marker"') and i + 2 < len(lines):
                         m = lines[i + 2].strip().strip('"')
                         if m:
                             marker_set.add(m)
-                # Detect stim types + timestamps
                 for line in lines:
                     m = stim_pattern.match(line.strip())
                     if m:
                         t_s = float(m.group(1))
                         stype = m.group(2)
                         stim_events.setdefault(stype, []).append(t_s)
+            except Exception as e:
+                self.log(f"❌ Error reading {os.path.basename(fpath)}: {e}")
+                return
 
-        except Exception as e:
-            self.log(f"❌ Error reading {os.path.basename(fpath)}: {e}")
-            return
-        
-        # ── prompt for marker choice (if >1)
-        if len(marker_set) > 1:
-            self._ask_marker_gui(sorted(marker_set))
-        elif marker_set:
-            self.marker_choice.set(next(iter(marker_set)))
+            if len(marker_set) > 1:
+                self._ask_marker_gui(sorted(marker_set))
+            elif marker_set:
+                self.marker_choice.set(next(iter(marker_set)))
         
         # ── populate inline channel dropdown
         chan_list = list_waveform_channels(fpath)
@@ -2532,8 +2789,11 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                     return
 
         # ── Filter stim types to those with at least one event in the selected range
-        if self.crop_ranges:
-            # Multi-range crop: keep types that appear in ANY of the selected spans
+        if _fmt == 'labchart':
+            # For LabChart, stim types come from the pipeline (stim channel detection).
+            # Pre-populate with a single type 'A' — user can relabel in Stage 1a.
+            stim_types_found = {'A'}
+        elif self.crop_ranges:
             stim_types_found = {
                 stype for stype, times in stim_events.items()
                 if any(start <= t <= end
@@ -2541,13 +2801,11 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                        for start, end in self.crop_ranges)
             }
         elif self.crop_start is not None and self.crop_end is not None:
-            # Single-range crop
             stim_types_found = {
                 stype for stype, times in stim_events.items()
                 if any(self.crop_start <= t <= self.crop_end for t in times)
             }
         else:
-            # Whole file: include everything
             stim_types_found = set(stim_events.keys())
 
         # ── prompt for study metadata (BIDS)
@@ -2576,17 +2834,12 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             elif pl.startswith('measure-'): result['measure']        = part[8:]
         return result
 
-    def prompt_study_metadata(self):
+    def prompt_study_metadata(self, context: str = ""):
         """
         Modal dialog to collect BIDS-style metadata.
-        Fields are auto-populated from the filename, then overlaid with
-        remembered settings if the user ticked "Remember these settings".
+        context: optional filename shown at top to clarify which file this is for.
         """
         parsed = self._parse_bids_from_filename(self.file_path.get())
-        # participant_id and session are FILE-SPECIFIC — always use the
-        # parsed filename values so loading a new file auto-updates them.
-        # task and timepoint are STUDY-WIDE — carry them over from
-        # remembered / previous metadata as a convenience default.
         carry = self._remembered_meta or self.study_metadata
         v_sub     = tk.StringVar(value=parsed['participant_id'] or carry.participant_id)
         v_ses     = tk.StringVar(value=parsed['session']        or carry.session or 'ses-01')
@@ -2597,21 +2850,32 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         v_rem     = tk.BooleanVar(value=self._remembered_meta is not None)
 
         win = tk.Toplevel(self.root)
-        win.title("Study Metadata (BIDS)")
+        win.title("Study Metadata (BIDS)" + (f" — {context}" if context else ""))
         win.resizable(False, False)
         win.transient(self.root)
 
         pad = dict(padx=10, pady=4)
 
-        tk.Label(win, text="Enter study metadata for BIDS-style output naming.",
-                 font=("TkDefaultFont", 9, "italic")).grid(
-                 row=0, column=0, columnspan=3, **pad, sticky="w")
+        if context:
+            tk.Label(win, text=f"📋 External normalisation file: {context}",
+                     fg="#d9534f", font=("TkDefaultFont", 9, "bold")).grid(
+                     row=0, column=0, columnspan=3, **pad, sticky="w")
+            tk.Label(win, text="Enter metadata for BIDS-style output naming.",
+                     font=("TkDefaultFont", 9, "italic")).grid(
+                     row=1, column=0, columnspan=3, **pad, sticky="w")
+            _row_offset = 2
+        else:
+            tk.Label(win, text="Enter study metadata for BIDS-style output naming.",
+                     font=("TkDefaultFont", 9, "italic")).grid(
+                     row=0, column=0, columnspan=3, **pad, sticky="w")
+            _row_offset = 1
 
         # Helper to add a labelled row
         def _row(r, label, var, example):
-            tk.Label(win, text=label).grid(row=r, column=0, sticky="e", **pad)
-            tk.Entry(win, textvariable=var, width=22).grid(row=r, column=1, sticky="w", **pad)
-            tk.Label(win, text=example, fg="grey", font=("TkDefaultFont", 8))              .grid(row=r, column=2, sticky="w", padx=(0, 10))
+            tk.Label(win, text=label).grid(row=r+_row_offset, column=0, sticky="e", **pad)
+            tk.Entry(win, textvariable=var, width=22).grid(row=r+_row_offset, column=1, sticky="w", **pad)
+            tk.Label(win, text=example, fg="grey", font=("TkDefaultFont", 8))\
+                .grid(row=r+_row_offset, column=2, sticky="w", padx=(0, 10))
 
         _row(1, "Participant ID *",  v_sub,  "e.g.  sub-JD001  or  JD001")
         _row(2, "Session",           v_ses,  "e.g.  ses-01  (default: ses-01)")
@@ -2620,9 +2884,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         _row(5, "Timepoint",         v_tp,   "e.g.  pre / post  (optional)")
 
         # Measure type — dropdown of common TMS paradigms
-        tk.Label(win, text="Measure type").grid(row=6, column=0, sticky="e", **pad)
+        tk.Label(win, text="Measure type").grid(row=6+_row_offset, column=0, sticky="e", **pad)
         measure_frame = tk.Frame(win)
-        measure_frame.grid(row=6, column=1, columnspan=2, sticky="w")
+        measure_frame.grid(row=6+_row_offset, column=1, columnspan=2, sticky="w")
         _measure_choices = ['CSE', 'SICI', 'ICF', 'LICI', 'SAI', 'LAI', 'M-wave', 'CMEP', 'Other']
         measure_cb = ttk.Combobox(measure_frame, textvariable=v_measure,
                                   values=_measure_choices, width=10)
@@ -2631,10 +2895,10 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                  fg="grey", font=("TkDefaultFont", 8)).pack(side="left", padx=(6,0))
 
         tk.Checkbutton(win, text="Remember these settings for the next file",
-                       variable=v_rem)          .grid(row=7, column=0, columnspan=3, sticky="w", padx=10, pady=(8, 2))
+                       variable=v_rem)          .grid(row=7+_row_offset, column=0, columnspan=3, sticky="w", padx=10, pady=(8, 2))
 
         err_lbl = tk.Label(win, text="", fg="red")
-        err_lbl.grid(row=8, column=0, columnspan=3, sticky="w", padx=10)
+        err_lbl.grid(row=8+_row_offset, column=0, columnspan=3, sticky="w", padx=10)
 
         def _save(_e=None):
             raw_sub = v_sub.get().strip()
@@ -2664,7 +2928,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             win.destroy()
 
         btn_row = tk.Frame(win)
-        btn_row.grid(row=9, column=0, columnspan=3, pady=10)
+        btn_row.grid(row=9+_row_offset, column=0, columnspan=3, pady=10)
         tk.Button(btn_row, text="OK", width=10, command=_save).pack(side="left", padx=6)
         tk.Button(btn_row, text="Cancel", width=10,
                   command=win.destroy).pack(side="left", padx=6)
@@ -2983,7 +3247,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         # ── column headers ────────────────────────────────────────────────────
         headers = ["Stim", "Label", "Colour", "In combined",
                    "Gap (ms)", "Detect CSP", "Normalise to (internal)",
-                   "Normalise to (external)", "Plateau (%)",
+                   "Plateau (%)",
                    "Stim type", "Muscle group", "Min lat (ms)", "Max lat (ms)"]
         for c, h in enumerate(headers):
             tk.Label(inner, text=h,
@@ -2997,54 +3261,49 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self._lab_entry_gap     = {}
         self._lab_entry_csp     = {}
         self._lab_entry_ref     = {}
-        self._lab_entry_mmax    = {}
         self._lab_entry_plateau = {}
         self._lat_min_vars      = {}
         self._lat_max_vars      = {}
-        self._lat_stype_vars    = {}   # {stim: StringVar for stim type}
-        self._lat_muscle_vars   = {}   # {stim: StringVar for muscle group}
+        self._lat_stype_vars    = {}
+        self._lat_muscle_vars   = {}
 
         for r, stim in enumerate(sorted(stim_types), start=2):
             tk.Label(inner, text=f"{stim}:")\
                 .grid(row=r, column=0, sticky="e", padx=(8,2))
 
-            # Label — preserve if seen before
-            v_lbl = tk.StringVar(
-                value=self.label_map.get(stim, stim))
+            # Label
+            v_lbl = tk.StringVar(value=self.label_map.get(stim, stim))
             tk.Entry(inner, textvariable=v_lbl, width=18)\
                 .grid(row=r, column=1, padx=4, sticky="w")
             self._lab_entry_label[stim] = v_lbl
 
             # Colour
             v_col = tk.StringVar(
-                value=self.color_map.get(
-                    stim, colour_choices[(r-2) % len(colour_choices)]))
+                value=self.color_map.get(stim,
+                    colour_choices[(r-2) % len(colour_choices)]))
             tk.OptionMenu(inner, v_col, *colour_choices)\
                 .grid(row=r, column=2, padx=4, sticky="w")
             self._lab_entry_colour[stim] = v_col
 
             # Include in combined plot
-            v_inc = tk.BooleanVar(
-                value=self.plot_included.get(stim, True))
+            v_inc = tk.BooleanVar(value=self.plot_included.get(stim, True))
             tk.Checkbutton(inner, variable=v_inc)\
                 .grid(row=r, column=3, padx=10, sticky="w")
             self._lab_entry_include[stim] = v_inc
 
             # Gap ms
-            v_gap = tk.DoubleVar(
-                value=self.gap_ms_map.get(stim, 0.0))
+            v_gap = tk.DoubleVar(value=self.gap_ms_map.get(stim, 0.0))
             tk.Entry(inner, textvariable=v_gap, width=6)\
                 .grid(row=r, column=4, padx=4, sticky="w")
             self._lab_entry_gap[stim] = v_gap
 
             # Detect CSP
-            v_csp = tk.BooleanVar(
-                value=(stim in self.csp_types))
+            v_csp = tk.BooleanVar(value=(stim in self.csp_types))
             tk.Checkbutton(inner, variable=v_csp)\
                 .grid(row=r, column=5, padx=10, sticky="w")
             self._lab_entry_csp[stim] = v_csp
 
-            # Internal normalisation reference — restore full display string if saved
+            # Internal normalisation reference
             _ref_display = getattr(self, '_reference_display', {}).get(stim, "None")
             v_ref = tk.StringVar(value=_ref_display)
             ref_cb = ttk.Combobox(inner, textvariable=v_ref,
@@ -3052,33 +3311,22 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             ref_cb.grid(row=r, column=6, padx=6, sticky="w")
             self._lab_entry_ref[stim] = (v_ref, ref_cb)
 
-            # External Mmax file (per-stim; shared mmax_file is used when blank)
-            v_mmax = tk.StringVar(value="")
-            mmax_frame = tk.Frame(inner)
-            mmax_frame.grid(row=r, column=7, padx=4, sticky="w")
-            tk.Entry(mmax_frame, textvariable=v_mmax, width=22)\
-                .pack(side="left")
-            tk.Button(mmax_frame, text="…", width=2,
-                command=lambda v=v_mmax: self._browse_mmax_for_var(v))\
-                .pack(side="left", padx=(2,0))
-            self._lab_entry_mmax[stim] = v_mmax
-
             # Plateau tolerance (per-stim, default from global)
             v_plat = tk.DoubleVar(value=self.plateau_tolerance.get())
             tk.Spinbox(inner, from_=1, to=30, increment=1, width=5,
                        textvariable=v_plat)\
-                .grid(row=r, column=8, padx=4, sticky="w")
+                .grid(row=r, column=7, padx=4, sticky="w")
             self._lab_entry_plateau[stim] = v_plat
 
-            # Stim type dropdown — restore from saved map if available
+            # Stim type dropdown
             _prev_stype  = self.latency_stim_map.get(stim, "TMS")
             _prev_muscle = self.latency_muscle_map.get(stim, "Hand / FDI")
-            _prev_lat    = self.latency_map.get(stim)  # (min_ms, max_ms) or None
+            _prev_lat    = self.latency_map.get(stim)
             v_stype = tk.StringVar(value=_prev_stype)
             stype_cb = ttk.Combobox(inner, textvariable=v_stype,
                                     values=list(MUSCLE_OPTIONS.keys()),
                                     state="readonly", width=14)
-            stype_cb.grid(row=r, column=9, padx=4, sticky="w")
+            stype_cb.grid(row=r, column=8, padx=4, sticky="w")
 
             # Muscle group — restore saved value, ensuring it's valid for stim type
             _muscle_opts = MUSCLE_OPTIONS.get(_prev_stype, ["Hand / FDI"])
@@ -3088,7 +3336,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             muscle_cb = ttk.Combobox(inner, textvariable=v_muscle,
                                      values=_muscle_opts,
                                      state="readonly", width=22)
-            muscle_cb.grid(row=r, column=10, padx=4, sticky="w")
+            muscle_cb.grid(row=r, column=9, padx=4, sticky="w")
 
             self._lat_stype_vars[stim]  = v_stype
             self._lat_muscle_vars[stim] = v_muscle
@@ -3098,9 +3346,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             v_min = tk.DoubleVar(value=_def_min)
             v_max = tk.DoubleVar(value=_def_max)
             tk.Entry(inner, textvariable=v_min, width=5)\
-                .grid(row=r, column=11, padx=4, sticky="w")
+                .grid(row=r, column=10, padx=4, sticky="w")
             tk.Entry(inner, textvariable=v_max, width=5)\
-                .grid(row=r, column=12, padx=4, sticky="w")
+                .grid(row=r, column=11, padx=4, sticky="w")
 
             self._lat_min_vars[stim] = v_min
             self._lat_max_vars[stim] = v_max
@@ -3168,13 +3416,131 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self.notebook.select(self.tab1b_frame)
 
     def _browse_mmax_for_var(self, string_var):
-        """Browse for a per-stim Mmax file and store in the given StringVar."""
+        """Interactively configure an external normalisation reference file.
+        Collects: file path, EMG channel, stim label, crop range, BIDS metadata.
+        Stores the result as a JSON config string in string_var.
+        """
         from tkinter import filedialog as _fd
+        import json as _json
+
         path = _fd.askopenfilename(
-            title="Select Mmax reference file",
-            filetypes=[("Spike2 export", "*.txt"), ("All files", "*.*")])
-        if path:
-            string_var.set(path)
+            title="Select external normalisation reference file",
+            filetypes=[("Data files", "*.txt"), ("All files", "*.*")])
+        if not path:
+            return
+
+        # ── Step 1: Channel selection ─────────────────────────────────────────
+        try:
+            chan_list = list_waveform_channels(path)
+        except Exception as e:
+            messagebox.showerror("File error",
+                f"Could not read channels:\n{e}", parent=self.root)
+            return
+
+        chosen_channel = 0
+        if len(chan_list) > 1:
+            dlg = tk.Toplevel(self.root)
+            dlg.title(f"External file — Select EMG channel")
+            dlg.transient(self.root)
+            dlg.resizable(False, False)
+            dlg.grab_set()
+            tk.Label(dlg,
+                text=f"File: {os.path.basename(path)}\n\nSelect the EMG channel:",
+                padx=16, pady=8, justify="left").pack(anchor="w")
+            _ch_var = tk.StringVar(value=chan_list[0])
+            ttk.Combobox(dlg, textvariable=_ch_var, values=chan_list,
+                         state="readonly", width=30).pack(padx=16, pady=4)
+            tk.Button(dlg, text="OK", width=10,
+                      command=dlg.destroy).pack(pady=(0, 10))
+            self.root.update_idletasks(); dlg.update_idletasks()
+            x = self.root.winfo_x() + (self.root.winfo_width()  - dlg.winfo_width())  // 2
+            y = self.root.winfo_y() + (self.root.winfo_height() - dlg.winfo_height()) // 2
+            dlg.geometry(f"+{x}+{y}")
+            self.root.wait_window(dlg)
+            chosen_channel = (chan_list.index(_ch_var.get())
+                              if _ch_var.get() in chan_list else 0)
+
+        # ── Step 2: Stim label ────────────────────────────────────────────────
+        used = set(self.label_map.keys()) if self.label_map else {'A'}
+        avail = [c for c in 'BCDEFGHIJKLMNOPQRSTUVWXYZ' if c not in used]
+        default_lbl = avail[0] if avail else 'Z'
+
+        fmt = detect_format(path)
+        stim_label = default_lbl
+        if fmt == 'labchart':
+            result = simpledialog.askstring(
+                "External file — Stim label",
+                f"Assign a single-letter label for:\n{os.path.basename(path)}\n\n"
+                f"Must differ from main file labels: {', '.join(sorted(used))}",
+                initialvalue=default_lbl, parent=self.root)
+            if result:
+                stim_label = result.strip().upper()[:1] or default_lbl
+
+        # ── Step 3: Data range ────────────────────────────────────────────────
+        crop_start, crop_end = None, None
+        whole = messagebox.askyesno(
+            "External file — Data range",
+            f"Analyse the entire file?\n{os.path.basename(path)}\n\n"
+            "Choose 'No' to select a specific range.",
+            parent=self.root)
+        if not whole:
+            # Temporarily swap state so _crop_selector works on ext file
+            _orig_path  = self.file_path.get()
+            _orig_ch    = self.channel_idx
+            _orig_cs    = self.crop_start
+            _orig_ce    = self.crop_end
+            _orig_cr    = getattr(self, 'crop_ranges', None)
+            _orig_mc    = self.marker_choice.get()
+            self.file_path.set(path)
+            self.channel_idx = chosen_channel
+            self.crop_start  = None
+            self.crop_end    = None
+            self.crop_ranges = None
+            self.marker_choice.set(stim_label)
+            self._crop_selector(path)
+            crop_start = self.crop_start
+            crop_end   = self.crop_end
+            self.file_path.set(_orig_path)
+            self.channel_idx = _orig_ch
+            self.crop_start  = _orig_cs
+            self.crop_end    = _orig_ce
+            self.crop_ranges = _orig_cr
+            self.marker_choice.set(_orig_mc)
+
+        # ── Step 4: BIDS metadata ─────────────────────────────────────────────
+        _orig_path = self.file_path.get()
+        _orig_meta = getattr(self, 'study_metadata', None)
+        self.file_path.set(path)
+        self.prompt_study_metadata(context=os.path.basename(path))
+        bids_participant_id = self.study_metadata.participant_id
+        bids_session        = self.study_metadata.session
+        bids_task           = self.study_metadata.task
+        bids_timepoint      = self.study_metadata.timepoint
+        bids_measure        = self.study_metadata.measure
+        self.file_path.set(_orig_path)
+        if _orig_meta is not None:
+            self.study_metadata = _orig_meta
+
+        # ── Store config ──────────────────────────────────────────────────────
+        config = {
+            "path":                path,
+            "channel_idx":         chosen_channel,
+            "stim_label":          stim_label,
+            "crop_start":          crop_start,
+            "crop_end":            crop_end,
+            "all_channels":        chan_list,
+            "bids_participant_id": bids_participant_id,
+            "bids_session":        bids_session,
+            "bids_task":           bids_task,
+            "bids_timepoint":      bids_timepoint,
+            "bids_measure":        bids_measure,
+        }
+        string_var.set(_json.dumps(config))
+        self.log(f"📋 External ref: {os.path.basename(path)} "
+                 f"| Ch {chosen_channel} ({chan_list[chosen_channel]}) "
+                 f"| Label '{stim_label}'"
+                 + (f" | t=[{crop_start:.1f},{crop_end:.1f}]s"
+                    if crop_start is not None else " | full file"))
 
     def _confirm_labels_tab(self):
         """Read Tab 1b widgets into self.* dicts and mark setup as confirmed."""
@@ -3194,7 +3560,6 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             if sel and sel != "None" and sel.startswith("Normalise to "):
                 ref_letter = sel.split("to ")[1].strip().split(" ")[0]
                 self.reference_map[k] = ref_letter
-                # Also store the full display string so it can be restored on rebuild
                 self._reference_display = getattr(self, '_reference_display', {})
                 self._reference_display[k] = sel
 

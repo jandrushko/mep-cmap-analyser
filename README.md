@@ -1,6 +1,6 @@
 # MEP-CMAP Analyser
 
-**Version 0.8.7 | May 2026**  
+**Version 0.8.8 | May 2026**  
 *Author: Justin Andrushko PhD, Northumbria University*
 
 A BIDS-compliant, open-source tool for processing and quantifying TMS-evoked motor evoked potentials (MEPs) and cortical silent periods (cSPs) from Spike-2 EMG recordings.
@@ -41,7 +41,7 @@ Load a study folder or individual files. The tool auto-detects `rawdata/` and `d
 * Use **Run all unprocessed** to batch process
 * Use **Refresh** to detect newly added files (previously excluded files are remembered and not re-added)
 * Right-click → **Show excluded files** to restore previously removed files
-* Queue state is saved to `dataset\_session.json` in the derivatives folder
+* Queue state is saved to `dataset\\\_session.json` in the derivatives folder
 
 ### Stage 1a — Labels \& Analysis Setup
 
@@ -64,7 +64,7 @@ When reloading a previously processed file:
 
 ### Stage 2 — Group Analysis LME Setup
 
-Scan the derivatives folder to discover all processed sessions. Assign study design columns (e.g. Group, Condition, Timepoint), configure stim type roles (Reference, Conditioned, M-wave), and click **Build group analysis file** to merge all selected sessions into a single `group\_level\_LME\_ready.csv`.
+Scan the derivatives folder to discover all processed sessions. Assign study design columns (e.g. Group, Condition, Timepoint), configure stim type roles (Reference, Conditioned, M-wave), and click **Build group analysis file** to merge all selected sessions into a single `group\\\_level\\\_LME\\\_ready.csv`.
 
 \---
 
@@ -88,9 +88,9 @@ Download the latest release for your platform from the [Releases page](https://g
 
 |Platform|File|
 |-|-|
-|Windows|`MEP-CMAP\_Analyser\_Windows.zip`|
-|macOS|`MEP-CMAP\_Analyser\_Mac.zip`|
-|Linux|`MEP-CMAP\_Analyser\_Linux.tar.gz`|
+|Windows|`MEP-CMAP\\\_Analyser\\\_Windows.zip`|
+|macOS|`MEP-CMAP\\\_Analyser\\\_Mac.zip`|
+|Linux|`MEP-CMAP\\\_Analyser\\\_Linux.tar.gz`|
 
 Unzip and run the executable — no installation required.
 
@@ -100,7 +100,7 @@ Unzip and run the executable — no installation required.
 git clone https://github.com/justinAndrushko/mep-cmap-analyser.git
 cd mep-cmap-analyser
 pip install -r requirements.txt
-python MEP\_CMAP\_Analyser.py
+python MEP\\\_CMAP\\\_Analyser.py
 ```
 
 \---
@@ -112,23 +112,23 @@ python MEP\_CMAP\_Analyser.py
 mep-cmap
 
 # Or from Python
-from mep\_cmap import run\_app
-run\_app()
+from mep\\\_cmap import run\\\_app
+run\\\_app()
 ```
 
 ### Scripted pipeline (no GUI)
 
 ```python
-from mep\_cmap import run\_pipeline, PipelineConfig
+from mep\\\_cmap import run\\\_pipeline, PipelineConfig
 
-run\_pipeline(
-    input\_path   = "path/to/recording.txt",
-    pre\_ms       = 20,
-    post\_ms      = 400,
-    ptp\_start    = 10,
-    ptp\_end      = 50,
-    prestim\_ms   = 100,
-    marker\_name  = "Keyboard",
+run\\\_pipeline(
+    input\\\_path   = "path/to/recording.txt",
+    pre\\\_ms       = 20,
+    post\\\_ms      = 400,
+    ptp\\\_start    = 10,
+    ptp\\\_end      = 50,
+    prestim\\\_ms   = 100,
+    marker\\\_name  = "Keyboard",
 )
 ```
 
@@ -144,7 +144,7 @@ The tool reads **Spike-2 text exports** (`.txt`) containing:
 Files should follow BIDS naming conventions for automatic metadata parsing:
 
 ```
-sub-001\_ses-01\_limb-left\_recording.txt
+sub-001\\\_ses-01\\\_limb-left\\\_recording.txt
 ```
 
 Single-file recordings with multiple stimulus types and multi-file sessions (one file per condition) are both supported.
@@ -160,17 +160,17 @@ study/
 ├── rawdata/
 │   └── sub-001/ses-01/...
 └── derivatives/
-    ├── dataset\_session.json               ← queue state, processing status, excluded files
-    ├── group\_level\_LME\_ready.csv          ← merged group-level output (Stage 2)
+    ├── dataset\\\_session.json               ← queue state, processing status, excluded files
+    ├── group\\\_level\\\_LME\\\_ready.csv          ← merged group-level output (Stage 2)
     └── sub-001/
         └── ses-01/
             ├── results/
-            │   ├── sub-001\_ses-01\_limb-left\_All\_stims\_trial\_summary.csv
-            │   ├── sub-001\_ses-01\_limb-left\_All\_stims\_trial\_summary.json
-            │   ├── sub-001\_ses-01\_limb-left\_ptp\_results.csv
-            │   └── sub-001\_ses-01\_limb-left\_ptp\_results\_with\_outliers.csv
+            │   ├── sub-001\\\_ses-01\\\_limb-left\\\_All\\\_stims\\\_trial\\\_summary.csv
+            │   ├── sub-001\\\_ses-01\\\_limb-left\\\_All\\\_stims\\\_trial\\\_summary.json
+            │   ├── sub-001\\\_ses-01\\\_limb-left\\\_ptp\\\_results.csv
+            │   └── sub-001\\\_ses-01\\\_limb-left\\\_ptp\\\_results\\\_with\\\_outliers.csv
             ├── figures/
-            └── sub-001\_ses-01\_limb-left\_session.json  ← per-file session state
+            └── sub-001\\\_ses-01\\\_limb-left\\\_session.json  ← per-file session state
 ```
 
 ### Trial-level CSV columns
@@ -179,31 +179,31 @@ study/
 |-|-|
 |`PTP(mV)`|MEP peak-to-peak amplitude|
 |`Latency(ms)`|MEP onset latency|
-|`cSP\_Duration(ms)`|Cortical silent period duration|
-|`cSP\_MEP\_Offset(ms)`|Time from stim to cSP onset|
-|`cSP\_EMG\_Return(ms)`|Time from stim to EMG return after cSP|
-|`MEP\_cSP\_Ratio`|PTP / cSP duration (Orth \& Rothwell, 2004)|
-|`AUC(mV\*s)`|Area under the rectified EMG curve (onset to cSP start)|
-|`Normalised\_PTP`|PTP / reference mean (Mmax or single-pulse reference)|
-|`Reference\_Type`|How the reference mean was computed|
-|`Reference\_Mean(mV)`|Reference amplitude used for normalisation|
-|`Z\_PTP\_Within`|Z-score within stim type|
-|`Z\_PTP\_Pooled`|Z-score pooled across all conditions|
-|`PTP\_Detrended(mV)`|Linearly detrended PTP amplitude|
-|`Outlier\_Decision`|Include / Exclude / Reviewed|
-|`Manual\_Note`|Annotator note from Data Inspector|
+|`cSP\\\_Duration(ms)`|Cortical silent period duration|
+|`cSP\\\_MEP\\\_Offset(ms)`|Time from stim to cSP onset|
+|`cSP\\\_EMG\\\_Return(ms)`|Time from stim to EMG return after cSP|
+|`MEP\\\_cSP\\\_Ratio`|PTP / cSP duration (Orth \& Rothwell, 2004)|
+|`AUC(mV\\\*s)`|Area under the rectified EMG curve (onset to cSP start)|
+|`Normalised\\\_PTP`|PTP / reference mean (Mmax or single-pulse reference)|
+|`Reference\\\_Type`|How the reference mean was computed|
+|`Reference\\\_Mean(mV)`|Reference amplitude used for normalisation|
+|`Z\\\_PTP\\\_Within`|Z-score within stim type|
+|`Z\\\_PTP\\\_Pooled`|Z-score pooled across all conditions|
+|`PTP\\\_Detrended(mV)`|Linearly detrended PTP amplitude|
+|`Outlier\\\_Decision`|Include / Exclude / Reviewed|
+|`Manual\\\_Note`|Annotator note from Data Inspector|
 
 ### Group-level CSV additional columns
 
 |Column|Description|
 |-|-|
-|`participant\_id`|BIDS participant identifier|
+|`participant\\\_id`|BIDS participant identifier|
 |`session`|Session label|
 |`task`|Task label (if assigned)|
 |`timepoint`|Timepoint label (if assigned)|
 |`Limb`|Limb identifier parsed from filename|
-|`Stim\_Role`|Role assigned in Stage 2 (Reference, Conditioned, M-wave, etc.)|
-|`\[custom columns]`|User-defined between/within-subject factors|
+|`Stim\\\_Role`|Role assigned in Stage 2 (Reference, Conditioned, M-wave, etc.)|
+|`\\\[custom columns]`|User-defined between/within-subject factors|
 
 \---
 
@@ -211,16 +211,16 @@ study/
 
 ```bash
 # Windows
-python build\_windows.py
+python build\\\_windows.py
 
 # Linux
-python3 -m venv venv\_linux
-source venv\_linux/bin/activate
+python3 -m venv venv\\\_linux
+source venv\\\_linux/bin/activate
 pip install -r requirements.txt
-python3 build\_linux.py
+python3 build\\\_linux.py
 
 # macOS
-python3 build\_mac.py
+python3 build\\\_mac.py
 ```
 
 \---
@@ -229,7 +229,7 @@ python3 build\_mac.py
 
 If you use this tool in your research, please cite:
 
-> Andrushko, J.W. (2026). MEP-CMAP Analyser (Version 0.8.7) \[Software].
+> Andrushko, J.W. (2026). MEP-CMAP Analyser (Version 0.8.8) \\\[Software].
 > Northumbria University. https://doi.org/10.5281/zenodo.XXXXXXX
 
 \---

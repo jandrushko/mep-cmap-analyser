@@ -366,10 +366,50 @@ def pipeline_quantify_segments(stim_type, segs_all, prestim_all,
         # ── AUC ──────────────────────────────────────────────────────────
         auc_val = None
         if mk in segments_metadata and "auc_start_idx" in segments_metadata[mk]:
+            # User-set or inspector-auto AUC window
             a0 = _ci(segments_metadata[mk]["auc_start_idx"])
             a1 = _ci(segments_metadata[mk]["auc_end_idx"])
             auc_val = float(_np_trapz(np.abs(seg[a0:a1]), dx=1 / fs))
             auc_vals_all.append(auc_val)
+        elif mk in segments_metadata and \
+                "silent_start_idx" in segments_metadata[mk] and \
+                "onset_idx" in segments_metadata[mk]:
+            # Auto-calculate AUC: onset → cSP start (inspector detected both)
+            a0 = _ci(segments_metadata[mk]["onset_idx"])
+            a1 = _ci(segments_metadata[mk]["silent_start_idx"])
+            if a1 > a0:
+                auc_val = float(_np_trapz(np.abs(seg[a0:a1]), dx=1 / fs))
+                auc_vals_all.append(auc_val)
+        elif mk not in segments_metadata and stim_type in cfg.csp_types:
+            # Unreviewed segment with CSP enabled — try auto-detect onset+CSP
+            # and compute AUC if both succeed
+            from .detection import detect_csp_bootstrap as _dcsp
+            _pre_samp = int(cfg.prestim_ms * fs / 1000)
+            _ptp_s    = _segs_sb + int(cfg.ptp_start * fs / 1000)
+            _ptp_e    = _segs_sb + int(cfg.ptp_end   * fs / 1000)
+            if _ptp_e < len(seg) and _ptp_s < _ptp_e:
+                _seg_ptp = seg[_ptp_s:_ptp_e]
+                _peak2   = _ptp_s + int(max(np.argmin(_seg_ptp),
+                                            np.argmax(_seg_ptp)))
+                _peak2ms = (_peak2 - _segs_sb) * 1000 / fs
+                _csp = _dcsp(seg, fs,
+                             np.linspace(-cfg.pre_ms, cfg.post_ms,
+                                         len(seg), endpoint=False),
+                             pre_ms=cfg.pre_ms,
+                             search_start_ms=_peak2ms,
+                             search_end_ms=cfg.csp_search_end_ms,
+                             min_silence_ms=cfg.csp_min_silence_ms,
+                             min_return_ms=cfg.csp_min_return_ms,
+                             criterion=cfg.csp_criterion,
+                             significance=cfg.csp_significance,
+                             n_boot=cfg.csp_n_boot)
+                if _csp is not None and auto_lat is not None:
+                    _onset_samp = _segs_sb + int(auto_lat * fs / 1000)
+                    _csp_start  = _csp[0]
+                    if _csp_start > _onset_samp:
+                        auc_val = float(_np_trapz(
+                            np.abs(seg[_onset_samp:_csp_start]), dx=1/fs))
+                        auc_vals_all.append(auc_val)
 
         # ── outlier / exclusion flags ────────────────────────────────────
         is_removed   = idx in out_set

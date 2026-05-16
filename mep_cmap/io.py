@@ -1,136 +1,99 @@
 """
 mep_cmap.io
 ~~~~~~~~~~~
-Spike-2 .txt file reading functions.
+Format-agnostic public API for reading EMG data files.
 
-  • list_waveform_channels      — list channel names from SUMMARY block
-  • extract_emg_waveform_and_fs — load EMG samples + sampling rate + unit
-  • extract_stim_times          — extract stimulation timestamps by marker
+Supported formats (auto-detected from file header)
+----------------------------------------------------
+  Spike-2 text export  — header contains "SUMMARY" / "START" / "CHANNEL" blocks
+  LabChart text export — header line 0 starts with "Interval="
+
+Adding a new format
+-------------------
+  1. Create mep_cmap/formats/<format>.py with the three public functions.
+  2. Add detection logic to detect_format().
+  3. Add a dispatch branch to each of the three public functions below.
+  4. Nothing else in the codebase needs to change.
+
+Public API
+----------
+  detect_format(file_path)                     -> 'spike2' | 'labchart' | ...
+  list_waveform_channels(file_path)            -> list[str]
+  extract_emg_waveform_and_fs(file_path, ch)   -> (np.ndarray, int, str|None)
+  extract_stim_times(file_path, marker_name)   -> dict[str, list[float]]
 """
 
-import re
-from collections import defaultdict
-import numpy as np
+from .formats import spike2   as _spike2
+from .formats import labchart as _labchart
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Format detection
+# ─────────────────────────────────────────────────────────────────────────────
+
+def detect_format(file_path: str) -> str:
+    """
+    Inspect the file header and return a format identifier string.
+
+    Returns
+    -------
+    'labchart' — LabChart text export (line 0 starts with 'Interval=')
+    'spike2'   — Spike-2 text export (default / fallback)
+    """
+    with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+        first_line = f.readline()
+    if first_line.startswith('Interval='):
+        return 'labchart'
+    return 'spike2'
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Public API — dispatches to the correct format reader
+# ─────────────────────────────────────────────────────────────────────────────
 
 def list_waveform_channels(file_path: str) -> list:
-    """
-    Return the channel names (file order) that appear as Waveform rows
-    in the Spike-2 SUMMARY block.
-    """
-    names = []
-    with open(file_path, "r", encoding="utf-8") as f:
-        for line in f:
-            if line.startswith('"SUMMARY"'):
-                break
-        for _ in range(40):
-            parts = [tok.strip().strip('"') for tok in f.readline().split('\t')]
-            if len(parts) >= 3 and parts[1] == "Waveform":
-                names.append(parts[2] or f"Chan {len(names)+1}")
-    return names or ["Waveform-1"]
+    """Return channel names for display in the channel selector."""
+    fmt = detect_format(file_path)
+    if fmt == 'labchart':
+        return _labchart.list_waveform_channels(file_path)
+    return _spike2.list_waveform_channels(file_path)
 
 
 def extract_emg_waveform_and_fs(file_path: str, channel_idx: int = 0):
     """
-    Return (waveform, fs, unit) for the requested channel (0-based index).
+    Load EMG waveform, sampling rate, and voltage unit for the given channel.
 
     Parameters
     ----------
-    file_path   : path to a Spike-2 exported .txt file
-    channel_idx : 0-based index of the waveform channel to load
+    file_path   : path to the data file
+    channel_idx : 0-based channel index
 
     Returns
     -------
     emg  : np.ndarray  raw EMG samples
     fs   : int         sampling frequency in Hz
-    unit : str         voltage unit string (e.g. 'mV'), or None
+    unit : str | None  voltage unit (e.g. 'mV'), or None
     """
-    numeric_re = re.compile(r"^-?\d+(\.\d+)?$")
-
-    with open(file_path, "r", encoding="utf-8") as f:
-        lines = f.readlines()
-
-    # Collect every Waveform row in the SUMMARY block
-    summary_rows = []
-    for i, line in enumerate(lines):
-        if line.startswith('"SUMMARY"'):
-            for j in range(i + 1, min(i + 40, len(lines))):
-                parts = [tok.strip().strip('"') for tok in lines[j].split('\t')]
-                if len(parts) >= 2 and parts[1] == "Waveform":
-                    row_fs   = next((int(float(tok))
-                                     for tok in parts[2:]
-                                     if numeric_re.match(tok) and float(tok) >= 100),
-                                    None)
-                    row_unit = next((tok for tok in parts
-                                     if re.fullmatch(r"[a-zA-Zµμ]+[Vv]", tok)),
-                                    None)
-                    summary_rows.append((j, row_fs, row_unit))
-            break
-
-    if not summary_rows:
-        raise ValueError("No Waveform channels found in SUMMARY.")
-
-    try:
-        _, fs, unit = summary_rows[channel_idx]
-    except IndexError:
-        raise ValueError(
-            f"Channel #{channel_idx+1} requested but only {len(summary_rows)} found.")
-
-    # Jump to START, then skip channel_idx waveform blocks
-    line_no = next(i for i, l in enumerate(lines) if l.startswith('"START"')) + 1
-    for _ in range(channel_idx):
-        while line_no < len(lines) and not lines[line_no].startswith('"CHANNEL"'):
-            line_no += 1
-        line_no += 2
-
-    # Read samples until next CHANNEL / EOF
-    emg_vals = []
-    for l in lines[line_no:]:
-        if l.startswith('"CHANNEL"'):
-            break
-        try:
-            emg_vals.append(float(l.strip()))
-        except ValueError:
-            continue
-
-    return np.asarray(emg_vals, float), fs, unit
+    fmt = detect_format(file_path)
+    if fmt == 'labchart':
+        return _labchart.extract_emg_waveform_and_fs(file_path, channel_idx)
+    return _spike2.extract_emg_waveform_and_fs(file_path, channel_idx)
 
 
 def extract_stim_times(file_path: str, marker_name: str) -> dict:
     """
-    Read a Spike-2 .txt file and return stimulation timestamps.
+    Return stimulation timestamps.
 
-    Parameters
-    ----------
-    file_path   : path to Spike-2 exported .txt file
-    marker_name : marker channel name (e.g. 'Keyboard', 'TTL')
+    For Spike-2 : marker_name selects the DigMark channel
+                  (e.g. 'Keyboard', 'TTL').
+    For LabChart: marker_name is used as the stim-type label
+                  (single uppercase letter, e.g. 'A').
 
     Returns
     -------
-    dict mapping stim_type (single character) -> list of timestamps (seconds)
+    dict mapping stim_type -> list[float]  (timestamps in seconds)
     """
-    stim_dict = defaultdict(list)
-    pattern   = re.compile(r'^([\d.]+)\s+"(.{1})\?\?\?"')
-
-    with open(file_path, 'r') as f:
-        lines = f.readlines()
-
-    block_start = None
-    for i in range(len(lines)):
-        if lines[i].strip().startswith('"Marker"') and i + 2 < len(lines):
-            current_marker = lines[i + 2].strip().strip('"')
-            if current_marker == marker_name:
-                block_start = i + 3
-                break
-
-    if block_start is None:
-        return stim_dict
-
-    for line in lines[block_start:]:
-        if line.strip().startswith('"CHANNEL"'):
-            break
-        match = pattern.match(line.strip())
-        if match:
-            stim_dict[match.group(2)].append(float(match.group(1)))
-
-    return stim_dict
+    fmt = detect_format(file_path)
+    if fmt == 'labchart':
+        return _labchart.extract_stim_times(file_path, marker_name)
+    return _spike2.extract_stim_times(file_path, marker_name)
