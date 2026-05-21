@@ -896,17 +896,17 @@ class DataInspectorWindow:
         ax_ex.set_ylabel(chan_name)
         ax_ex.grid(ls=":", lw=0.4)
         self.canvas.draw_idle()
-
+  
     def _close_and_save(self):
         """Save all pending edits including note, then close."""
-        # Save the current segment's note
-        if self.note_box_is_shown:
-            key = (self.cur_type, self.cur_idx)
-            txt = self.note_box.get("1.0", "end").strip()
-            if txt:
-                self.meta.setdefault(key, {})['note'] = txt
-            elif key in self.meta and 'note' in self.meta[key]:
-                del self.meta[key]['note']
+        # Always save the note box content regardless of whether it is
+        # currently visible — the widget retains its text even when hidden.
+        key = (self.cur_type, self.cur_idx)
+        txt = self.note_box.get("1.0", "end").strip()
+        if txt:
+            self.meta.setdefault(key, {})['note'] = txt
+        elif key in self.meta and 'note' in self.meta[key]:
+            del self.meta[key]['note']
         self.top.destroy()
 
     # ---------------------------------------------------------------- status-bar
