@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mep-cmap-analyser"
-version = "0.9.2"
+version = "0.9.3"
 description = "BIDS-compliant TMS/EMG neurophysiology analysis tool for MEP and CMAP quantification"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -25,8 +25,8 @@ dependencies = [
 mep-cmap = "mep_cmap:run_app"
 
 [project.urls]
-Homepage = "https://github.com/justinAndrushko/mep-cmap-analyser"
-Repository = "https://github.com/justinAndrushko/mep-cmap-analyser"
+Homepage = "https://github.com/jandrushko/mep-cmap-analyser"
+Repository = "https://github.com/jandrushko/mep-cmap-analyser"
 "Bug Tracker" = "https://github.com/justinAndrushko/mep-cmap-analyser/issues"
 
 [tool.setuptools.packages.find]
