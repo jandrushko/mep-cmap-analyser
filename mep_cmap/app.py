@@ -57,7 +57,8 @@ from .dataset_session import (DatasetSession, FileEntry,
                                STATUS_NEEDS_REVIEW, STATUS_COMPLETE,
                                STATUS_STALE, STATUS_LABELS, STATUS_COLOURS)
 from .io import (list_waveform_channels, extract_emg_waveform_and_fs,
-                 extract_stim_times, detect_format)
+                 extract_stim_times, detect_format, needs_wizard)
+from .format_wizard import FormatWizard
 from .filters import adaptive_mains_cancel
 from .detection import detect_mep_onset_peak_fraction
 from .inspector import DataInspectorWindow
@@ -3013,13 +3014,34 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         # ── Detect file format and scan accordingly ───────────────────────────
         _fmt = detect_format(fpath)
 
+        # ── Generic TSV: launch Format Wizard if no sidecar config yet ────────
+        if _fmt == 'generic_tsv' and needs_wizard(fpath):
+            self.log("🔧 Generic TSV detected — launching Format Wizard…")
+
+            def _on_wizard_complete(cfg, _fpath=fpath, _auto=auto_run):
+                if cfg is None:
+                    self.log("⚠️  Format Wizard cancelled — file not loaded.")
+                    return
+                self.log(
+                    f"✅ Format Wizard complete — "
+                    f"{len([c for c in cfg['channels'] if c['role'] != 'ignore'])} "
+                    f"signal(s) defined, fs={cfg['fs']} Hz"
+                )
+                self._browse_file_path(_fpath, auto_run=_auto)
+
+            FormatWizard(self.root, fpath, on_complete=_on_wizard_complete)
+            return
+
         if _fmt == 'labchart':
-            # LabChart: stim times come from the analogue stim channel.
-            # No DigMark channels — marker_choice is unused for LabChart.
-            # Set to 'A' so extract_stim_times gets label 'A' (not 'L').
             self.marker_choice.set('A')
             self.log("📋 LabChart format detected — stim times from analogue trigger channel")
             # stim_events populated later via extract_stim_times in pipeline
+
+        elif _fmt == 'generic_tsv':
+            self.marker_choice.set('A')
+            self.log("📋 Generic TSV format — stim times from Stim/Trigger channel")
+            # stim_events populated later via extract_stim_times in pipeline
+
         else:
             # Spike2: scan for DigMark channels and stim type timestamps
             stim_pattern = re.compile(r'^([\d.]+)\s+"(.{1})\?\?\?"')
@@ -3155,7 +3177,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                     return
 
         # ── Filter stim types to those with at least one event in the selected range
-        if _fmt == 'labchart':
+        if _fmt in ('labchart', 'generic_tsv'):
             # For LabChart, stim types come from the pipeline (stim channel detection).
             # Pre-populate with a single type 'A' — user can relabel in Stage 1a.
             stim_types_found = {'A'}

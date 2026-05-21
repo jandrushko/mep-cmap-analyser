@@ -7,6 +7,8 @@ Supported formats (auto-detected from file header)
 ----------------------------------------------------
   Spike-2 text export  — header contains "SUMMARY" / "START" / "CHANNEL" blocks
   LabChart text export — header line 0 starts with "Interval="
+  Generic TSV          — headerless / all-numeric tab/space/comma delimited text
+                         (requires a one-time Format Wizard dialog on first open)
 
 Adding a new format
 -------------------
@@ -17,16 +19,37 @@ Adding a new format
 
 Public API
 ----------
-  detect_format(file_path)                     -> 'spike2' | 'labchart' | ...
+  detect_format(file_path)                     -> 'spike2' | 'labchart' | 'generic_tsv'
+  needs_wizard(file_path)                      -> bool
   list_waveform_channels(file_path)            -> list[str]
   extract_emg_waveform_and_fs(file_path, ch)   -> (np.ndarray, int, str|None)
   extract_stim_times(file_path, marker_name)   -> dict[str, list[float]]
+
+Generic TSV — wizard integration
+---------------------------------
+When detect_format() returns 'generic_tsv' and no sidecar config exists yet,
+the caller (app.py / _browse_file_path) must launch FormatWizard before
+calling list_waveform_channels() or extract_*.
+
+The recommended pattern in app.py is:
+
+    _fmt = detect_format(fpath)
+    if _fmt == 'generic_tsv' and needs_wizard(fpath):
+        _launch_format_wizard(fpath, on_complete=lambda cfg: ...)
+        return   # _browse_file_path will be called again from the callback
+    ...
+    chan_list = list_waveform_channels(fpath)
 """
 
 import os as _os
 
 from .formats import spike2   as _spike2
 from .formats import labchart as _labchart
+
+from .formats import generic_tsv as _generic_tsv
+
+def _generic_has_config(file_path: str) -> bool:
+    return _generic_tsv.has_config(file_path)
 
 
 def _resolve_path(file_path: str) -> str:
@@ -86,15 +109,55 @@ def detect_format(file_path: str) -> str:
 
     Returns
     -------
-    'labchart' — LabChart text export (line 0 starts with 'Interval=')
-    'spike2'   — Spike-2 text export (default / fallback)
+    'labchart'    — LabChart text export (line 0 starts with 'Interval=')
+    'spike2'      — Spike-2 text export (contains SUMMARY/CHANNEL/START blocks)
+    'generic_tsv' — Headerless numeric text file (no recognised format header)
     """
     file_path = _resolve_path(file_path)
+
     with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
         first_line = f.readline()
+        second_line = f.readline()
+
+    # LabChart: first line starts with 'Interval='
     if first_line.startswith('Interval='):
         return 'labchart'
+
+    # Spike2: SUMMARY block or quoted channel names in the first two lines
+    if ('"SUMMARY"' in first_line or '"SUMMARY"' in second_line
+            or first_line.startswith('"')
+            or '"Waveform"' in first_line or '"Waveform"' in second_line):
+        return 'spike2'
+
+    # Heuristic: if the first non-empty line parses as all-numeric fields,
+    # treat as a generic headerless TSV.
+    test_line = first_line.strip()
+    if not test_line:
+        test_line = second_line.strip()
+    if test_line:
+        # Try splitting by common delimiters
+        for sep in ('\t', ',', ' '):
+            parts = [p.strip() for p in test_line.split(sep) if p.strip()]
+            if len(parts) >= 2:
+                try:
+                    [float(p) for p in parts]
+                    return 'generic_tsv'
+                except ValueError:
+                    pass
+
+    # Default fallback
     return 'spike2'
+
+
+def needs_wizard(file_path: str) -> bool:
+    """
+    Return True if the file is a generic TSV without a sidecar config.
+
+    Call this after detect_format() == 'generic_tsv' to decide whether
+    the Format Wizard needs to run before the file can be read.
+    """
+    file_path = _resolve_path(file_path)
+    return not _generic_has_config(file_path)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -107,6 +170,8 @@ def list_waveform_channels(file_path: str) -> list:
     fmt = detect_format(file_path)
     if fmt == 'labchart':
         return _labchart.list_waveform_channels(file_path)
+    if fmt == 'generic_tsv':
+        return _generic_tsv.list_waveform_channels(file_path)
     return _spike2.list_waveform_channels(file_path)
 
 
@@ -129,6 +194,8 @@ def extract_emg_waveform_and_fs(file_path: str, channel_idx: int = 0):
     fmt = detect_format(file_path)
     if fmt == 'labchart':
         return _labchart.extract_emg_waveform_and_fs(file_path, channel_idx)
+    if fmt == 'generic_tsv':
+        return _generic_tsv.extract_emg_waveform_and_fs(file_path, channel_idx)
     return _spike2.extract_emg_waveform_and_fs(file_path, channel_idx)
 
 
@@ -140,6 +207,8 @@ def extract_stim_times(file_path: str, marker_name: str) -> dict:
                   (e.g. 'Keyboard', 'TTL').
     For LabChart: marker_name is used as the stim-type label
                   (single uppercase letter, e.g. 'A').
+    For Generic TSV: marker_name is used as the stim-type label.
+                  Timing is derived from the designated Stim/Trigger channel.
 
     Returns
     -------
@@ -149,4 +218,6 @@ def extract_stim_times(file_path: str, marker_name: str) -> dict:
     fmt = detect_format(file_path)
     if fmt == 'labchart':
         return _labchart.extract_stim_times(file_path, marker_name)
+    if fmt == 'generic_tsv':
+        return _generic_tsv.extract_stim_times(file_path, marker_name)
     return _spike2.extract_stim_times(file_path, marker_name)
