@@ -59,3 +59,12 @@ figures_with_outliers/
 
 # Test data
 *.txt.bak
+dist linux/ 
+dist/ 
+build/ 
+*.so 
+*.pyd 
+__pycache__/ 
+*.pyc 
+dist windows/ 
+mep_cmap_io/target/ 

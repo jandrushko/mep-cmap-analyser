@@ -950,7 +950,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         )
         self.filter_harmonics_chk.grid(row=4, column=5, sticky='w', padx=(10, 0))
 
-        # ── row-5: mains noise canceller + harmonics -------------------------------
+        # ── row-5: mains noise canceller + harmonics + preview button ─────────────
         tk.Checkbutton(
             filter_frame,
             text="Mains Noise Canceller",
@@ -963,15 +963,11 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self.harmonics_entry.grid(row=5, column=2, sticky='w')
         self.harmonics_entry.config(state='disabled')
 
-        # ── row-6: preview filter button -------------------------------------------
-        pf_row = tk.Frame(filter_frame)
-        pf_row.grid(row=6, column=0, columnspan=6, sticky='ew', pady=(8, 4))
-
         tk.Button(
-            pf_row,
-            text="Preview Filter",
+            filter_frame,
+            text="🔍 Preview Filter",
             command=self.preview_filter_window
-        ).pack()  # pack centers by default
+        ).grid(row=5, column=5, columnspan=2, sticky='w', padx=(10, 0))
 
         # initial states
         self.hp_order_entry.config(state='disabled')
@@ -1261,11 +1257,30 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                 "latency_stim_map":      dict(self.latency_stim_map),
                 "latency_muscle_map":    dict(self.latency_muscle_map),
             }
+            # ── Compute study root for relative path storage ──────────────────
+            # The JSON lives at:  <study_root>/derivatives/<sub>/<ses>/<name>.json
+            # Walk up 3 levels from save_dir to get study_root.
+            # Paths stored as relative to study_root so the file is portable
+            # across computers (OneDrive, different user home folders, etc.).
+            _json_deriv_dir = save_dir
+            _study_root_for_json = os.path.dirname(
+                os.path.dirname(os.path.dirname(_json_deriv_dir)))
+
+            def _rel(p):
+                """Store p relative to study root; fall back to basename if outside."""
+                if not p:
+                    return p
+                try:
+                    rel = os.path.relpath(p, _study_root_for_json)
+                    return rel if not rel.startswith("..") else os.path.basename(p)
+                except ValueError:
+                    return os.path.basename(p)
+
             session = {
                 "version":          "1.0",
                 "saved_at":         datetime.datetime.now().isoformat(timespec="seconds"),
                 "autosaved":        True,   # flag so user knows this wasn't a manual save
-                "file_path":        fp,
+                "file_path":        _rel(fp),
                 "marker_choice":    self.marker_choice.get(),
                 "channel_idx":      self.channel_idx,
                 "channel_choice":   self.channel_choice.get(),
@@ -1281,12 +1296,12 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                 "latency_map":      {k: list(v) for k, v in self.latency_map.items()},
                 "latency_stim_map":   dict(self.latency_stim_map),
                 "latency_muscle_map": dict(self.latency_muscle_map),
-                "mmax_file":        self.mmax_file.get(),
+                "mmax_file":        _rel(self.mmax_file.get()),
                 "plateau_tolerance":self.plateau_tolerance.get(),
                 "extra_channel_indices": self.extra_channel_indices,
                 "wide_window_s":    self.wide_window_s.get(),
-                "derivatives_path": (self.derivatives_path.get()
-                                     if hasattr(self, "derivatives_path") else ""),
+                "derivatives_path": _rel(self.derivatives_path.get()
+                                         if hasattr(self, "derivatives_path") else ""),
                 "study_metadata":   sm,
                 "settings":         s,
                 "segments_metadata": meta_s,
@@ -1371,13 +1386,46 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         except Exception as e:
             messagebox.showerror("Save failed",str(e),parent=self.root)
 
-    def _apply_loaded_session(self, sess: dict):
+    def _apply_loaded_session(self, sess: dict, json_path: str = ""):
         """
         Apply a loaded session dict to the current GUI state.
         Called by both load_session (user-initiated) and _load_file_entry
         (automatic restore when jumping to a previously processed file).
+
+        json_path — the path of the JSON file being loaded.  When provided,
+        relative paths stored in the session (file_path, mmax_file,
+        derivatives_path) are resolved against the study root derived from
+        that file's location.  This makes sessions portable across computers
+        with different OneDrive / home-directory paths.
         """
-        fp=sess.get("file_path",""); self.file_path.set(fp)
+        # ── Resolve helper ────────────────────────────────────────────────────
+        def _abs(stored: str) -> str:
+            """Resolve a stored (possibly relative) path to absolute."""
+            if not stored:
+                return stored
+            if os.path.isabs(stored) and os.path.exists(stored):
+                return stored          # absolute and valid on this machine
+            if not json_path:
+                return stored          # no anchor — return as-is
+            # Derive study root from JSON location:
+            # JSON lives at <study_root>/derivatives/<sub>/<ses>/<name>.json
+            # Walk up 3 levels from the JSON's directory.
+            json_dir    = os.path.dirname(os.path.abspath(json_path))
+            study_root  = os.path.dirname(os.path.dirname(os.path.dirname(json_dir)))
+            candidate   = os.path.normpath(
+                os.path.join(study_root, stored.replace("\\", os.sep)))
+            if os.path.exists(candidate):
+                return candidate
+            # Basename search under study root as last resort
+            basename = os.path.basename(stored.replace("\\", os.sep))
+            if basename:
+                for dirpath, _dirs, files in os.walk(study_root):
+                    if basename in files:
+                        return os.path.join(dirpath, basename)
+            return candidate   # best effort — caller handles missing file
+
+        fp = _abs(sess.get("file_path", ""))
+        self.file_path.set(fp)
         self.marker_choice.set(sess.get("marker_choice",""))
         self.channel_idx=sess.get("channel_idx",0); self.channel_choice.set(sess.get("channel_choice",""))
         cr=sess.get("crop_ranges"); self.crop_ranges=[tuple(r) for r in cr] if cr else None
@@ -1391,7 +1439,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self.latency_stim_map   = sess.get("latency_stim_map", {})
         self.latency_muscle_map = sess.get("latency_muscle_map", {})
         if hasattr(self,"derivatives_path"):
-            dp=sess.get("derivatives_path","")
+            dp = _abs(sess.get("derivatives_path",""))
             if dp: self.derivatives_path.set(dp)
             self._update_deriv_status()
         sm=sess.get("study_metadata",{})
@@ -1399,7 +1447,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             try:
                 self.study_metadata=StudyMetadata(**{k:v for k,v in sm.items() if k in StudyMetadata.__dataclass_fields__})
             except Exception: pass
-        if sess.get("mmax_file"): self.mmax_file.set(sess["mmax_file"])
+        if sess.get("mmax_file"): self.mmax_file.set(_abs(sess["mmax_file"]))
         if sess.get("plateau_tolerance"): self.plateau_tolerance.set(sess["plateau_tolerance"])
         # csp_types is stored in the settings sub-dict
         s=sess.get("settings",{})
@@ -1476,8 +1524,8 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         except Exception as e:
             messagebox.showerror("Load failed",str(e),parent=self.root); return
         self._reset_state_for_new_file()
-        self._apply_loaded_session(sess)
-        fp = sess.get("file_path", "")
+        self._apply_loaded_session(sess, json_path=lp)
+        fp = self.file_path.get()
         self.log(f"📂 Loaded from {os.path.basename(lp)}\n"
                  f"   File: {os.path.basename(fp) if fp else '(none)'}\n"
                  f"   Labels: {len(self.label_map)}  Inspector edits: {len(self.segments_metadata)}\n"
@@ -2088,6 +2136,23 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         tk.Button(q_toolbar, text="▶  Run selected",
                   command=self._queue_run_selected).pack(side='right', padx=(0, 4))
 
+        # ── File-load progress bar (hidden until a file is loading) ─────────
+        _pb_style = ttk.Style()
+        _pb_style.configure("FileLoad.Horizontal.TProgressbar",
+                            thickness=8, troughcolor="#ddd", background="#2196F3")
+        self._load_prog_frame = tk.Frame(queue_frame)
+        self._load_prog_label = tk.Label(
+            self._load_prog_frame, text="", fg="#555",
+            font=("TkDefaultFont", 8), anchor="w")
+        self._load_prog_label.pack(side="left", padx=(0, 8))
+        self._load_prog_bar = ttk.Progressbar(
+            self._load_prog_frame,
+            style="FileLoad.Horizontal.TProgressbar",
+            orient="horizontal", mode="determinate", length=300)
+        self._load_prog_bar.pack(side="left", fill="x", expand=True)
+        self._load_prog_frame.pack(fill="x", pady=(0, 4))
+        self._load_prog_frame.pack_forget()   # hidden until loading begins
+
         q_cols = ("status", "sub", "ses", "limb", "label",
                   "stim_types", "last_processed", "size", "date", "path")
         tree_frame = tk.Frame(queue_frame)
@@ -2149,6 +2214,8 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         _ctx = tk.Menu(self._queue_tree, tearoff=0)
         _ctx.add_command(label="Load & process", command=lambda: self._queue_on_double_click(None))
         _ctx.add_command(label="Mark as rerun", command=self._queue_mark_rerun)
+        _ctx.add_separator()
+        _ctx.add_command(label="✏️  Rename / audit filename…", command=self._queue_rename_selected)
         _ctx.add_separator()
         _ctx.add_command(label="Remove selected", command=self._queue_remove_selected)
         _ctx.add_separator()
@@ -2368,8 +2435,254 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self._dataset.save()
         self._queue_refresh()
 
+    # ── Filename rename / BIDS audit ──────────────────────────────────────────
+
+    # Expected BIDS filename entity pattern:
+    #   sub-<label>[_ses-<label>][_limb-<label>][_task-<label>][_run-<index>]
+    #   followed by an optional suffix, ending in .txt
+    _BIDS_ENTITIES = re.compile(
+        r'^'
+        r'(?P<sub>sub-[A-Za-z0-9]+)'
+        r'(?:_(?P<ses>ses-[A-Za-z0-9]+))?'
+        r'(?:_(?P<limb>limb-[A-Za-z0-9]+))?'
+        r'(?:_(?P<task>task-[A-Za-z0-9]+))?'
+        r'(?:_(?P<run>run-[0-9]+))?'
+        r'(?:_(?P<suffix>[^.]+))?'
+        r'\.txt$',
+        re.IGNORECASE,
+    )
+
+    def _audit_filename(self, basename: str) -> list:
+        """Return a list of human-readable issue strings for *basename*.
+        Empty list means no issues found.
+        """
+        issues = []
+        name, ext = os.path.splitext(basename)
+
+        if ext.lower() != ".txt":
+            issues.append(f"Extension '{ext}' — expected '.txt'")
+
+        parts = name.split("_")
+
+        # sub- entity
+        sub_parts = [p for p in parts if p.startswith("sub-")]
+        if not sub_parts:
+            issues.append("Missing 'sub-<label>' entity  (e.g. sub-001)")
+        elif len(sub_parts) > 1:
+            issues.append(f"Duplicate 'sub-' entity: {sub_parts}")
+        else:
+            lbl = sub_parts[0][4:]
+            if not lbl:
+                issues.append("Empty sub- label")
+            if not re.match(r'^[A-Za-z0-9]+$', lbl):
+                issues.append(f"sub- label '{lbl}' contains non-alphanumeric characters")
+
+        # ses- entity (optional but check if malformed)
+        ses_parts = [p for p in parts if p.startswith("ses-")]
+        if len(ses_parts) > 1:
+            issues.append(f"Duplicate 'ses-' entity: {ses_parts}")
+        elif ses_parts:
+            lbl = ses_parts[0][4:]
+            if not re.match(r'^[A-Za-z0-9]+$', lbl):
+                issues.append(f"ses- label '{lbl}' contains non-alphanumeric characters")
+
+        # limb- entity (optional)
+        limb_parts = [p for p in parts if p.startswith("limb-")]
+        if len(limb_parts) > 1:
+            issues.append(f"Duplicate 'limb-' entity: {limb_parts}")
+
+        # spaces / special characters
+        if " " in name:
+            issues.append("Filename contains spaces (use hyphens or underscores)")
+        for ch in r'\/:*?"<>|':
+            if ch in name:
+                issues.append(f"Filename contains forbidden character '{ch}'")
+
+        # Inconsistent capitalisation of known entities
+        for entity in ("Sub-", "SES-", "Ses-", "LIMB-", "Limb-",
+                       "TASK-", "Task-", "RUN-", "Run-"):
+            if entity in basename:
+                issues.append(
+                    f"Entity '{entity}' should be lower-case  "
+                    f"(e.g. '{entity.lower()}')")
+
+        # Trailing / leading underscores
+        if name.startswith("_") or name.endswith("_"):
+            issues.append("Filename starts or ends with an underscore")
+
+        # Double underscores
+        if "__" in name:
+            issues.append("Filename contains consecutive underscores '__'")
+
+        return issues
+
+    def _queue_rename_selected(self):
+        """Open the rename / BIDS-audit dialog for the selected file.
+
+        Shows any BIDS naming issues, lets the user type a corrected name with
+        a live preview, then renames the file on disk and updates the queue.
+        """
+        fid = self._queue_selected_id()
+        if not fid or self._dataset is None:
+            return
+        fe = self._dataset.get_file(fid)
+        if fe is None:
+            return
+
+        old_path = fe.path
+        old_name = fe.basename
+        issues   = self._audit_filename(old_name)
+
+        # ── Build dialog ──────────────────────────────────────────────────────
+        win = tk.Toplevel(self.root)
+        win.title("Rename / audit filename")
+        win.transient(self.root)
+        win.grab_set()
+        win.resizable(True, False)
+        win.minsize(680, 10)
+
+        # Current path
+        tk.Label(win, text="Current path:", font=("TkDefaultFont", 9, "bold"),
+                 anchor="w").grid(row=0, column=0, sticky="w", padx=10, pady=(12, 2))
+        tk.Label(win, text=old_path, fg="#555", wraplength=640, justify="left",
+                 anchor="w").grid(row=1, column=0, columnspan=2, sticky="w",
+                                  padx=10, pady=(0, 8))
+
+        ttk.Separator(win, orient="horizontal").grid(
+            row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=4)
+
+        # Audit results
+        tk.Label(win, text="BIDS naming audit:",
+                 font=("TkDefaultFont", 9, "bold"), anchor="w"
+                 ).grid(row=3, column=0, sticky="w", padx=10, pady=(4, 2))
+
+        audit_frm = tk.Frame(win, bd=1, relief="sunken", bg="#fffde7")
+        audit_frm.grid(row=4, column=0, columnspan=2, sticky="ew",
+                       padx=10, pady=(0, 8))
+        if issues:
+            for issue in issues:
+                tk.Label(audit_frm, text=f"  \u26a0  {issue}",
+                         fg="#b26a00", bg="#fffde7",
+                         font=("TkDefaultFont", 9), anchor="w"
+                         ).pack(fill="x", padx=4, pady=1)
+        else:
+            tk.Label(audit_frm,
+                     text="  \u2705  No issues found \u2014 filename looks BIDS-compliant",
+                     fg="#2e7d32", bg="#fffde7",
+                     font=("TkDefaultFont", 9), anchor="w"
+                     ).pack(fill="x", padx=4, pady=4)
+
+        ttk.Separator(win, orient="horizontal").grid(
+            row=5, column=0, columnspan=2, sticky="ew", padx=10, pady=4)
+
+        # New name entry
+        tk.Label(win, text="New filename:", font=("TkDefaultFont", 9, "bold"),
+                 anchor="w").grid(row=6, column=0, sticky="w", padx=10, pady=(4, 2))
+
+        name_var = tk.StringVar(value=old_name)
+        entry = ttk.Entry(win, textvariable=name_var, width=60)
+        entry.grid(row=7, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 4))
+        entry.focus_set()
+        entry.select_range(0, len(os.path.splitext(old_name)[0]))
+
+        # Live preview with re-audit
+        preview_var = tk.StringVar()
+        def _update_preview(*_):
+            nn = name_var.get().strip()
+            new_path = os.path.join(os.path.dirname(old_path), nn)
+            live_issues = self._audit_filename(nn)
+            if live_issues:
+                col  = "#b26a00"
+                text = "\u26a0  " + "   |   ".join(live_issues[:3])
+            else:
+                col  = "#2e7d32"
+                text = "\u2705  Looks good \u2192 " + new_path
+            preview_var.set(text)
+            preview_lbl.config(fg=col)
+        name_var.trace_add("write", _update_preview)
+
+        preview_lbl = tk.Label(win, textvariable=preview_var,
+                               wraplength=640, justify="left",
+                               font=("TkDefaultFont", 8), anchor="w")
+        preview_lbl.grid(row=8, column=0, columnspan=2, sticky="w",
+                         padx=10, pady=(0, 8))
+        _update_preview()
+
+        # BIDS template hint
+        tk.Label(win,
+                 text="Suggested pattern:  sub-<label>_ses-<label>_limb-<left|right>_<date>.txt",
+                 fg="#888", font=("TkDefaultFont", 8)
+                 ).grid(row=9, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 8))
+
+        ttk.Separator(win, orient="horizontal").grid(
+            row=10, column=0, columnspan=2, sticky="ew", padx=10, pady=4)
+
+        warn_lbl = tk.Label(win, text="", fg="#d9534f",
+                            font=("TkDefaultFont", 9))
+        warn_lbl.grid(row=11, column=0, columnspan=2, sticky="w", padx=10)
+
+        def _do_rename(_e=None):
+            new_name = name_var.get().strip()
+            if not new_name:
+                warn_lbl.config(text="Name cannot be empty.")
+                return
+            if new_name == old_name:
+                win.destroy()
+                return
+            new_path = os.path.join(os.path.dirname(old_path), new_name)
+            if os.path.exists(new_path):
+                warn_lbl.config(
+                    text=f"A file named '{new_name}' already exists in that folder.")
+                return
+            if not os.path.isfile(old_path):
+                warn_lbl.config(
+                    text="Original file not found on disk \u2014 cannot rename.")
+                return
+            try:
+                os.rename(old_path, new_path)
+            except OSError as exc:
+                warn_lbl.config(text=f"Rename failed: {exc}")
+                return
+            # Update FileEntry
+            fe.path  = new_path
+            fe.label = new_name
+            # Update derivatives_json if it embeds the old stem
+            if fe.derivatives_json:
+                old_stem = os.path.splitext(old_name)[0]
+                new_stem = os.path.splitext(new_name)[0]
+                fe.derivatives_json = fe.derivatives_json.replace(
+                    old_stem, new_stem)
+            # Update excluded_paths if old path was tracked there
+            if self._dataset:
+                if old_path in self._dataset.excluded_paths:
+                    self._dataset.excluded_paths.discard(old_path)
+                    self._dataset.excluded_paths.add(new_path)
+                self._dataset.save()
+            # Keep active file path in sync
+            if self.file_path.get() == old_path:
+                self.file_path.set(new_path)
+            self._queue_refresh()
+            self._log_gui(f"\u270f\ufe0f  Renamed:  {old_name}  \u2192  {new_name}")
+            win.destroy()
+
+        btn_bar = tk.Frame(win)
+        btn_bar.grid(row=12, column=0, columnspan=2, pady=(4, 12))
+        tk.Button(btn_bar, text="\u270f\ufe0f  Rename file",
+                  bg="#2196F3", fg="white", width=16,
+                  command=_do_rename).pack(side="left", padx=8)
+        tk.Button(btn_bar, text="Cancel", width=10,
+                  command=win.destroy).pack(side="left", padx=4)
+        entry.bind("<Return>", _do_rename)
+
+        win.columnconfigure(0, weight=1)
+        win.update_idletasks()
+        # Centre over main window
+        cx = self.root.winfo_rootx() + (self.root.winfo_width()  - win.winfo_width())  // 2
+        cy = self.root.winfo_rooty() + (self.root.winfo_height() - win.winfo_height()) // 2
+        win.geometry(f"+{cx}+{cy}")
+
     def _queue_save(self):
-        """Explicitly save the current queue state to dataset_session.json."""
+        """Explicitly save the current queue state to mep_cmap_dataset.json."""
         if self._dataset is None:
             messagebox.showinfo("No dataset",
                 "No dataset loaded — add files first.", parent=self.root)
@@ -2442,7 +2755,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                 import json as _json
                 with open(fe.derivatives_json, encoding="utf-8") as fh:
                     sess = _json.load(fh)
-                self._apply_loaded_session(sess)
+                self._apply_loaded_session(sess, json_path=fe.derivatives_json)
                 self.log(f"💾 Restored session — {len(self.segments_metadata)} segment(s) with saved edits")
             except Exception as e:
                 self.log(f"⚠️  Could not restore session: {e}")
@@ -2453,6 +2766,59 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             if self._dataset:
                 self._dataset.save()
             self._queue_refresh()
+
+        # ── Show load progress bar above the file tree ────────────────────────
+        try:
+            _bytes = os.path.getsize(fe.path)
+            _size_str = (f"{_bytes/1_048_576:.1f} MB" if _bytes >= 1_048_576
+                         else f"{_bytes/1024:.0f} KB")
+        except OSError:
+            _size_str = ""
+
+        self._load_prog_bar["value"] = 0
+        self._load_prog_label.config(
+            text=f"Reading…  {_size_str}" if _size_str else "Reading…")
+        self._load_prog_frame.pack(fill="x", pady=(0, 4),
+                                   before=self._queue_tree.master)
+        self.root.update_idletasks()
+
+        # Parse on a background thread so the UI stays responsive
+        _result:   list = []
+        _progress: list = [5]
+
+        def _worker():
+            try:
+                _progress[0] = 10
+                from .io import list_waveform_channels as _lwc
+                _lwc(fe.path)           # warm up; result used in _browse_file_path
+                _progress[0] = 100
+                _result.append(("ok",))
+            except Exception as exc:
+                _result.append(("err", exc))
+                _progress[0] = 0
+
+        _ready = [False]
+
+        def _poll():
+            pct = _progress[0]
+            self._load_prog_bar["value"] = pct
+            if pct == 100:
+                self._load_prog_label.config(text=f"✅ Loaded  {_size_str}")
+            if not _result:
+                self.root.after(80, _poll)
+                return
+            _ready[0] = True
+
+        threading.Thread(target=_worker, daemon=True).start()
+        self.root.after(80, _poll)
+        while not _ready[0]:
+            self.root.update()
+
+        self._load_prog_frame.pack_forget()
+
+        if _result[0][0] == "err":
+            messagebox.showerror("Load error", str(_result[0][1]), parent=self.root)
+            return
 
         # Trigger the normal file loading flow
         self._browse_file_path(fe.path, auto_run=auto_run)
