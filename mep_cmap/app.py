@@ -2051,7 +2051,12 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         """Browse for an external M-wave reference file."""
         path = filedialog.askopenfilename(
             title="Select M-wave reference file",
-            filetypes=[("Spike2 export", "*.txt")],
+            filetypes=[
+                ("All supported formats", "*.txt *.csv *"),
+                ("Spike2 / LabChart export", "*.txt"),
+                ("KinEMG CSV", "*.csv"),
+                ("All files", "*.*"),
+            ],
             parent=self.root)
         if path:
             self.mmax_file.set(path)
@@ -2440,7 +2445,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
 
     # Expected BIDS filename entity pattern:
     #   sub-<label>[_ses-<label>][_limb-<label>][_task-<label>][_run-<index>]
-    #   followed by an optional suffix, ending in .txt
+    #   followed by an optional suffix, ending in .txt, .csv, or no extension
     _BIDS_ENTITIES = re.compile(
         r'^'
         r'(?P<sub>sub-[A-Za-z0-9]+)'
@@ -2449,7 +2454,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         r'(?:_(?P<task>task-[A-Za-z0-9]+))?'
         r'(?:_(?P<run>run-[0-9]+))?'
         r'(?:_(?P<suffix>[^.]+))?'
-        r'\.txt$',
+        r'(?:\.txt|\.csv)?$',
         re.IGNORECASE,
     )
 
@@ -2460,8 +2465,8 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         issues = []
         name, ext = os.path.splitext(basename)
 
-        if ext.lower() != ".txt":
-            issues.append(f"Extension '{ext}' — expected '.txt'")
+        if ext.lower() not in (".txt", ".csv", ""):
+            issues.append(f"Extension '{ext}' — expected '.txt', '.csv', or none")
 
         parts = name.split("_")
 
@@ -2873,8 +2878,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self._queue_refresh_from_raw()
 
     def _queue_refresh_from_raw(self):
-        """Scan the raw data folder and add any new .txt files to the queue.
-        Files previously removed by the user are not re-added."""
+        """Scan the raw data folder and add any new data files to the queue.
+        Files previously removed by the user are not re-added.
+        Supported: .txt (Spike2/LabChart), .csv (KinEMG), and extension-less files."""
         raw = self._rawdata_path.get()
         if not raw:
             messagebox.showinfo("No raw data folder",
@@ -2884,13 +2890,20 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                    "channel_info", "_readme")
         import glob as _glob
         all_txt = _glob.glob(os.path.join(raw, "**", "*.txt"), recursive=True)
+        all_csv = _glob.glob(os.path.join(raw, "**", "*.csv"), recursive=True)
+        # Extension-less files: glob all, then filter to those with no extension
+        all_any = _glob.glob(os.path.join(raw, "**", "*"), recursive=True)
+        all_noext = [f for f in all_any
+                     if os.path.isfile(f) and not os.path.splitext(f)[1]]
         files = sorted(
-            f for f in all_txt
+            f for f in set(all_txt + all_csv + all_noext)
             if not any(p in os.path.basename(f).lower() for p in EXCLUDE)
         )
         if not files:
             messagebox.showinfo("No files found",
-                "No .txt data files found in the raw data folder.",
+                "No data files found in the raw data folder.\n"
+                "Supported: .txt (Spike2/LabChart), .csv (KinEMG), "
+                "and extension-less files.",
                 parent=self.root)
             return
         ds = self._get_or_create_dataset()
@@ -2914,13 +2927,14 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self.log(msg)
 
     def browse_folder(self):
-        """Add all valid data .txt files from a selected folder (recursive)."""
+        """Add all valid data files from a selected folder (recursive).
+        Supports .txt (Spike2/LabChart), .csv (KinEMG), and extension-less files."""
         folder = filedialog.askdirectory(
             title="Select folder or BIDS rawdata root")
         if not folder:
             return
 
-        # Recursively find all .txt files, excluding known non-data files
+        # Recursively find all supported files, excluding known non-data files
         EXCLUDE_PATTERNS = (
             "metric_definitions",
             "metrics_definitions",
@@ -2929,16 +2943,21 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             "_readme",
         )
         import glob as _glob
-        all_txt = _glob.glob(os.path.join(folder, "**", "*.txt"), recursive=True)
+        all_txt    = _glob.glob(os.path.join(folder, "**", "*.txt"), recursive=True)
+        all_csv    = _glob.glob(os.path.join(folder, "**", "*.csv"), recursive=True)
+        all_any    = _glob.glob(os.path.join(folder, "**", "*"),     recursive=True)
+        all_noext  = [f for f in all_any
+                      if os.path.isfile(f) and not os.path.splitext(f)[1]]
         files = sorted(
-            f for f in all_txt
+            f for f in set(all_txt + all_csv + all_noext)
             if not any(p in os.path.basename(f).lower() for p in EXCLUDE_PATTERNS)
         )
 
         if not files:
             messagebox.showinfo("No files found",
-                "No data .txt files found in that folder or its subfolders.\n\n"
-                "If your files are in a different format, use '+ Add file(s)' instead.",
+                "No data files found in that folder or its subfolders.\n\n"
+                "Supported: .txt (Spike2/LabChart), .csv (KinEMG), "
+                "and extension-less files.",
                 parent=self.root)
             return
 
@@ -2958,8 +2977,13 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
     def browse_file(self):
         """Add one or more files to the queue and load the first one."""
         fpaths = filedialog.askopenfilenames(
-            title="Select Spike2 .txt file(s)",
-            filetypes=[("Spike2 export", "*.txt")]
+            title="Select data file(s)",
+            filetypes=[
+                ("All supported formats", "*.txt *.csv *"),
+                ("Spike2 / LabChart export", "*.txt"),
+                ("KinEMG CSV", "*.csv"),
+                ("All files", "*.*"),
+            ]
         )
         if not fpaths:
             return
@@ -2998,10 +3022,15 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         if not self.mmax_file.get():
             import glob as _glob
             _folder = os.path.dirname(fpath)
+            _mwave_kw = ("mwave", "mmax", "m-wave", "m_wave")
             _candidates = [
-                f for f in _glob.glob(os.path.join(_folder, "*.txt"))
-                if any(kw in os.path.basename(f).lower()
-                       for kw in ("mwave","mmax","m-wave","m_wave"))
+                f for f in (
+                    _glob.glob(os.path.join(_folder, "*.txt"))
+                    + _glob.glob(os.path.join(_folder, "*.csv"))
+                    + [f for f in _glob.glob(os.path.join(_folder, "*"))
+                       if os.path.isfile(f) and not os.path.splitext(f)[1]]
+                )
+                if any(kw in os.path.basename(f).lower() for kw in _mwave_kw)
             ]
             if _candidates:
                 self.mmax_file.set(_candidates[0])
@@ -3813,7 +3842,12 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
 
         path = _fd.askopenfilename(
             title="Select external normalisation reference file",
-            filetypes=[("Data files", "*.txt"), ("All files", "*.*")])
+            filetypes=[
+                ("All supported formats", "*.txt *.csv *"),
+                ("Spike2 / LabChart export", "*.txt"),
+                ("KinEMG CSV", "*.csv"),
+                ("All files", "*.*"),
+            ])
         if not path:
             return
 

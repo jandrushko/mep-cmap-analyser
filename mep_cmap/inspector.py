@@ -20,6 +20,7 @@ from .compat import _np_trapz
 from .detection import (detect_mep_onset_peak_fraction,
                         detect_mep_onset_bootstrap,
                         detect_csp_bootstrap)
+from .preferences import prefs, apply_scaling
 
 class DraggablePoint:
     """
@@ -302,6 +303,13 @@ class DataInspectorWindow:
                 self.top.attributes("-zoomed", True)
         except Exception:
             pass   # fallback: window opens at default size
+
+        # Apply the same font scale as the main window so the user preference
+        # from Settings > Preferences carries through to the inspector.
+        try:
+            apply_scaling(self.top)
+        except Exception:
+            pass
 
         self._plot()      # first draw
     # ──────────────────────────────────────────────────────────────────────

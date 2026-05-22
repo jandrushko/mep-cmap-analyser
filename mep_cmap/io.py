@@ -7,6 +7,8 @@ Supported formats (auto-detected from file header)
 ----------------------------------------------------
   Spike-2 text export  — header contains "SUMMARY" / "START" / "CHANNEL" blocks
   LabChart text export — header line 0 starts with "Interval="
+  KinEMG CSV export    — header line 0 starts with "Author,KinEMG"; fs from
+                         "Sample Clock Rate" row; channel names from row 4
   Generic TSV          — headerless / all-numeric tab/space/comma delimited text
                          (requires a one-time Format Wizard dialog on first open)
 
@@ -43,10 +45,10 @@ The recommended pattern in app.py is:
 
 import os as _os
 
-from .formats import spike2   as _spike2
-from .formats import labchart as _labchart
-
+from .formats import spike2      as _spike2
+from .formats import labchart    as _labchart
 from .formats import generic_tsv as _generic_tsv
+from .formats import kinemg_csv  as _kinemg_csv
 
 def _generic_has_config(file_path: str) -> bool:
     return _generic_tsv.has_config(file_path)
@@ -111,6 +113,7 @@ def detect_format(file_path: str) -> str:
     -------
     'labchart'    — LabChart text export (line 0 starts with 'Interval=')
     'spike2'      — Spike-2 text export (contains SUMMARY/CHANNEL/START blocks)
+    'kinemg_csv'  — KinEMG CSV export (header starts with 'Author,KinEMG')
     'generic_tsv' — Headerless numeric text file (no recognised format header)
     """
     file_path = _resolve_path(file_path)
@@ -118,6 +121,7 @@ def detect_format(file_path: str) -> str:
     with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
         first_line = f.readline()
         second_line = f.readline()
+        third_line  = f.readline()
 
     # LabChart: first line starts with 'Interval='
     if first_line.startswith('Interval='):
@@ -129,8 +133,12 @@ def detect_format(file_path: str) -> str:
             or '"Waveform"' in first_line or '"Waveform"' in second_line):
         return 'spike2'
 
+    # KinEMG CSV: header line 0 is 'Author,KinEMG'
+    if first_line.strip().lower().startswith('author,kinemg'):
+        return 'kinemg_csv'
+
     # Heuristic: if the first non-empty line parses as all-numeric fields,
-    # treat as a generic headerless TSV.
+    # treat as a generic headerless TSV (covers extension-less Mwave files).
     test_line = first_line.strip()
     if not test_line:
         test_line = second_line.strip()
@@ -172,6 +180,8 @@ def list_waveform_channels(file_path: str) -> list:
         return _labchart.list_waveform_channels(file_path)
     if fmt == 'generic_tsv':
         return _generic_tsv.list_waveform_channels(file_path)
+    if fmt == 'kinemg_csv':
+        return _kinemg_csv.list_waveform_channels(file_path)
     return _spike2.list_waveform_channels(file_path)
 
 
@@ -196,6 +206,8 @@ def extract_emg_waveform_and_fs(file_path: str, channel_idx: int = 0):
         return _labchart.extract_emg_waveform_and_fs(file_path, channel_idx)
     if fmt == 'generic_tsv':
         return _generic_tsv.extract_emg_waveform_and_fs(file_path, channel_idx)
+    if fmt == 'kinemg_csv':
+        return _kinemg_csv.extract_emg_waveform_and_fs(file_path, channel_idx)
     return _spike2.extract_emg_waveform_and_fs(file_path, channel_idx)
 
 
@@ -220,4 +232,6 @@ def extract_stim_times(file_path: str, marker_name: str) -> dict:
         return _labchart.extract_stim_times(file_path, marker_name)
     if fmt == 'generic_tsv':
         return _generic_tsv.extract_stim_times(file_path, marker_name)
+    if fmt == 'kinemg_csv':
+        return _kinemg_csv.extract_stim_times(file_path, marker_name)
     return _spike2.extract_stim_times(file_path, marker_name)
