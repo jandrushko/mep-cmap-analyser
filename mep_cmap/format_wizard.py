@@ -191,6 +191,7 @@ class FormatWizard:
         self._skip_rows_var  = tk.StringVar(value='0')   # ← new
         self._time_col_var   = tk.StringVar(value='None')
         self._fs_var         = tk.StringVar(value='')
+        self._raw_is_truncated: bool = False   # True when preview loaded < full cols
 
         # Per-channel widgets (page 2) — filled in _populate_channels_page
         self._ch_name_vars:  list[tk.StringVar]  = []
@@ -285,22 +286,91 @@ class FormatWizard:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _load_data(self, delimiter: str = '\t', skip: int = 0) -> None:
-        """Load (or reload) the raw array with the given delimiter and skip count."""
+        """
+        Load (or reload) the raw array with the given delimiter and skip count.
+
+        Row-wise freeze prevention
+        --------------------------
+        Files like Delsys Trigno exports have only 2–4 rows but hundreds of
+        thousands of columns (one column per time sample).  Passing
+        ``max_rows=10000`` to np.loadtxt on such a file causes it to attempt
+        allocating tens of gigabytes (10000 × 423601 × 8 bytes ≈ 32 GB) before
+        raising a MemoryError — a process that blocks the Tk main thread for
+        tens of seconds or more and shows "Not Responding" on Windows.
+
+        Fix: sniff the file first to count data rows and columns in the first
+        data line.  If the file has very few rows (≤ 20) but many columns
+        (> 1000) we cap max_rows at the actual row count rather than 10000,
+        and use usecols to load only the first 500 columns for the preview
+        (enough for mini-wave thumbnails and time-axis detection).  The full
+        array for channel analysis is loaded lazily in _populate_channels_page.
+        """
+        n_data_rows, n_cols = self._sniff_shape(delimiter, skip)
+
+        is_row_wise_like = (n_data_rows <= 20 and n_cols > 1000)
+
         try:
-            self._raw = np.loadtxt(
-                self.file_path, delimiter=delimiter,
-                skiprows=skip, max_rows=10000,
-            )
+            if is_row_wise_like:
+                # Load all rows but cap columns at 500 for preview speed.
+                # _populate_channels_page will reload the full array when needed.
+                self._raw = np.loadtxt(
+                    self.file_path, delimiter=delimiter,
+                    skiprows=skip, max_rows=n_data_rows,
+                    usecols=range(min(500, n_cols)),
+                )
+                self._raw_is_truncated = True   # flag so channel page reloads
+            else:
+                self._raw = np.loadtxt(
+                    self.file_path, delimiter=delimiter,
+                    skiprows=skip, max_rows=10000,
+                )
+                self._raw_is_truncated = False
         except Exception:
             try:
                 self._raw = np.loadtxt(
                     self.file_path, skiprows=skip, max_rows=4000,
                 )
+                self._raw_is_truncated = False
             except Exception:
                 self._raw = np.zeros((10, 2))
+                self._raw_is_truncated = False
+
         # Guarantee 2-D
         if self._raw is not None and self._raw.ndim == 1:
             self._raw = self._raw.reshape(1, -1)
+
+    def _sniff_shape(self, delimiter: str, skip: int) -> tuple[int, int]:
+        """
+        Quickly count data rows and columns without loading the full array.
+
+        Delegates to ``mep_cmap_io.generic_tsv_sniff`` (Rust) when available
+        — same 100 ms target, but avoids the Python GIL during the scan.
+        Falls back to a pure-Python line-count scan otherwise.
+
+        Returns (n_data_rows, n_cols_first_row).
+        """
+        # Map raw delimiter char back to the name string Rust expects
+        delim_name = {'\t': 'tab', ' ': 'space', ',': 'comma'}.get(delimiter, 'tab')
+        try:
+            from .formats.generic_tsv import sniff as _tsv_sniff
+            n_rows, n_cols, _fs = _tsv_sniff(self.file_path, delim_name, skip)
+            return n_rows, n_cols
+        except Exception:
+            pass
+
+        # Pure-Python fallback
+        try:
+            with open(self.file_path, 'r', encoding='utf-8', errors='replace') as fh:
+                for _ in range(skip):
+                    fh.readline()
+                first_data = fh.readline()
+                if not first_data.strip():
+                    return 0, 0
+                n_cols = len(first_data.split(delimiter))
+                n_data_rows = 1 + sum(1 for _ in fh)
+            return n_data_rows, n_cols
+        except Exception:
+            return 0, 0
 
     # ─────────────────────────────────────────────────────────────────────────
     # Page builders
@@ -714,6 +784,11 @@ class FormatWizard:
         Build one row per data column (column-wise) or data row (row-wise),
         excluding the time column/row.
         Called just before page 2 is shown, so layout/time choices are final.
+
+        If _load_data truncated the array to 500 columns for preview speed
+        (row-wise files with hundreds of thousands of columns), the full array
+        is reloaded here so that auto-detection and mini-wave thumbnails have
+        access to the complete signal.
         """
         # Clear existing rows
         for w in self._ch_frame.winfo_children():
@@ -724,6 +799,23 @@ class FormatWizard:
 
         if self._raw is None:
             return
+
+        # Reload full array if we only loaded a truncated preview earlier
+        if getattr(self, '_raw_is_truncated', False):
+            d    = _delimiter_char_for(self._delimiter_var.get())
+            skip = self._get_skip()
+            n_rows, _ = self._sniff_shape(d, skip)
+            try:
+                full = np.loadtxt(
+                    self.file_path, delimiter=d,
+                    skiprows=skip, max_rows=max(n_rows, 1),
+                )
+                if full.ndim == 1:
+                    full = full.reshape(1, -1)
+                self._raw = full
+            except Exception:
+                pass   # keep truncated array; thumbnails will be approximate
+            self._raw_is_truncated = False
 
         layout       = self._layout_var.get()
         time_idx     = self._resolved_time_col()
