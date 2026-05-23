@@ -32,3 +32,4 @@ Repository = "https://github.com/jandrushko/mep-cmap-analyser"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["mep_cmap*"]
+exclude = ["venv_windows*", "venv_linux*", "mep_cmap_io*"]
