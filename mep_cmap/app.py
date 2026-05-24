@@ -2051,12 +2051,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         """Browse for an external M-wave reference file."""
         path = filedialog.askopenfilename(
             title="Select M-wave reference file",
-            filetypes=[
-                ("All supported formats", "*.txt *.csv *"),
-                ("Spike2 / LabChart export", "*.txt"),
-                ("KinEMG CSV", "*.csv"),
-                ("All files", "*.*"),
-            ],
+            filetypes=[("Spike2 export", "*.txt")],
             parent=self.root)
         if path:
             self.mmax_file.set(path)
@@ -2445,7 +2440,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
 
     # Expected BIDS filename entity pattern:
     #   sub-<label>[_ses-<label>][_limb-<label>][_task-<label>][_run-<index>]
-    #   followed by an optional suffix, ending in .txt, .csv, or no extension
+    #   followed by an optional suffix, ending in .txt
     _BIDS_ENTITIES = re.compile(
         r'^'
         r'(?P<sub>sub-[A-Za-z0-9]+)'
@@ -2454,7 +2449,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         r'(?:_(?P<task>task-[A-Za-z0-9]+))?'
         r'(?:_(?P<run>run-[0-9]+))?'
         r'(?:_(?P<suffix>[^.]+))?'
-        r'(?:\.txt|\.csv)?$',
+        r'\.txt$',
         re.IGNORECASE,
     )
 
@@ -2465,8 +2460,8 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         issues = []
         name, ext = os.path.splitext(basename)
 
-        if ext.lower() not in (".txt", ".csv", ""):
-            issues.append(f"Extension '{ext}' — expected '.txt', '.csv', or none")
+        if ext.lower() != ".txt":
+            issues.append(f"Extension '{ext}' — expected '.txt'")
 
         parts = name.split("_")
 
@@ -2878,9 +2873,8 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self._queue_refresh_from_raw()
 
     def _queue_refresh_from_raw(self):
-        """Scan the raw data folder and add any new data files to the queue.
-        Files previously removed by the user are not re-added.
-        Supported: .txt (Spike2/LabChart), .csv (KinEMG), and extension-less files."""
+        """Scan the raw data folder and add any new .txt files to the queue.
+        Files previously removed by the user are not re-added."""
         raw = self._rawdata_path.get()
         if not raw:
             messagebox.showinfo("No raw data folder",
@@ -2890,20 +2884,13 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                    "channel_info", "_readme")
         import glob as _glob
         all_txt = _glob.glob(os.path.join(raw, "**", "*.txt"), recursive=True)
-        all_csv = _glob.glob(os.path.join(raw, "**", "*.csv"), recursive=True)
-        # Extension-less files: glob all, then filter to those with no extension
-        all_any = _glob.glob(os.path.join(raw, "**", "*"), recursive=True)
-        all_noext = [f for f in all_any
-                     if os.path.isfile(f) and not os.path.splitext(f)[1]]
         files = sorted(
-            f for f in set(all_txt + all_csv + all_noext)
+            f for f in all_txt
             if not any(p in os.path.basename(f).lower() for p in EXCLUDE)
         )
         if not files:
             messagebox.showinfo("No files found",
-                "No data files found in the raw data folder.\n"
-                "Supported: .txt (Spike2/LabChart), .csv (KinEMG), "
-                "and extension-less files.",
+                "No .txt data files found in the raw data folder.",
                 parent=self.root)
             return
         ds = self._get_or_create_dataset()
@@ -2927,14 +2914,13 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self.log(msg)
 
     def browse_folder(self):
-        """Add all valid data files from a selected folder (recursive).
-        Supports .txt (Spike2/LabChart), .csv (KinEMG), and extension-less files."""
+        """Add all valid data .txt files from a selected folder (recursive)."""
         folder = filedialog.askdirectory(
             title="Select folder or BIDS rawdata root")
         if not folder:
             return
 
-        # Recursively find all supported files, excluding known non-data files
+        # Recursively find all .txt files, excluding known non-data files
         EXCLUDE_PATTERNS = (
             "metric_definitions",
             "metrics_definitions",
@@ -2943,21 +2929,16 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             "_readme",
         )
         import glob as _glob
-        all_txt    = _glob.glob(os.path.join(folder, "**", "*.txt"), recursive=True)
-        all_csv    = _glob.glob(os.path.join(folder, "**", "*.csv"), recursive=True)
-        all_any    = _glob.glob(os.path.join(folder, "**", "*"),     recursive=True)
-        all_noext  = [f for f in all_any
-                      if os.path.isfile(f) and not os.path.splitext(f)[1]]
+        all_txt = _glob.glob(os.path.join(folder, "**", "*.txt"), recursive=True)
         files = sorted(
-            f for f in set(all_txt + all_csv + all_noext)
+            f for f in all_txt
             if not any(p in os.path.basename(f).lower() for p in EXCLUDE_PATTERNS)
         )
 
         if not files:
             messagebox.showinfo("No files found",
-                "No data files found in that folder or its subfolders.\n\n"
-                "Supported: .txt (Spike2/LabChart), .csv (KinEMG), "
-                "and extension-less files.",
+                "No data .txt files found in that folder or its subfolders.\n\n"
+                "If your files are in a different format, use '+ Add file(s)' instead.",
                 parent=self.root)
             return
 
@@ -2977,13 +2958,8 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
     def browse_file(self):
         """Add one or more files to the queue and load the first one."""
         fpaths = filedialog.askopenfilenames(
-            title="Select data file(s)",
-            filetypes=[
-                ("All supported formats", "*.txt *.csv *"),
-                ("Spike2 / LabChart export", "*.txt"),
-                ("KinEMG CSV", "*.csv"),
-                ("All files", "*.*"),
-            ]
+            title="Select Spike2 .txt file(s)",
+            filetypes=[("Spike2 export", "*.txt")]
         )
         if not fpaths:
             return
@@ -3022,15 +2998,10 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         if not self.mmax_file.get():
             import glob as _glob
             _folder = os.path.dirname(fpath)
-            _mwave_kw = ("mwave", "mmax", "m-wave", "m_wave")
             _candidates = [
-                f for f in (
-                    _glob.glob(os.path.join(_folder, "*.txt"))
-                    + _glob.glob(os.path.join(_folder, "*.csv"))
-                    + [f for f in _glob.glob(os.path.join(_folder, "*"))
-                       if os.path.isfile(f) and not os.path.splitext(f)[1]]
-                )
-                if any(kw in os.path.basename(f).lower() for kw in _mwave_kw)
+                f for f in _glob.glob(os.path.join(_folder, "*.txt"))
+                if any(kw in os.path.basename(f).lower()
+                       for kw in ("mwave","mmax","m-wave","m_wave"))
             ]
             if _candidates:
                 self.mmax_file.set(_candidates[0])
@@ -3639,25 +3610,10 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             fg="grey", justify="left", wraplength=900
         ).grid(row=0, column=0, columnspan=9, sticky="w", padx=10, pady=(10,6))
 
-        # ── Latency lookup table ──────────────────────────────────────────────
-        LATENCY_PROFILES = {
-            ("TMS", "Hand / FDI"):                    (18, 30),
-            ("TMS", "Forearm (FCR / ECR)"):            (14, 28),
-            ("TMS", "Vastus lateralis / Quad"):        (18, 35),
-            ("TMS", "Hamstrings"):                     (18, 35),
-            ("TMS", "Tibialis anterior / Leg"):        (28, 45),
-            ("TMS", "Erector spinae / Trunk"):         (14, 28),
-            ("Peripheral nerve", "Upper limb (M-wave)"): (2, 12),
-            ("Peripheral nerve", "Lower limb (M-wave)"): (4, 18),
-            ("Custom", "Custom"):                      (10, 50),
-        }
-        MUSCLE_OPTIONS = {
-            "TMS":              ["Hand / FDI", "Forearm (FCR / ECR)",
-                                 "Vastus lateralis / Quad", "Hamstrings",
-                                 "Tibialis anterior / Leg", "Erector spinae / Trunk"],
-            "Peripheral nerve": ["Upper limb (M-wave)", "Lower limb (M-wave)"],
-            "Custom":           ["Custom"],
-        }
+        # ── Latency lookup table — read from user preferences ─────────────────
+        # Users can edit these in Settings → Preferences → Latency Profiles.
+        LATENCY_PROFILES = prefs.latency_profiles_as_dict()
+        MUSCLE_OPTIONS   = prefs.muscle_options()
         self._LATENCY_PROFILES = LATENCY_PROFILES
         self._MUSCLE_OPTIONS   = MUSCLE_OPTIONS
 
@@ -3736,8 +3692,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             self._lab_entry_plateau[stim] = v_plat
 
             # Stim type dropdown
-            _prev_stype  = self.latency_stim_map.get(stim, "TMS")
-            _prev_muscle = self.latency_muscle_map.get(stim, "Hand / FDI")
+            _def_stype, _def_muscle = prefs.default_latency_key
+            _prev_stype  = self.latency_stim_map.get(stim, _def_stype)
+            _prev_muscle = self.latency_muscle_map.get(stim, _def_muscle)
             _prev_lat    = self.latency_map.get(stim)
             v_stype = tk.StringVar(value=_prev_stype)
             stype_cb = ttk.Combobox(inner, textvariable=v_stype,
@@ -3758,8 +3715,15 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             self._lat_stype_vars[stim]  = v_stype
             self._lat_muscle_vars[stim] = v_muscle
 
-            # Pre-fill min/max from saved latency_map if available
-            _def_min, _def_max = _prev_lat if _prev_lat else (18.0, 30.0)
+            # Pre-fill min/max from saved latency_map if available;
+            # otherwise fall back to the profile for the currently selected muscle
+            if _prev_lat:
+                _def_min, _def_max = _prev_lat
+            else:
+                _def_min, _def_max = LATENCY_PROFILES.get(
+                    (_prev_stype, _prev_muscle),
+                    LATENCY_PROFILES.get(prefs.default_latency_key, (18.0, 28.0))
+                )
             v_min = tk.DoubleVar(value=_def_min)
             v_max = tk.DoubleVar(value=_def_max)
             tk.Entry(inner, textvariable=v_min, width=5)\
@@ -3842,12 +3806,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
 
         path = _fd.askopenfilename(
             title="Select external normalisation reference file",
-            filetypes=[
-                ("All supported formats", "*.txt *.csv *"),
-                ("Spike2 / LabChart export", "*.txt"),
-                ("KinEMG CSV", "*.csv"),
-                ("All files", "*.*"),
-            ])
+            filetypes=[("Data files", "*.txt"), ("All files", "*.*")])
         if not path:
             return
 

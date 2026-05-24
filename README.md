@@ -1,6 +1,6 @@
 # MEP-CMAP Analyser
 
-**Version 0.9.6 | May 2026**  
+**Version 0.9.8 | May 2026**  
 *Author: Justin Andrushko PhD, Northumbria University*
 
 [![PyPI version](https://badge.fury.io/py/mep-cmap-analyser.svg)](https://pypi.org/project/mep-cmap-analyser/)
@@ -62,7 +62,7 @@ The tool is not limited to any single measure or paradigm. It handles motor evok
 | **cSP duration (ms)** | Duration of the cortical silent period, from EMG suppression onset to EMG return |
 | **cSP MEP offset (ms)** | Time from stimulus to start of cSP |
 | **cSP EMG return (ms)** | Time from stimulus to EMG recovery after cSP |
-| **MEP/cSP ratio** | PTP amplitude divided by cSP duration (Orth & Rothwell, 2004) |
+| **MEP/cSP ratio** | PTP amplitude divided by cSP duration (Orth & Rothwell, 2004 [5]) |
 | **Normalised PTP** | PTP expressed as a fraction of an Mmax reference or single-pulse reference mean |
 | **Paired-pulse ratio** | Conditioned / reference amplitude for SICI, ICF, or any custom pairing |
 | **Z-score (within type)** | Standardised amplitude within each stimulus type |
@@ -75,17 +75,22 @@ Two detection methods are available and switchable per file:
 
 **Peak-fraction method (default)** — finds the largest positive and negative peaks in the MEP window, then scans backward from the dominant peak to find where the signal first crosses a fraction of that peak (configurable, default 15%). A minimum peak amplitude threshold guards against noise false-positives.
 
-**Bootstrap threshold method** — estimates a noise threshold from the pre-stimulus baseline using a bootstrap distribution, then scans forward within a physiologically plausible latency window to find the first sample exceeding the criterion. Latency windows are defined per stimulus type and have built-in defaults based on published normative data:
+**Bootstrap threshold method** — estimates a noise threshold from the pre-stimulus baseline using a bootstrap distribution, then scans forward within a physiologically plausible latency window to find the first sample exceeding the criterion. Latency windows are defined per stimulus type and have built-in defaults based on published normative data (see [Physiological Latency Profiles](#physiological-latency-profiles)):
 
-| Stimulus / Muscle Target | Latency Window |
+| Stimulus / Muscle target | Latency window |
 |---|---|
-| TMS → hand / FDI | 18–30 ms |
-| TMS → vastus lateralis | 18–35 ms |
-| TMS → lower leg | 28–45 ms |
-| PNS → upper limb | 2–12 ms |
-| PNS → lower limb | 4–18 ms |
+| TMS → deltoid / trapezius | 8–16 ms |
+| TMS → biceps / triceps brachii | 12–20 ms |
+| TMS → trunk / external oblique | 12–22 ms |
+| TMS → hand / FDI / APB / ADM | 18–28 ms |
+| TMS → forearm (FCR / ECR) | 16–26 ms |
+| TMS → vastus lateralis / quad | 18–30 ms |
+| TMS → hamstrings | 18–32 ms |
+| TMS → tibialis anterior / leg | 28–45 ms |
+| PNS → upper limb (M-wave) | 2–12 ms |
+| PNS → lower limb (M-wave) | 4–18 ms |
 
-Custom windows can be set for any stim type label.
+Default windows and the pre-selected muscle group for new stimulus types can be changed globally in **Settings → Preferences → Latency Profiles**. Per-file overrides set in Stage 1a are saved independently and are not affected by preference changes.
 
 ### Cortical Silent Period (cSP) Detection
 
@@ -339,6 +344,27 @@ The output is at the trial level with outlier Z-scores included as covariates, r
 
 ---
 
+## Physiological Latency Profiles
+
+The bootstrap onset detector searches for MEP onset within a per-muscle physiological window. Default windows are listed below; all assume contralateral cortical stimulation with active muscle facilitation (resting latencies are typically 1–3 ms longer). Windows can be overridden per stimulus type in Stage 1a, and the global defaults can be edited in **Settings → Preferences → Latency Profiles**.
+
+| Stimulus type / Muscle target | Window (ms) | Reference(s) |
+|---|---|---|
+| TMS → deltoid / trapezius | 8–16 | [1], [2] |
+| TMS → biceps / triceps brachii | 12–20 | [1], [2] |
+| TMS → trunk / external oblique | 12–22 | [3] |
+| TMS → hand / FDI / APB / ADM | 18–28 | [4], [1] |
+| TMS → forearm (FCR / ECR) | 16–26 | [1] |
+| TMS → vastus lateralis / quad | 18–30 | [1], [4] |
+| TMS → hamstrings | 18–32 | [1] |
+| TMS → tibialis anterior / leg | 28–45 | [4], [1] |
+| PNS → upper limb (M-wave) | 2–12 | [1] |
+| PNS → lower limb (M-wave) | 4–18 | [1] |
+
+**Notes.** Latency scales positively with height and age, particularly for lower-limb muscles. The lower bound for each window is set conservatively to exclude the TMS artefact; the upper bound captures the ±2 SD range of normative cohort data while avoiding the late oligosynaptic MEP that can appear at 60–70 ms in resting quadriceps and hamstrings. The trunk window is anchored to the contralateral onset latency of 15.8 ± 1.4 ms reported by Miyano et al. [3] using an antero-medially directed double-cone coil during active contraction; ipsilateral responses average ~2 ms longer.
+
+---
+
 ## Building from Source
 
 ```bash
@@ -373,16 +399,26 @@ python3 build_mac.py
 
 If you use MEP-CMAP Analyser in published research, please cite:
 
-> Andrushko, J.W. (2026). MEP-CMAP Analyser (Version 0.9.6) [Software].
+> Andrushko, J.W. (2026). MEP-CMAP Analyser (Version 0.9.8) [Software].
 > Northumbria University. https://github.com/jandrushko/mep-cmap-analyser
 
 ---
 
 ## References
 
-- Orth, M., & Rothwell, J.C. (2004). The cortical silent period: intrinsic variability and relation to the waveform of the transcranial magnetic stimulation pulse. *Clinical Neurophysiology*, 115(5), 1076–1082.
-- Hupfeld, K.E., Swanson, C.W., Fling, B.W., & Seidler, R.D. (2021). TMS-induced silent periods: A review of methods and call for consistency. *Journal of Neuroscience Methods*, 346, 108950.
-- Rossini, P.M., et al. (2015). Non-invasive electrical and magnetic stimulation of the brain, spinal cord, roots and peripheral nerves: Basic principles and procedures for routine clinical and research application. *Clinical Neurophysiology*, 126(6), 1071–1107.
+[1] Groppa, S., Oliviero, A., Eisen, A., Quartarone, A., Cohen, L.G., Mall, V., Kaelin-Lang, A., Mima, T., Rossi, S., Thickbroom, G.W., Rossini, P.M., Ziemann, U., Valls-Solé, J., & Siebner, H.R. (2012). A practical guide to diagnostic transcranial magnetic stimulation: Report of an IFCN committee. *Clinical Neurophysiology*, 123(5), 858–882. https://doi.org/10.1016/j.clinph.2012.01.010
+
+[2] Colebatch, J.G., Rothwell, J.C., Day, B.L., Thompson, P.D., & Marsden, C.D. (1990). Cortical outflow to proximal arm muscles in man. *Brain*, 113(6), 1843–1856. https://doi.org/10.1093/brain/113.6.1843
+
+[3] Miyano, R., Shirota, Y., Kodama, S., Toda, T., & Hamada, M. (2026). Ipsilateral and contralateral cortical control of the external oblique muscles revealed by TMS. *Clinical Neurophysiology*, 181, 2111400. https://doi.org/10.1016/j.clinph.2025.2111400
+
+[4] Cantone, M., Lanza, G., Fisicaro, F., Bella, R., Ferri, R., Pennisi, G., Waterstraat, G., & Pennisi, M. (2023). Sex-specific reference values for total, central, and peripheral latency of motor evoked potentials from a large cohort. *Frontiers in Human Neuroscience*, 17, 1152204. https://doi.org/10.3389/fnhum.2023.1152204
+
+[5] Orth, M., & Rothwell, J.C. (2004). The cortical silent period: intrinsic variability and relation to the waveform of the transcranial magnetic stimulation pulse. *Clinical Neurophysiology*, 115(5), 1076–1082. https://doi.org/10.1016/j.clinph.2003.12.005
+
+[6] Hupfeld, K.E., Swanson, C.W., Fling, B.W., & Seidler, R.D. (2021). TMS-induced silent periods: A review of methods and call for consistency. *Journal of Neuroscience Methods*, 346, 108950. https://doi.org/10.1016/j.jneumeth.2020.108950
+
+[7] Rossini, P.M., et al. (2015). Non-invasive electrical and magnetic stimulation of the brain, spinal cord, roots and peripheral nerves: Basic principles and procedures for routine clinical and research application. *Clinical Neurophysiology*, 126(6), 1071–1107. https://doi.org/10.1016/j.clinph.2015.02.001
 
 ---
 

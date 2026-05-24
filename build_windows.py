@@ -136,6 +136,14 @@ def build_rust_extension():
         print("⚠️   Wheel install failed — continuing with Python fallback.")
         return True  # non-fatal
 
+    # Also install into the Python that launched this script (sys.executable).
+    # This ensures `python MEP_CMAP_Analyser.py` picks up the same extension
+    # as the built exe — otherwise the system Python keeps an old mep_cmap_io
+    # that imports but is missing the generic-TSV symbols.
+    if str(Path(sys.executable).resolve()) != str(VENV_PY.resolve()):
+        run(f'"{sys.executable}" -m pip install "{wheel}" --force-reinstall -q',
+            f"Installing {wheel.name} into system Python")
+
     print(f"✅  mep_cmap_io compiled and installed ({wheel.name})")
     return True
 

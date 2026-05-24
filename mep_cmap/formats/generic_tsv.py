@@ -56,9 +56,17 @@ from typing import Optional
 import numpy as np
 
 # ── Try to load the Rust extension ───────────────────────────────────────────
+# Check not just that mep_cmap_io imports, but that the specific generic-TSV
+# symbols are present.  An older build may import successfully but be missing
+# these functions, which would cause an AttributeError rather than an
+# ImportError — and incorrectly set _RUST_AVAILABLE = True.
 try:
     import mep_cmap_io as _rust
-    _RUST_AVAILABLE = True
+    _RUST_AVAILABLE = (
+        callable(getattr(_rust, 'generic_tsv_extract_waveform', None))
+        and callable(getattr(_rust, 'generic_tsv_extract_stim_times', None))
+        and callable(getattr(_rust, 'generic_tsv_sniff', None))
+    )
 except ImportError:
     _rust = None               # type: ignore[assignment]
     _RUST_AVAILABLE = False
