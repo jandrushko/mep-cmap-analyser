@@ -3222,30 +3222,14 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                 else:
                     cfg = _smr_load_cfg(fpath)
                     stim_ch = cfg.get("stim_channel", "A")
+                    # Set marker_choice to the stim CHANNEL name so that
+                    # stim_types_found decodes all codes from the channel.
+                    # No picker needed — all codes are passed to Stage 1a.
+                    self.marker_choice.set(stim_ch)
                     self.log(
                         f"   EMG: {cfg.get('emg_channel')} | "
                         f"Stim channel: {stim_ch} — loaded from sidecar"
                     )
-                    # Scan the stim channel for available marker codes,
-                    # same as the text-format scan builds marker_set
-                    from .formats.spike2_smr import (
-                        get_event_codes_for_channel as _smr_codes,
-                        extract_stim_times as _smr_stim,
-                    )
-                    event_codes = _smr_codes(fpath, stim_ch)
-                    if len(event_codes) > 1:
-                        self.log(
-                            f"   Found {len(event_codes)} marker codes: "
-                            + ", ".join(event_codes)
-                        )
-                        self._ask_marker_gui(event_codes)
-                    elif event_codes:
-                        self.marker_choice.set(event_codes[0])
-                        self.log(f"   Marker code: {event_codes[0]}")
-                    else:
-                        # No discrete codes — use the channel name itself
-                        # (analogue threshold fallback)
-                        self.marker_choice.set(stim_ch)
 
             except ImportError:
                 self.log(

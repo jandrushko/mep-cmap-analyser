@@ -1,6 +1,6 @@
 # MEP-CMAP Analyser
 
-**Version 0.9.9 | May 2026**  
+**Version 0.9.9.2 | May 2026**  
 *Author: Justin Andrushko PhD, Northumbria University*
 
 [![PyPI version](https://badge.fury.io/py/mep-cmap-analyser.svg)](https://pypi.org/project/mep-cmap-analyser/)
@@ -27,15 +27,43 @@ The tool is not limited to any single measure or paradigm. It handles motor evok
 
 ### Data Ingestion and Format Support
 
-- **Spike-2 text export** — waveform channels plus DigMark event timestamps; multi-channel recordings with any number of stimulus types
-- **LabChart text export** — auto-detected from `Interval=` header; each recording block treated as a pre-aligned trial; no trigger channel required
-- **KinEMG / NI-DAQ CSV export** — auto-detected from `Author,KinEMG` header; sampling rate and channel names (`Dev1/ai0` etc.) parsed directly from the file header
-- **Generic Format Wizard** — for any other tabular text file (tab, space, or comma delimited); a one-time, four-step wizard configures:
-  - **Column-wise** layouts (rows = time samples, columns = channels) — typical for most DAQ exports and continuous recordings
-  - **Row-wise** layouts (rows = channels, columns = time samples) — used by Delsys Trigno and similar systems, where one row is a continuous TTL trigger signal and another row is the EMG recording
-  - Automatic detection of non-numeric header lines, channel name rows, and embedded sampling rate metadata so the wizard pre-fills as much as possible before the user clicks through
-  - Per-channel role assignment: EMG, Stim/Trigger, or Ignore
-  - Configuration saved as a sidecar JSON; subsequent opens load instantly without re-running the wizard
+The tool auto-detects the file format on open. Supported formats are:
+
+#### Spike-2 text export (.txt)
+Exported from Spike-2 via **File → Export → Text**. Waveform channels are read along with DigMark event timestamps. Any number of stimulus types and marker codes are supported. File I/O is accelerated by the compiled Rust extension (`mep_cmap_io`).
+
+#### Spike-2 native (.smr) — *requires `neo` package*
+Native Spike-2 binary files are read directly via the [Neo](https://neo.readthedocs.io) library — no text export step required. On first open a dialog prompts the user to identify the EMG channel and stim/trigger channel. The choices are saved to a sidecar JSON (`.smr_config.json`) alongside the data file and are not asked again. DigMark marker codes (A, B, C, ...) are decoded from the event channel and each code appears as a separate stimulus type in Stage 1a, exactly as with the text export format.
+
+> **Note:** Install Neo before using this format: `pip install neo`. Neo is included automatically when installing via `pip install mep-cmap-analyser`.
+
+#### LabChart text export (.txt)
+Auto-detected from the `Interval=` header line. Each recording block is treated as a pre-aligned trial; no trigger channel is required. File I/O is accelerated by the Rust extension.
+
+#### ADInstruments binary / CFWB (.adibin)
+Binary files exported from LabChart via **File → Export → ADInstruments Binary**. The CFWB format is fully documented and parsed natively in Rust — no LabChart installation required. Stimulation times are derived from a trigger/TTL channel which is auto-detected by channel name (keywords: `stim`, `trig`, `ttl`).
+
+#### KinEMG / NI-DAQ CSV export (.txt)
+Auto-detected from the `Author,KinEMG` header. Sampling rate and channel names (`Dev1/ai0` etc.) are parsed directly from the file header.
+
+#### Generic Format Wizard (.txt, .csv)
+For any other tabular text file (tab, space, or comma delimited). A one-time, four-step wizard configures:
+- **Column-wise** layouts (rows = time samples, columns = channels) — typical for most DAQ exports and continuous recordings
+- **Row-wise** layouts (rows = channels, columns = time samples) — used by Delsys Trigno and similar systems, where one row is a continuous TTL trigger signal and another row is the EMG recording
+- Automatic detection of non-numeric header lines, channel name rows, and embedded sampling rate metadata so the wizard pre-fills as much as possible before the user clicks through
+- Per-channel role assignment: EMG, Stim/Trigger, or Ignore
+- Configuration saved as a sidecar JSON; subsequent opens load instantly without re-running the wizard
+
+#### Format detection summary
+
+| Extension | Format | Stim time source | Rust accelerated |
+|---|---|---|---|
+| `.smr` | Spike-2 native (Neo) | DigMark / event channel | No (Neo) |
+| `.txt` | Spike-2 text export | DigMark timestamps | Yes |
+| `.txt` | LabChart text export | Interval resets | Yes |
+| `.txt` | KinEMG CSV | None (manual) | No |
+| `.txt` / `.csv` | Generic TSV (wizard) | Trigger channel | Yes |
+| `.adibin` | CFWB binary | TTL channel (auto-detected) | Yes |
 
 ### Signal Processing
 
@@ -50,7 +78,7 @@ The tool is not limited to any single measure or paradigm. It handles motor evok
 - Configurable pre-stimulus and post-stimulus windows (ms)
 - Per stimulus-type gap parameter to skip the TMS artefact period before onset search
 - Multi-stimulus support within a single recording: every marker/event label gets its own settings, colour, and output column
-- Stim times sourced from: DigMark timestamps (Spike-2), interval resets (LabChart), TTL/trigger channel rising edges (generic TTL rows), or manually entered
+- Stim times sourced from: DigMark timestamps (Spike-2 text and native .smr), interval resets (LabChart), TTL/trigger channel rising edges (CFWB binary, generic TTL rows), or manually entered
 
 ### Response Quantification
 
@@ -391,7 +419,11 @@ python3 build_mac.py
 | `pandas` | CSV I/O and data manipulation |
 | `matplotlib` | Waveform plotting and interactive figures |
 | `pywt` | Wavelet time-frequency display in filter preview |
+| `Pillow` | Image handling for splash screen and icons |
+| `neo` | Native Spike-2 `.smr` file reading |
 | `tkinter` | GUI (bundled with standard Python) |
+
+The Rust extension `mep_cmap_io` is compiled automatically during the build process (`python build_windows.py`) and provides accelerated I/O for Spike-2 text, LabChart text, Generic TSV, and CFWB binary formats. It is not required — all formats fall back to pure Python if the extension is unavailable.
 
 ---
 
@@ -399,7 +431,7 @@ python3 build_mac.py
 
 If you use MEP-CMAP Analyser in published research, please cite:
 
-> Andrushko, J.W. (2026). MEP-CMAP Analyser (Version 0.9.9) [Software].
+> Andrushko, J.W. (2026). MEP-CMAP Analyser (Version 0.9.9.2) [Software].
 > Northumbria University. https://github.com/jandrushko/mep-cmap-analyser
 
 ---
