@@ -189,8 +189,11 @@ def pipeline_extract_segments(time, emg, stim_times, stim_types, fs,
 
     Returns
     -------
-    dict mapping stim_type -> list of (seg_emg, seg_pre) tuples.
+    dict mapping stim_type -> list of (seg_emg, seg_pre, stim_time_s) tuples.
     Only complete segments (exact pre+post window) are included.
+    stim_time_s is the stimulus timestamp in seconds (from the raw time axis),
+    preserved so downstream stages can reconstruct chronological trial order
+    across stim types for session-level detrending and other analyses.
     """
     samples_before  = int(cfg.pre_ms     * fs / 1000)
     samples_after   = int(cfg.post_ms    * fs / 1000)
@@ -212,7 +215,7 @@ def pipeline_extract_segments(time, emg, stim_times, stim_types, fs,
             pre_start = max(0, idx - prestim_samples - gap_samples)
             pre_end   = max(0, idx - gap_samples)
             seg_pre   = emg[pre_start:pre_end]
-            segs.append((seg_emg, seg_pre))
+            segs.append((seg_emg, seg_pre, stim_time))
         if segs:
             result[stim_type] = segs
     return result
@@ -429,8 +432,8 @@ def pipeline_quantify_segments(stim_type, segs_all, prestim_all,
         # [0-3] ID, [4-5] limb/measure, [6] PTP, [7] Latency
         # [8] SilentPeriod, [9] SP_MEP_Offset, [10] SP_EMG_Return, [11] MEP_cSP_Ratio
         # [12] AUC, [13-14] baseline, [15-16] Z_PreStimRMS/Z_PTP_Within
-        # [17-19] pooled/detrend, [20] Outlier_Decision
-        # [21-24] normalisation, [25] note
+        # [17-21] pooled/detrend (WithinCond + Session), [22] Outlier_Decision
+        # [23-26] normalisation, [27] note
         _mep_csp = round(float(man_ptp) / float(silent_dur), 4) \
                    if (isinstance(silent_dur, (int, float)) and silent_dur > 0
                        and man_ptp is not None) else None
@@ -441,10 +444,10 @@ def pipeline_quantify_segments(stim_type, segs_all, prestim_all,
             silent_dur, sp_mep_offset_ms, sp_emg_return_ms, _mep_csp,   # [8-11] SP
             auc_val,                                                      # [12]
             round(rms_all[idx], 4), round(preptp_all[idx], 4),           # [13-14]
-            round(rms_z_full[idx], 3), None, None, None, None,           # [15-19]
-            decision,                                                      # [20]
-            None, None, None, None,                                       # [21-24] norm
-            note_txt,                                                      # [25]
+            round(rms_z_full[idx], 3), None, None, None, None, None, None,  # [15-21]
+            decision,                                                          # [22]
+            None, None, None, None,                                           # [23-26] norm
+            note_txt,                                                          # [27]
         ]
 
         auto_row   = common.copy()
@@ -503,12 +506,24 @@ def pipeline_quantify_segments(stim_type, segs_all, prestim_all,
     return auto_rows, manual_rows, header_vals, with_out_row, ptps
 
 
-def pipeline_compute_pooled_stats(ptps_per_stim, latency_rows_auto, latency_rows_manual):
+def pipeline_compute_pooled_stats(ptps_per_stim, stim_times_per_stim,
+                                   latency_rows_auto, latency_rows_manual):
     """Compute pooled Z-scores and linear detrending across all stim types.
-    Modifies the last three columns of each row in-place.
+    Modifies columns 17–21 of each row in-place.
+
+    Two detrending approaches are computed:
+      WithinCond — linear trend fit within each stim type independently,
+                   using sequential trial index as x.  Captures condition-
+                   specific drift (valid for blocked and randomised designs).
+      Session    — single linear trend fit across ALL trials in chronological
+                   order (sorted by stim timestamp), regardless of condition.
+                   Captures session-level drift such as fatigue or potentiation
+                   that spans the whole recording.
     """
     if not ptps_per_stim:
         return
+
+    # ── Pooled Z-score (across all stim types, in insertion order) ───────────
     all_ptps   = np.concatenate(list(ptps_per_stim.values()))
     pooled_z   = (zscore(all_ptps) if len(all_ptps) > 1
                   else np.zeros(len(all_ptps)))
@@ -518,30 +533,74 @@ def pipeline_compute_pooled_stats(ptps_per_stim, latency_rows_auto, latency_rows
         pz_by_type[st] = pooled_z[pos:pos + len(pa)]
         pos += len(pa)
 
-    cum_off = 0
-    for st, pa in reversed(list(ptps_per_stim.items())):
+    # ── Within-condition detrend (per stim type independently) ───────────────
+    wc_det_mean_by_type = {}
+    wc_det_z_by_type    = {}
+    for st, pa in ptps_per_stim.items():
         n = len(pa)
         x = np.arange(n, dtype=float)
         if n >= 2:
-            slp, icp  = np.polyfit(x, pa, 1)
-            resid     = pa - (slp * x + icp)
-            det_mean  = resid + float(pa.mean())
-            sd        = float(resid.std(ddof=1))
-            det_z     = resid / sd if sd > 0 else np.zeros(n)
+            slp, icp = np.polyfit(x, pa, 1)
+            resid    = pa - (slp * x + icp)
+            det_mean = resid + float(pa.mean())
+            sd       = float(resid.std(ddof=1))
+            det_z    = resid / sd if sd > 0 else np.zeros(n)
         else:
-            resid, det_mean, det_z = np.zeros(n), pa.copy().astype(float), np.zeros(n)
+            resid    = np.zeros(n)
+            det_mean = pa.copy().astype(float)
+            det_z    = np.zeros(n)
+        wc_det_mean_by_type[st] = det_mean
+        wc_det_z_by_type[st]    = det_z
+
+    # ── Session detrend (all trials in chronological order) ──────────────────
+    # Build a flat list of (stim_time, ptp, stim_type, local_idx) and sort by time.
+    all_trials = []
+    for st, pa in ptps_per_stim.items():
+        ts = stim_times_per_stim.get(st, np.arange(len(pa), dtype=float))
+        for i, (t, p) in enumerate(zip(ts, pa)):
+            all_trials.append((float(t), float(p), st, i))
+    all_trials.sort(key=lambda r: r[0])
+
+    n_sess   = len(all_trials)
+    sess_x   = np.arange(n_sess, dtype=float)
+    sess_ptp = np.array([r[1] for r in all_trials])
+    grand_mean = float(sess_ptp.mean())
+
+    if n_sess >= 2:
+        slp_s, icp_s = np.polyfit(sess_x, sess_ptp, 1)
+        sess_resid   = sess_ptp - (slp_s * sess_x + icp_s)
+        sess_det     = sess_resid + grand_mean
+        sd_s         = float(sess_resid.std(ddof=1))
+        sess_det_z   = sess_resid / sd_s if sd_s > 0 else np.zeros(n_sess)
+    else:
+        sess_det   = sess_ptp.copy()
+        sess_det_z = np.zeros(n_sess)
+
+    # Map session detrended values back to (stim_type, local_idx)
+    sess_det_mean_by_type = {st: np.empty(len(pa)) for st, pa in ptps_per_stim.items()}
+    sess_det_z_by_type    = {st: np.empty(len(pa)) for st, pa in ptps_per_stim.items()}
+    for chron_i, (_, _, st, local_i) in enumerate(all_trials):
+        sess_det_mean_by_type[st][local_i] = sess_det[chron_i]
+        sess_det_z_by_type[st][local_i]    = sess_det_z[chron_i]
+
+    # ── Write all computed values back into latency rows (in-place) ──────────
+    cum_off = 0
+    for st, pa in reversed(list(ptps_per_stim.items())):
+        n = len(pa)
         for off in range(1, n + 1):
-            ti  = n - off
+            ti    = n - off
             abs_i = cum_off + off
-            pz  = round(float(pz_by_type[st][ti]), 3)
-            dv  = round(float(det_mean[ti]),        4)
-            dz  = round(float(det_z[ti]),            3)
-            latency_rows_auto  [-abs_i][17] = pz  # Z_PTP_Pooled
-            latency_rows_auto  [-abs_i][18] = dv  # PTP_Detrended(mV)
-            latency_rows_auto  [-abs_i][19] = dz  # PTP_Detrended_Z
-            latency_rows_manual[-abs_i][17] = pz
-            latency_rows_manual[-abs_i][18] = dv
-            latency_rows_manual[-abs_i][19] = dz
+            pz  = round(float(pz_by_type[st][ti]),            3)
+            wdv = round(float(wc_det_mean_by_type[st][ti]),   4)
+            wdz = round(float(wc_det_z_by_type[st][ti]),      3)
+            sdv = round(float(sess_det_mean_by_type[st][ti]), 4)
+            sdz = round(float(sess_det_z_by_type[st][ti]),    3)
+            for rows in (latency_rows_auto, latency_rows_manual):
+                rows[-abs_i][17] = pz   # Z_PTP_Pooled
+                rows[-abs_i][18] = wdv  # PTP_Detrended_WithinCond(mV)
+                rows[-abs_i][19] = wdz  # PTP_Detrended_WithinCond_Z
+                rows[-abs_i][20] = sdv  # PTP_Detrended_Session(mV)
+                rows[-abs_i][21] = sdz  # PTP_Detrended_Session_Z
         cum_off += n
 
 
@@ -589,7 +648,8 @@ LAT_COLS = [
     "PreStimRMS", "PreStimPTP",
     # Z-scores and detrended values
     "Z_PreStimRMS", "Z_PTP_Within", "Z_PTP_Pooled",
-    "PTP_Detrended(mV)", "PTP_Detrended_Z",
+    "PTP_Detrended_WithinCond(mV)", "PTP_Detrended_WithinCond_Z",
+    "PTP_Detrended_Session(mV)",    "PTP_Detrended_Session_Z",
     # Trial status
     "Outlier_Decision",
     # Normalisation (blank if not configured)
@@ -634,7 +694,8 @@ def pipeline_write_outputs(latency_manual, results_out, bids_prefix):
         "Mean_Normalised_PTP", "SD_Normalised_PTP",
         "Reference_Type", "Reference_Mean(mV)", "Reference_N",
         # Detrended
-        "Mean_PTP_Detrended(mV)", "SD_PTP_Detrended(mV)",
+        "Mean_PTP_Detrended_WithinCond(mV)", "SD_PTP_Detrended_WithinCond(mV)",
+        "Mean_PTP_Detrended_Session(mV)",    "SD_PTP_Detrended_Session(mV)",
     ]
 
     def _alpha_sort(df, col):
@@ -706,7 +767,10 @@ def pipeline_write_outputs(latency_manual, results_out, bids_prefix):
                     _str_col(clean,"Reference_Type"),
                     _mn(_col(clean,"Reference_Mean(mV)")),
                     _mn(_col(clean,"Reference_N")),
-                    _mn(_col(clean,"PTP_Detrended(mV)")),_sd(_col(clean,"PTP_Detrended(mV)")),
+                    _mn(_col(clean,"PTP_Detrended_WithinCond(mV)")),
+                    _sd(_col(clean,"PTP_Detrended_WithinCond(mV)")),
+                    _mn(_col(clean,"PTP_Detrended_Session(mV)")),
+                    _sd(_col(clean,"PTP_Detrended_Session(mV)")),
                 ])
             return pd.DataFrame(rows, columns=SUM_HDR)
 
@@ -1006,6 +1070,7 @@ def run_pipeline(input_path,
             for stim_type, segs in all_segments.items():
                 emg_segs  = np.array([s[0] for s in segs])
                 pre_segs  = np.array([s[1] for s in segs])
+                stim_ts   = np.array([s[2] for s in segs])
                 mean_tr   = emg_segs.mean(axis=0)
                 mean_ptp  = float(_np_ptp(mean_tr))
 
@@ -1023,7 +1088,7 @@ def run_pipeline(input_path,
                 stats_per_type[stim_type] = dict(
                     segs=emg_segs, ptps=ptps, rms_vals=rms_vals, preptp=preptp,
                     segs_all=emg_segs.copy(), prestim_all=pre_segs.copy(),
-                    outlier_set=outlier_set)
+                    outlier_set=outlier_set, stim_times_s=stim_ts.copy())
 
                 if rejected:
                     keep = np.ones(len(emg_segs), dtype=bool)
@@ -1137,7 +1202,8 @@ def run_pipeline(input_path,
                     notes_map[(stype, idx)] = m["note"]
 
             # ── Stage 7: Quantify all segments ────────────────────────────────
-            _ptps_per_stim = {}
+            _ptps_per_stim       = {}
+            _stim_times_per_stim = {}
             for stim_type, info in stats_per_type.items():
                 auto_r, man_r, sum_r, with_r, ptps_arr = pipeline_quantify_segments(
                     stim_type,
@@ -1151,10 +1217,13 @@ def run_pipeline(input_path,
                 latency_manual.extend(man_r)
                 summary_rows.append(sum_r)
                 with_out_rows.append(with_r)
-                _ptps_per_stim[stim_type] = ptps_arr
+                _ptps_per_stim[stim_type]       = ptps_arr
+                _stim_times_per_stim[stim_type] = info["stim_times_s"]
 
             # ── Stage 8: Pooled z-scores and detrending ───────────────────────
-            pipeline_compute_pooled_stats(_ptps_per_stim, latency_auto, latency_manual)
+            pipeline_compute_pooled_stats(
+                _ptps_per_stim, _stim_times_per_stim,
+                latency_auto, latency_manual)
 
             # ── Stage 9: Plots ────────────────────────────────────────────────
             combined_plot = pipeline_generate_plots(
