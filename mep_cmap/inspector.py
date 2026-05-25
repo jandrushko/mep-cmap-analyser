@@ -16,11 +16,10 @@ from matplotlib.widgets import SpanSelector
 import tkinter as tk
 from tkinter import ttk, scrolledtext
 
-from .compat import _np_trapz
+from .compat import _np_trapz, _np_ptp
 from .detection import (detect_mep_onset_peak_fraction,
                         detect_mep_onset_bootstrap,
                         detect_csp_bootstrap)
-from .preferences import prefs, apply_scaling
 
 class DraggablePoint:
     """
@@ -303,13 +302,6 @@ class DataInspectorWindow:
                 self.top.attributes("-zoomed", True)
         except Exception:
             pass   # fallback: window opens at default size
-
-        # Apply the same font scale as the main window so the user preference
-        # from Settings > Preferences carries through to the inspector.
-        try:
-            apply_scaling(self.top)
-        except Exception:
-            pass
 
         self._plot()      # first draw
     # ──────────────────────────────────────────────────────────────────────
@@ -896,7 +888,7 @@ class DataInspectorWindow:
         ax_ex.axvspan(_xleft, _xright, alpha=0.12, color="steelblue", zorder=0)
 
         if len(wide_seg) > 0:
-            _pad = (np.ptp(wide_seg) * 0.1) if np.ptp(wide_seg) > 0 else 0.1
+            _pad = (_np_ptp(wide_seg) * 0.1) if _np_ptp(wide_seg) > 0 else 0.1
             ax_ex.set_ylim(wide_seg.min() - _pad, wide_seg.max() + _pad)
 
         ax_ex.set_xlim(-wide_s * 1000, wide_s * 1000)

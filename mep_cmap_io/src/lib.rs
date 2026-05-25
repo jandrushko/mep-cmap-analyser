@@ -907,6 +907,274 @@ fn generic_tsv_extract_stim_times(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// CFWB binary reader  (.adibin / ADInstruments binary export)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Format spec: ADIBinaryFormat.h (ADInstruments, 2001-2009)
+// http://cdn.adinstruments.com/adi-web/manuals/translatebinary/ADIBinaryFormat.h
+//
+// File layout (all values little-endian, 1-byte packed):
+//
+//   [68 bytes]  File header (CFWBINARY)
+//   [96 bytes × NChannels]  Channel headers (CFWBCHANNEL)
+//   [interleaved samples]   NChannels (or NChannels+1 if TimeChannel=1) values
+//                           per sample, DataFormat = 1 (f64) / 2 (f32) / 3 (i16)
+//
+// For i16 data: physical = scale × (raw + offset)
+// For f32/f64:  scale=1.0, offset=0.0 (applied anyway for safety)
+
+fn cfwb_read_i32(data: &[u8], off: usize) -> i32 {
+    i32::from_le_bytes(data[off..off + 4].try_into().unwrap_or([0; 4]))
+}
+fn cfwb_read_f64(data: &[u8], off: usize) -> f64 {
+    f64::from_le_bytes(data[off..off + 8].try_into().unwrap_or([0; 8]))
+}
+fn cfwb_read_f32(data: &[u8], off: usize) -> f32 {
+    f32::from_le_bytes(data[off..off + 4].try_into().unwrap_or([0; 4]))
+}
+fn cfwb_read_i16(data: &[u8], off: usize) -> i16 {
+    i16::from_le_bytes(data[off..off + 2].try_into().unwrap_or([0; 2]))
+}
+fn cfwb_read_cstr(data: &[u8], off: usize, max_len: usize) -> String {
+    let slice = &data[off..(off + max_len).min(data.len())];
+    let end   = slice.iter().position(|&b| b == 0).unwrap_or(max_len);
+    String::from_utf8_lossy(&slice[..end]).trim().to_owned()
+}
+
+struct CfwbHeader {
+    secs_per_tick:       f64,
+    n_channels:          usize,
+    samples_per_channel: usize,
+    time_channel:        bool,
+    data_format:         i32,   // 1 = f64, 2 = f32, 3 = i16
+}
+
+struct CfwbChan {
+    title:  String,
+    units:  String,
+    scale:  f64,
+    offset: f64,
+}
+
+struct CfwbFile {
+    header:      CfwbHeader,
+    channels:    Vec<CfwbChan>,
+    data_offset: usize,         // byte offset of first sample in `raw`
+    raw:         Vec<u8>,
+}
+
+fn cfwb_parse(path: &str) -> Result<CfwbFile, String> {
+    let raw = fs::read(path).map_err(|e| format!("Cannot read {path}: {e}"))?;
+
+    if raw.len() < 68 {
+        return Err("File too small to be a valid CFWB binary".to_owned());
+    }
+    if &raw[0..4] != b"CFWB" {
+        return Err(format!(
+            "Not a CFWB binary file — magic bytes are {:?}, expected b\"CFWB\"",
+            &raw[0..4]
+        ));
+    }
+
+    // ── File header ───────────────────────────────────────────────────────────
+    // Offset  Size  Field
+    //  0       4    magic[4]
+    //  4       4    Version (i32)
+    //  8       8    secsPerTick (f64)
+    // 16       4    Year
+    // 20       4    Month
+    // 24       4    Day
+    // 28       4    Hour
+    // 32       4    Minute
+    // 36       8    Second (f64)
+    // 44       8    trigger (f64)
+    // 52       4    NChannels
+    // 56       4    SamplesPerChannel
+    // 60       4    TimeChannel
+    // 64       4    DataFormat
+    // = 68 bytes total
+
+    let secs_per_tick       = cfwb_read_f64(&raw, 8);
+    let n_channels          = cfwb_read_i32(&raw, 52).max(0) as usize;
+    let samples_per_channel = cfwb_read_i32(&raw, 56).max(0) as usize;
+    let time_channel        = cfwb_read_i32(&raw, 60) != 0;
+    let data_format         = cfwb_read_i32(&raw, 64);
+
+    if n_channels == 0 {
+        return Err("CFWB file reports 0 channels".to_owned());
+    }
+    if secs_per_tick <= 0.0 {
+        return Err("CFWB file has invalid secsPerTick".to_owned());
+    }
+
+    // ── Channel headers ───────────────────────────────────────────────────────
+    // Each: 32 (Title) + 32 (Units) + 8 (scale) + 8 (offset)
+    //      + 8 (RangeHigh) + 8 (RangeLow) = 96 bytes
+    let mut channels    = Vec::with_capacity(n_channels);
+    let mut byte_offset = 68_usize;
+    for _ in 0..n_channels {
+        if byte_offset + 96 > raw.len() {
+            return Err("CFWB file truncated in channel headers".to_owned());
+        }
+        let title  = cfwb_read_cstr(&raw, byte_offset,      32);
+        let units  = cfwb_read_cstr(&raw, byte_offset + 32, 32);
+        let scale  = cfwb_read_f64(&raw,  byte_offset + 64);
+        let offset = cfwb_read_f64(&raw,  byte_offset + 72);
+        channels.push(CfwbChan { title, units, scale, offset });
+        byte_offset += 96;
+    }
+
+    Ok(CfwbFile {
+        header: CfwbHeader {
+            secs_per_tick,
+            n_channels,
+            samples_per_channel,
+            time_channel,
+            data_format,
+        },
+        channels,
+        data_offset: byte_offset,
+        raw,
+    })
+}
+
+/// Extract one channel of samples from a parsed CFWB file.
+/// Returns a Vec<f64> of length samples_per_channel.
+fn cfwb_extract_channel(cf: &CfwbFile, channel_idx: usize) -> Vec<f64> {
+    let h   = &cf.header;
+    let ch  = &cf.channels[channel_idx];
+
+    // Column index inside each interleaved sample row.
+    // If TimeChannel=1 the first column is elapsed time — skip it.
+    let col_offset = if h.time_channel { 1 } else { 0 };
+    let data_cols  = h.n_channels + if h.time_channel { 1 } else { 0 };
+    let col        = col_offset + channel_idx;
+
+    let (bytes_per_val, stride) = match h.data_format {
+        2 => (4_usize, data_cols * 4),
+        3 => (2_usize, data_cols * 2),
+        _ => (8_usize, data_cols * 8),   // default: f64
+    };
+    let _ = bytes_per_val; // used implicitly via stride
+
+    let mut out = Vec::with_capacity(h.samples_per_channel);
+    let base    = cf.data_offset;
+
+    for s in 0..h.samples_per_channel {
+        let off = base + s * stride + col * match h.data_format {
+            2 => 4,
+            3 => 2,
+            _ => 8,
+        };
+        if off + match h.data_format { 2 => 4, 3 => 2, _ => 8 } > cf.raw.len() {
+            break;
+        }
+        let physical = match h.data_format {
+            2 => {
+                let raw_f32 = cfwb_read_f32(&cf.raw, off) as f64;
+                ch.scale * (raw_f32 + ch.offset)
+            }
+            3 => {
+                let raw_i16 = cfwb_read_i16(&cf.raw, off) as f64;
+                ch.scale * (raw_i16 + ch.offset)
+            }
+            _ => {
+                let raw_f64 = cfwb_read_f64(&cf.raw, off);
+                ch.scale * (raw_f64 + ch.offset)
+            }
+        };
+        out.push(physical);
+    }
+    out
+}
+
+// ── Public Python functions ───────────────────────────────────────────────────
+
+/// List channel names from a CFWB binary file.
+#[pyfunction]
+fn cfwb_list_channels(path: &str) -> PyResult<Vec<String>> {
+    let cf = cfwb_parse(path)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+    Ok(cf.channels.iter().map(|c| c.title.clone()).collect())
+}
+
+/// Extract a single EMG channel waveform from a CFWB binary file.
+/// Returns (samples: np.ndarray, fs: int, unit: str | None)
+#[pyfunction]
+fn cfwb_extract_waveform(
+    py:          Python<'_>,
+    path:        &str,
+    channel_idx: usize,
+) -> PyResult<(Py<PyArray1<f64>>, i64, Option<String>)> {
+    let cf = cfwb_parse(path)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+
+    let idx = channel_idx.min(cf.header.n_channels.saturating_sub(1));
+    let unit = {
+        let u = cf.channels[idx].units.clone();
+        if u.is_empty() { None } else { Some(u) }
+    };
+    let fs = (1.0 / cf.header.secs_per_tick).round() as i64;
+
+    let samples = cfwb_extract_channel(&cf, idx);
+    let arr     = samples.into_pyarray(py).into();
+    Ok((arr, fs, unit))
+}
+
+/// Detect stimulation times from a CFWB binary file.
+///
+/// Auto-detects a trigger channel by searching channel titles for
+/// "stim", "trig", or "ttl" (case-insensitive); falls back to the
+/// last channel if none found.  Rising edges on that channel are
+/// returned as absolute timestamps in seconds.
+#[pyfunction]
+fn cfwb_extract_stim_times(
+    py:          Python<'_>,
+    path:        &str,
+    marker_name: &str,
+) -> PyResult<PyObject> {
+    let dict = PyDict::new(py);
+    let cf   = cfwb_parse(path)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+
+    let label: String = marker_name.chars().next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_else(|| "A".to_owned());
+
+    // Find stim/trigger channel
+    let stim_idx = cf.channels.iter().enumerate()
+        .find(|(_, c)| {
+            let low = c.title.to_lowercase();
+            low.contains("stim") || low.contains("trig") || low.contains("ttl")
+        })
+        .map(|(i, _)| i)
+        .unwrap_or(cf.header.n_channels.saturating_sub(1));
+
+    let stim_sig = cfwb_extract_channel(&cf, stim_idx);
+    if stim_sig.is_empty() {
+        return Ok(dict.into());
+    }
+
+    let max_val = stim_sig.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    if max_val <= 0.0 {
+        return Ok(dict.into());
+    }
+    let thr = max_val * 0.5;
+    let fs  = 1.0 / cf.header.secs_per_tick;
+
+    let stim_times: Vec<f64> = stim_sig.windows(2)
+        .enumerate()
+        .filter(|(_, w)| w[0] < thr && w[1] >= thr)
+        .map(|(i, _)| (i + 1) as f64 / fs)
+        .collect();
+
+    if !stim_times.is_empty() {
+        dict.set_item(label, stim_times)?;
+    }
+    Ok(dict.into())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Module registration
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -921,5 +1189,8 @@ fn mep_cmap_io(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(generic_tsv_sniff, m)?)?;
     m.add_function(wrap_pyfunction!(generic_tsv_extract_waveform, m)?)?;
     m.add_function(wrap_pyfunction!(generic_tsv_extract_stim_times, m)?)?;
+    m.add_function(wrap_pyfunction!(cfwb_list_channels, m)?)?;
+    m.add_function(wrap_pyfunction!(cfwb_extract_waveform, m)?)?;
+    m.add_function(wrap_pyfunction!(cfwb_extract_stim_times, m)?)?;
     Ok(())
 }

@@ -382,16 +382,36 @@ class DatasetSession:
     def label_from_bids(self, path: str) -> str:
         """
         Extract a human-readable label from a BIDS-style filename.
-        e.g. sub-015_ses-2_limb-left_CSE_260116_000.txt → 'limb-left CSE'
-        Falls back to basename if BIDS pattern not found.
+
+        Examples
+        --------
+        sub-015_ses-2_limb-left_CSE_260116_000.txt  → 'limb-left CSE'
+        sub-015_ses-1_limb-left_260114_095222_000.smr → 'limb-left 260114 095222 000'
+
+        Falls back to the bare stem if the BIDS prefix pattern is not found.
+
+        Date stripping logic
+        --------------------
+        Trailing _XXXXXX_NNN and _XXXXXX patterns are stripped only when the
+        remaining portion has more than one component (e.g. 'limb-left_CSE').
+        If stripping would reduce the label to a bare hyphenated entity such as
+        'limb-left', the date is kept — it is the only information that
+        distinguishes files with the same subject, session, and limb label.
         """
         import re
         bn = os.path.splitext(os.path.basename(path))[0]
-        # Try to extract task/condition portion (after sub-XXX_ses-XXX_)
+        # Strip the sub-XXX_ses-XXX_ prefix
         m = re.match(r'sub-[^_]+_ses-[^_]+_(.*)', bn)
         if m:
-            # Strip trailing date/counter patterns
-            label = re.sub(r'_\d{6}_\d+$', '', m.group(1))
-            label = re.sub(r'_\d{6}$', '', label)
+            label = m.group(1)
+            # Tentatively strip trailing date/counter patterns
+            stripped = re.sub(r'_\d{6}_\d+$', '', label)
+            stripped = re.sub(r'_\d{6}$', '', stripped)
+            # Only use the stripped version if it has at least two underscore-
+            # separated components (e.g. 'limb-left_CSE').  A bare entity like
+            # 'limb-left' with no other content means the date was the only
+            # differentiator — keep it.
+            if stripped and '_' in stripped:
+                label = stripped
             return label.replace('_', ' ')
         return os.path.splitext(os.path.basename(path))[0]

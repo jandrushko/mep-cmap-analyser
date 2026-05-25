@@ -5,3 +5,4 @@ scipy>=1.10
 PyWavelets>=1.4
 Pillow>=9.0
 pyinstaller>=5.13
+neo>=0.10

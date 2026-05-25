@@ -39,6 +39,26 @@ import tkinter as tk
 # NumPy 1.x → trapz,  NumPy 2.x → trapezoid
 _np_trapz = getattr(np, "trapezoid", None) or getattr(np, "trapz", None)
 
+# np.ptp() was removed in NumPy 2.0; replace with max - min
+def _np_ptp(a, axis=None):
+    """Peak-to-peak (max - min) — drop-in replacement for removed np.ptp()."""
+    return np.max(a, axis=axis) - np.min(a, axis=axis)
+
+# Restore np.ptp and np.ndarray.ptp for third-party libraries that still
+# use these functions removed in NumPy 2.0 (e.g. older Neo versions).
+# The module-level np.ptp covers calls like np.ptp(arr).
+# The class-level np.ndarray.ptp covers unbound-method calls like
+# np.ndarray.ptp(arr, axis=0) which is what older Neo versions use.
+if not hasattr(np, "ptp"):
+    np.ptp = _np_ptp
+if not hasattr(np.ndarray, "ptp"):
+    try:
+        np.ndarray.ptp = lambda self, axis=None: (
+            self.max(axis=axis) - self.min(axis=axis)
+        )
+    except (AttributeError, TypeError):
+        pass
+
 
 def _apply_tk_patches():
     """Patch tk.Variable and tk.Image __del__ to be thread-safe."""

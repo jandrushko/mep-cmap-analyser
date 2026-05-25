@@ -35,7 +35,7 @@ from scipy.signal import butter, filtfilt, sosfiltfilt
 from scipy.stats import zscore
 from numpy.random import default_rng
 
-from .compat import _np_trapz
+from .compat import _np_trapz, _np_ptp
 from .bids import StudyMetadata
 from .utils import _add_time_and_digmark
 from .io import extract_emg_waveform_and_fs, extract_stim_times
@@ -228,9 +228,9 @@ def pipeline_detect_outliers(emg_segments, prestim_segments,
     rms_z, ptp_z           : np.ndarray  z-scores
     outlier_indices        : list[int]   indices where |z| > threshold
     """
-    ptps     = np.ptp(emg_segments[:, ptp_start_idx:ptp_end_idx], axis=1)
+    ptps     = _np_ptp(emg_segments[:, ptp_start_idx:ptp_end_idx], axis=1)
     rms_vals = np.sqrt(np.mean(prestim_segments ** 2, axis=1))
-    preptp   = np.ptp(prestim_segments, axis=1)
+    preptp   = _np_ptp(prestim_segments, axis=1)
     rms_z    = zscore(rms_vals) if len(rms_vals) > 1 else np.zeros_like(rms_vals)
     ptp_z    = zscore(ptps)     if len(ptps)     > 1 else np.zeros_like(ptps)
     thr      = cfg.outlier_threshold
@@ -289,7 +289,7 @@ def pipeline_quantify_segments(stim_type, segs_all, prestim_all,
     ptps_array   : np.ndarray  per-trial PTP (all trials)
     """
     rms_all    = np.sqrt(np.mean(prestim_all ** 2, axis=1))
-    preptp_all = np.ptp(prestim_all, axis=1)
+    preptp_all = _np_ptp(prestim_all, axis=1)
     rms_z_full = (zscore(rms_all) if len(rms_all) > 1
                   else np.zeros_like(rms_all))
     ptps = np.empty(len(segs_all))
@@ -300,7 +300,7 @@ def pipeline_quantify_segments(stim_type, segs_all, prestim_all,
 
     for idx, seg in enumerate(segs_all):
         # ── automatic metrics ────────────────────────────────────────────
-        auto_ptp = np.ptp(seg[ptp_start_idx:ptp_end_idx])
+        auto_ptp = _np_ptp(seg[ptp_start_idx:ptp_end_idx])
         if cfg.onset_method == "bootstrap":
             _lat     = cfg.latency_map.get(stim_type, (10.0, 50.0))
             _min_lat, _max_lat = _lat if _lat else (10.0, 50.0)
@@ -480,7 +480,7 @@ def pipeline_quantify_segments(stim_type, segs_all, prestim_all,
     n_all = len(segs_all)
     clean_mask = [j not in out_set and j not in excluded_set for j in range(n_all)]
     clean_segs = segs_all[clean_mask]
-    clean_ptps = (np.ptp(clean_segs[:, ptp_start_idx:ptp_end_idx], axis=1)
+    clean_ptps = (_np_ptp(clean_segs[:, ptp_start_idx:ptp_end_idx], axis=1)
                   if len(clean_segs) else np.array([]))
 
     lbl = custom_labels.get(stim_type, "")
@@ -494,8 +494,8 @@ def pipeline_quantify_segments(stim_type, segs_all, prestim_all,
                    mean_lat, std_lat, mean_sil, std_sil, mean_auc_c, std_auc_c]
 
     with_out_row = [name, stim_type, lbl, n_all,
-                    float(np.mean(np.ptp(segs_all[:, ptp_start_idx:ptp_end_idx], axis=1))),
-                    float(np.std( np.ptp(segs_all[:, ptp_start_idx:ptp_end_idx], axis=1))),
+                    float(np.mean(_np_ptp(segs_all[:, ptp_start_idx:ptp_end_idx], axis=1))),
+                    float(np.std( _np_ptp(segs_all[:, ptp_start_idx:ptp_end_idx], axis=1))),
                     float(rms_all.mean()),    float(rms_all.std(ddof=1)),
                     float(preptp_all.mean()), float(preptp_all.std(ddof=1)),
                     mean_lat, std_lat, mean_sil, std_sil, mean_auc_a, std_auc_a]
@@ -986,7 +986,7 @@ def run_pipeline(input_path,
                 for s in emg_all:
                     ax_all.plot(time_axis, s, color=col, alpha=0.2, linewidth=0.5)
                 ax_all.plot(time_axis, mean_all, color=col, linewidth=3,
-                            label=f"{lbl} Mean PTP: {np.ptp(mean_all):.2f}")
+                            label=f"{lbl} Mean PTP: {_np_ptp(mean_all):.2f}")
                 ax_all.axvline(0, color="black", linestyle="--")
                 ax_all.set_title(f"{name} – {lbl} (All Traces)")
                 ax_all.set_xlabel("Latency (ms)")
@@ -1007,7 +1007,7 @@ def run_pipeline(input_path,
                 emg_segs  = np.array([s[0] for s in segs])
                 pre_segs  = np.array([s[1] for s in segs])
                 mean_tr   = emg_segs.mean(axis=0)
-                mean_ptp  = float(np.ptp(mean_tr))
+                mean_ptp  = float(_np_ptp(mean_tr))
 
                 ptps, rms_vals, preptp, rms_z, ptp_z, out_idx = pipeline_detect_outliers(
                     emg_segs, pre_segs, ptp_start_idx, ptp_end_idx, cfg)
@@ -1061,7 +1061,7 @@ def run_pipeline(input_path,
                 # Full-range PTP (entire post-stim window, not just analysis window).
                 # Used for reference conditions like M-wave that occur before
                 # the PTP analysis window (10-50ms) and would otherwise give ~0.
-                _full_ptps = np.ptp(emg_segs[:, samples_before:], axis=1)
+                _full_ptps = _np_ptp(emg_segs[:, samples_before:], axis=1)
                 full_ptp_data.setdefault(stim_type, []).extend(_full_ptps.tolist())
 
             # ── Stage 6: Data Inspector ───────────────────────────────────────

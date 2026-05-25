@@ -60,13 +60,19 @@ class FilterPreviewMixin:
         })
 
         # ───────────────────────────── Load / crop ─────────────────────────────
-        if not hasattr(self, "raw_emg") or not hasattr(self, "prev_fs"):
+        _SUPPORTED_EXTS = (".txt", ".smr", ".adibin")
+        if not hasattr(self, "raw_emg") or not hasattr(self, "prev_fs") \
+                or not hasattr(self, "last_stim"):
             sel = self.file_path.get()
             txts = []
-            if sel.lower().endswith(".txt") and os.path.isfile(sel):
+            if (os.path.isfile(sel)
+                    and sel.lower().endswith(_SUPPORTED_EXTS)):
                 txts = [sel]
             elif os.path.isdir(sel):
-                txts = sorted(glob.glob(os.path.join(sel, "*.txt")))
+                for _ext in _SUPPORTED_EXTS:
+                    txts = sorted(glob.glob(os.path.join(sel, f"*{_ext}")))
+                    if txts:
+                        break
             if txts:
                 try:
                     self.raw_emg, self.prev_fs, self.emg_unit = extract_emg_waveform_and_fs(
@@ -94,6 +100,10 @@ class FilterPreviewMixin:
                         else:  self.last_stim.pop(k)
                 except Exception as e:
                     messagebox.showerror("Preview error", str(e), parent=self.root); return
+
+        # Ensure last_stim always exists even if load was skipped
+        if not hasattr(self, "last_stim"):
+            self.last_stim = {}
 
         if not getattr(self, "prev_fs", None):
             rate = simpledialog.askinteger("Sampling rate required",

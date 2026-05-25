@@ -57,7 +57,8 @@ from .dataset_session import (DatasetSession, FileEntry,
                                STATUS_NEEDS_REVIEW, STATUS_COMPLETE,
                                STATUS_STALE, STATUS_LABELS, STATUS_COLOURS)
 from .io import (list_waveform_channels, extract_emg_waveform_and_fs,
-                 extract_stim_times, detect_format, needs_wizard)
+                 extract_stim_times, detect_format, needs_wizard,
+                 list_event_channels)
 from .format_wizard import FormatWizard
 from .filters import adaptive_mains_cancel
 from .detection import detect_mep_onset_peak_fraction
@@ -1735,6 +1736,13 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             if hasattr(self, attr):
                 delattr(self, attr)
 
+        # Clear the SMR segment cache so the previous file's data is freed
+        try:
+            from .formats.spike2_smr import clear_cache as _smr_clear
+            _smr_clear()
+        except Exception:
+            pass
+
         # ── 2. Clear ALL marker metadata ──────────────────────────────────────
         # NOTE: segments_metadata is intentionally NOT cleared here.
         # _load_file_entry calls _apply_loaded_session which restores it from
@@ -2154,7 +2162,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self._load_prog_frame.pack(fill="x", pady=(0, 4))
         self._load_prog_frame.pack_forget()   # hidden until loading begins
 
-        q_cols = ("status", "sub", "ses", "limb", "label",
+        q_cols = ("status", "sub", "ses", "limb", "label", "filetype",
                   "stim_types", "last_processed", "size", "date", "path")
         tree_frame = tk.Frame(queue_frame)
         tree_frame.pack(fill='both', expand=True)
@@ -2164,11 +2172,24 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         _sort_state = {}
         def _sort_by(col):
             reverse = _sort_state.get(col, False)
-            items = [(self._queue_tree.set(iid, col), iid)
-                     for iid in self._queue_tree.get_children()]
-            items.sort(reverse=reverse)
-            for i, (_, iid) in enumerate(items):
-                self._queue_tree.move(iid, "", i)
+            if col == "size":
+                # Sort numerically using the raw byte count stored as a tag
+                # value on each row, not the human-readable "1.2 MB" string.
+                def _size_key(iid):
+                    try:
+                        return float(self._queue_tree.item(iid, "tags")[1])
+                    except Exception:
+                        return 0.0
+                items = sorted(self._queue_tree.get_children(),
+                               key=_size_key, reverse=reverse)
+                for i, iid in enumerate(items):
+                    self._queue_tree.move(iid, "", i)
+            else:
+                items = [(self._queue_tree.set(iid, col), iid)
+                         for iid in self._queue_tree.get_children()]
+                items.sort(reverse=reverse)
+                for i, (_, iid) in enumerate(items):
+                    self._queue_tree.move(iid, "", i)
             _sort_state[col] = not reverse
             arrow = " ▲" if not reverse else " ▼"
             for c in q_cols:
@@ -2183,6 +2204,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             ("ses",            "Session",         60),
             ("limb",           "Limb",            70),
             ("label",          "File",           260),
+            ("filetype",       "Type",            55),
             ("stim_types",     "Stim types",     150),
             ("last_processed", "Last processed", 130),
             ("size",           "Size",            70),
@@ -2272,7 +2294,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             _ses  = next((_re.sub(r'^ses-','',p) for p in bn.split('_') if p.startswith('ses-')), "—")
             _limb = next((p.split('-',1)[1] for p in bn.split('_') if p.startswith('limb-')), "—")
 
-            # File size and modification date
+            # File size, modification date, and format type
             try:
                 _stat  = os.stat(fe.path)
                 _bytes = _stat.st_size
@@ -2285,14 +2307,20 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                 from datetime import datetime as _dt
                 _date = _dt.fromtimestamp(_stat.st_mtime).strftime("%Y-%m-%d %H:%M")
             except Exception:
-                _size = "—"
-                _date = "—"
+                _bytes = 0
+                _size  = "—"
+                _date  = "—"
 
+            _ext = os.path.splitext(fe.path)[1].lower()
+            _ftype = {".txt": "TXT", ".smr": "SMR", ".adibin": "ADIBIN"}.get(_ext, _ext.lstrip(".").upper() or "—")
+
+            # Tags: (status_tag, raw_bytes_str) — raw bytes used for numeric size sort
             tree.insert("", "end", iid=fe.id,
                         values=(status_label, _sub, _ses, _limb,
                                 fe.label or fe.basename,
+                                _ftype,
                                 stim_str, last, _size, _date, fe.path),
-                        tags=(fe.status,))
+                        tags=(fe.status, str(_bytes)))
 
         n_done  = ds.n_complete
         n_total = ds.n_total
@@ -2440,7 +2468,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
 
     # Expected BIDS filename entity pattern:
     #   sub-<label>[_ses-<label>][_limb-<label>][_task-<label>][_run-<index>]
-    #   followed by an optional suffix, ending in .txt
+    #   followed by an optional suffix, ending in a supported extension
     _BIDS_ENTITIES = re.compile(
         r'^'
         r'(?P<sub>sub-[A-Za-z0-9]+)'
@@ -2449,9 +2477,11 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         r'(?:_(?P<task>task-[A-Za-z0-9]+))?'
         r'(?:_(?P<run>run-[0-9]+))?'
         r'(?:_(?P<suffix>[^.]+))?'
-        r'\.txt$',
+        r'\.(txt|smr|adibin)$',
         re.IGNORECASE,
     )
+
+    _SUPPORTED_EXTENSIONS = {".txt", ".smr", ".adibin"}
 
     def _audit_filename(self, basename: str) -> list:
         """Return a list of human-readable issue strings for *basename*.
@@ -2460,8 +2490,8 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         issues = []
         name, ext = os.path.splitext(basename)
 
-        if ext.lower() != ".txt":
-            issues.append(f"Extension '{ext}' — expected '.txt'")
+        if ext.lower() not in self._SUPPORTED_EXTENSIONS:
+            issues.append(f"Extension '{ext}' — expected .txt, .smr, or .adibin")
 
         parts = name.split("_")
 
@@ -2873,7 +2903,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self._queue_refresh_from_raw()
 
     def _queue_refresh_from_raw(self):
-        """Scan the raw data folder and add any new .txt files to the queue.
+        """Scan the raw data folder and add any new data files to the queue.
         Files previously removed by the user are not re-added."""
         raw = self._rawdata_path.get()
         if not raw:
@@ -2883,9 +2913,12 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         EXCLUDE = ("metric_definitions", "metrics_definitions",
                    "channel_info", "_readme")
         import glob as _glob
-        all_txt = _glob.glob(os.path.join(raw, "**", "*.txt"), recursive=True)
+        _EXTS = ("*.txt", "*.smr", "*.adibin")
+        all_files = []
+        for _pat in _EXTS:
+            all_files.extend(_glob.glob(os.path.join(raw, "**", _pat), recursive=True))
         files = sorted(
-            f for f in all_txt
+            f for f in all_files
             if not any(p in os.path.basename(f).lower() for p in EXCLUDE)
         )
         if not files:
@@ -2914,13 +2947,12 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self.log(msg)
 
     def browse_folder(self):
-        """Add all valid data .txt files from a selected folder (recursive)."""
+        """Add all valid data files from a selected folder (recursive)."""
         folder = filedialog.askdirectory(
             title="Select folder or BIDS rawdata root")
         if not folder:
             return
 
-        # Recursively find all .txt files, excluding known non-data files
         EXCLUDE_PATTERNS = (
             "metric_definitions",
             "metrics_definitions",
@@ -2929,15 +2961,18 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             "_readme",
         )
         import glob as _glob
-        all_txt = _glob.glob(os.path.join(folder, "**", "*.txt"), recursive=True)
+        _EXTS = ("*.txt", "*.smr", "*.adibin")
+        all_files = []
+        for _pat in _EXTS:
+            all_files.extend(_glob.glob(os.path.join(folder, "**", _pat), recursive=True))
         files = sorted(
-            f for f in all_txt
+            f for f in all_files
             if not any(p in os.path.basename(f).lower() for p in EXCLUDE_PATTERNS)
         )
 
         if not files:
             messagebox.showinfo("No files found",
-                "No data .txt files found in that folder or its subfolders.\n\n"
+                "No data files (.txt, .smr, .adibin) found in that folder or its subfolders.\n\n"
                 "If your files are in a different format, use '+ Add file(s)' instead.",
                 parent=self.root)
             return
@@ -2958,8 +2993,14 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
     def browse_file(self):
         """Add one or more files to the queue and load the first one."""
         fpaths = filedialog.askopenfilenames(
-            title="Select Spike2 .txt file(s)",
-            filetypes=[("Spike2 export", "*.txt")]
+            title="Select data file(s)",
+            filetypes=[
+                ("All supported formats", "*.txt *.smr *.adibin"),
+                ("Spike2 / LabChart text export", "*.txt"),
+                ("Spike2 native", "*.smr"),
+                ("ADInstruments binary", "*.adibin"),
+                ("All files", "*.*"),
+            ]
         )
         if not fpaths:
             return
@@ -3042,8 +3083,182 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             self.log("📋 Generic TSV format — stim times from Stim/Trigger channel")
             # stim_events populated later via extract_stim_times in pipeline
 
+        elif _fmt == 'cfwb':
+            self.marker_choice.set('A')
+            self.log("📋 ADInstruments binary (CFWB) format — stim times from trigger channel")
+
+        elif _fmt == 'spike2_smr':
+            self.log("📋 Spike2 SMR format detected — reading via Neo")
+            try:
+                from .formats.spike2_smr import (
+                    has_config    as _smr_has_cfg,
+                    save_config   as _smr_save_cfg,
+                    load_config   as _smr_load_cfg,
+                    get_channel_info as _smr_info,
+                )
+                if not _smr_has_cfg(fpath):
+                    # First open — show channel assignment dialog
+                    info = _smr_info(fpath)
+                    analogue = info.get("analogue", [])
+                    events   = info.get("events",   [])
+                    epochs   = info.get("epochs",   [])
+                    spikes   = info.get("spikes",   [])
+
+                    if not analogue:
+                        self.log("❌ No analogue channels found in SMR file.")
+                        return
+
+                    # Build a flat stim options list with type labels
+                    stim_options = []
+                    for n in events:
+                        stim_options.append(f"[Event] {n}")
+                    for n in epochs:
+                        stim_options.append(f"[DigMark/Epoch] {n}")
+                    for n in spikes:
+                        stim_options.append(f"[Spike] {n}")
+                    _STIM_KW = ("stim", "trig", "ttl", "digmark")
+                    for n in analogue:
+                        if any(kw in n.lower() for kw in _STIM_KW):
+                            stim_options.append(f"[Analogue] {n}")
+                    if not stim_options:
+                        stim_options = [f"[Analogue] {n}" for n in analogue]
+
+                    _chosen = {}
+
+                    def _show_smr_dialog(
+                        _analogue=analogue,
+                        _stim_options=stim_options,
+                    ):
+                        import tkinter as tk
+                        from tkinter import ttk
+                        dlg = tk.Toplevel(self.root)
+                        dlg.title("SMR Channel Assignment")
+                        dlg.transient(self.root)
+                        dlg.resizable(False, False)
+                        dlg.grab_set()
+
+                        tk.Label(
+                            dlg,
+                            text=(
+                                f"File: {os.path.basename(fpath)}\n\n"
+                                "Choose the EMG channel and the stim/trigger source.\n"
+                                "Your choices are saved and will not be asked again."
+                            ),
+                            justify="left", padx=16, pady=10,
+                        ).pack(anchor="w")
+
+                        frm = tk.Frame(dlg, padx=16)
+                        frm.pack(fill="x", pady=4)
+
+                        # EMG channel
+                        tk.Label(frm, text="EMG channel:", anchor="w", width=22) \
+                            .grid(row=0, column=0, sticky="w", pady=6)
+                        emg_var = tk.StringVar(value=_analogue[0])
+                        ttk.Combobox(
+                            frm, textvariable=emg_var,
+                            values=_analogue, state="readonly", width=30,
+                        ).grid(row=0, column=1, sticky="w")
+
+                        # Stim/trigger channel
+                        tk.Label(
+                            frm,
+                            text="Stim/trigger channel:",
+                            anchor="w", width=22,
+                        ).grid(row=1, column=0, sticky="w", pady=6)
+                        stim_var = tk.StringVar(value=_stim_options[0])
+                        ttk.Combobox(
+                            frm, textvariable=stim_var,
+                            values=_stim_options, state="readonly", width=30,
+                        ).grid(row=1, column=1, sticky="w")
+
+                        note = (
+                            "Tip: Event channels (DigMark, Keyboard) use\n"
+                            "     timestamps directly.  Analogue channels\n"
+                            "     use threshold-crossing detection."
+                        )
+                        tk.Label(dlg, text=note, justify="left",
+                                 fg="grey", padx=16).pack(anchor="w", pady=(0, 4))
+
+                        def _ok():
+                            raw_stim = stim_var.get()
+                            # Strip the [Type] prefix to get the bare channel name
+                            if "] " in raw_stim:
+                                raw_stim = raw_stim.split("] ", 1)[1]
+                            _chosen["emg"]  = emg_var.get()
+                            _chosen["stim"] = raw_stim
+                            dlg.destroy()
+
+                        def _cancel():
+                            dlg.destroy()
+
+                        btn = tk.Frame(dlg)
+                        btn.pack(pady=(4, 12))
+                        tk.Button(btn, text="Save & continue",
+                                  width=16, command=_ok).pack(side="left", padx=6)
+                        tk.Button(btn, text="Cancel",
+                                  width=10, command=_cancel).pack(side="left", padx=6)
+
+                        dlg.update_idletasks()
+                        x = (self.root.winfo_x()
+                             + (self.root.winfo_width() - dlg.winfo_width()) // 2)
+                        y = (self.root.winfo_y()
+                             + (self.root.winfo_height() - dlg.winfo_height()) // 2)
+                        dlg.geometry(f"+{x}+{y}")
+                        self.root.wait_window(dlg)
+
+                    _show_smr_dialog()
+
+                    if not _chosen:
+                        self.log("⚠️  SMR channel assignment cancelled.")
+                        return
+
+                    _smr_save_cfg(fpath, _chosen["emg"], _chosen["stim"])
+                    self.log(
+                        f"   EMG: {_chosen['emg']} | "
+                        f"Stim: {_chosen['stim']} — saved to sidecar"
+                    )
+                    self.marker_choice.set(_chosen["stim"])
+
+                else:
+                    cfg = _smr_load_cfg(fpath)
+                    stim_ch = cfg.get("stim_channel", "A")
+                    self.log(
+                        f"   EMG: {cfg.get('emg_channel')} | "
+                        f"Stim channel: {stim_ch} — loaded from sidecar"
+                    )
+                    # Scan the stim channel for available marker codes,
+                    # same as the text-format scan builds marker_set
+                    from .formats.spike2_smr import (
+                        get_event_codes_for_channel as _smr_codes,
+                        extract_stim_times as _smr_stim,
+                    )
+                    event_codes = _smr_codes(fpath, stim_ch)
+                    if len(event_codes) > 1:
+                        self.log(
+                            f"   Found {len(event_codes)} marker codes: "
+                            + ", ".join(event_codes)
+                        )
+                        self._ask_marker_gui(event_codes)
+                    elif event_codes:
+                        self.marker_choice.set(event_codes[0])
+                        self.log(f"   Marker code: {event_codes[0]}")
+                    else:
+                        # No discrete codes — use the channel name itself
+                        # (analogue threshold fallback)
+                        self.marker_choice.set(stim_ch)
+
+            except ImportError:
+                self.log(
+                    "❌ Neo is not installed. Install it with:  pip install neo\n"
+                    "   Native .smr files cannot be read without Neo."
+                )
+                return
+            except Exception as e:
+                self.log(f"❌ Error reading SMR file: {e}")
+                return
+
         else:
-            # Spike2: scan for DigMark channels and stim type timestamps
+            # Spike2 text export: scan for DigMark channels and stim timestamps
             stim_pattern = re.compile(r'^([\d.]+)\s+"(.{1})\?\?\?"')
             try:
                 with open(fpath, 'r') as f:

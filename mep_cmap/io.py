@@ -7,8 +7,6 @@ Supported formats (auto-detected from file header)
 ----------------------------------------------------
   Spike-2 text export  — header contains "SUMMARY" / "START" / "CHANNEL" blocks
   LabChart text export — header line 0 starts with "Interval="
-  KinEMG CSV export    — header line 0 starts with "Author,KinEMG"; fs from
-                         "Sample Clock Rate" row; channel names from row 4
   Generic TSV          — headerless / all-numeric tab/space/comma delimited text
                          (requires a one-time Format Wizard dialog on first open)
 
@@ -21,9 +19,10 @@ Adding a new format
 
 Public API
 ----------
-  detect_format(file_path)                     -> 'spike2' | 'labchart' | 'generic_tsv'
+  detect_format(file_path)                     -> 'spike2' | 'spike2_smr' | 'labchart' | 'cfwb' | 'generic_tsv'
   needs_wizard(file_path)                      -> bool
   list_waveform_channels(file_path)            -> list[str]
+  list_event_channels(file_path)               -> list[str]
   extract_emg_waveform_and_fs(file_path, ch)   -> (np.ndarray, int, str|None)
   extract_stim_times(file_path, marker_name)   -> dict[str, list[float]]
 
@@ -46,9 +45,10 @@ The recommended pattern in app.py is:
 import os as _os
 
 from .formats import spike2      as _spike2
+from .formats import spike2_smr  as _spike2_smr
 from .formats import labchart    as _labchart
+from .formats import cfwb        as _cfwb
 from .formats import generic_tsv as _generic_tsv
-from .formats import kinemg_csv  as _kinemg_csv
 
 def _generic_has_config(file_path: str) -> bool:
     return _generic_tsv.has_config(file_path)
@@ -113,15 +113,22 @@ def detect_format(file_path: str) -> str:
     -------
     'labchart'    — LabChart text export (line 0 starts with 'Interval=')
     'spike2'      — Spike-2 text export (contains SUMMARY/CHANNEL/START blocks)
-    'kinemg_csv'  — KinEMG CSV export (header starts with 'Author,KinEMG')
     'generic_tsv' — Headerless numeric text file (no recognised format header)
     """
     file_path = _resolve_path(file_path)
 
+    # ── Extension-based detection for binary / Neo formats ────────────────────
+    ext = _os.path.splitext(file_path)[1].lower()
+    if ext == '.smr':
+        return 'spike2_smr'
+
+    # ── Binary formats: check magic bytes before opening as text ─────────────
+    if _cfwb.is_cfwb(file_path):
+        return 'cfwb'
+
     with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
         first_line = f.readline()
         second_line = f.readline()
-        third_line  = f.readline()
 
     # LabChart: first line starts with 'Interval='
     if first_line.startswith('Interval='):
@@ -133,12 +140,8 @@ def detect_format(file_path: str) -> str:
             or '"Waveform"' in first_line or '"Waveform"' in second_line):
         return 'spike2'
 
-    # KinEMG CSV: header line 0 is 'Author,KinEMG'
-    if first_line.strip().lower().startswith('author,kinemg'):
-        return 'kinemg_csv'
-
     # Heuristic: if the first non-empty line parses as all-numeric fields,
-    # treat as a generic headerless TSV (covers extension-less Mwave files).
+    # treat as a generic headerless TSV.
     test_line = first_line.strip()
     if not test_line:
         test_line = second_line.strip()
@@ -159,13 +162,18 @@ def detect_format(file_path: str) -> str:
 
 def needs_wizard(file_path: str) -> bool:
     """
-    Return True if the file is a generic TSV without a sidecar config.
+    Return True if the file requires first-open configuration.
 
-    Call this after detect_format() == 'generic_tsv' to decide whether
-    the Format Wizard needs to run before the file can be read.
+    - generic_tsv: True when no sidecar config exists yet.
+    - spike2_smr:  True when no SMR channel assignment sidecar exists yet.
     """
     file_path = _resolve_path(file_path)
-    return not _generic_has_config(file_path)
+    fmt = detect_format(file_path)
+    if fmt == 'generic_tsv':
+        return not _generic_has_config(file_path)
+    if fmt == 'spike2_smr':
+        return not _spike2_smr.has_config(file_path)
+    return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -176,13 +184,30 @@ def list_waveform_channels(file_path: str) -> list:
     """Return channel names for display in the channel selector."""
     file_path = _resolve_path(file_path)
     fmt = detect_format(file_path)
+    if fmt == 'spike2_smr':
+        return _spike2_smr.list_waveform_channels(file_path)
     if fmt == 'labchart':
         return _labchart.list_waveform_channels(file_path)
+    if fmt == 'cfwb':
+        return _cfwb.list_waveform_channels(file_path)
     if fmt == 'generic_tsv':
         return _generic_tsv.list_waveform_channels(file_path)
-    if fmt == 'kinemg_csv':
-        return _kinemg_csv.list_waveform_channels(file_path)
     return _spike2.list_waveform_channels(file_path)
+
+
+def list_event_channels(file_path: str) -> list:
+    """
+    Return the names of event / marker / epoch channels.
+
+    Currently meaningful for native Spike2 SMR files where the pipeline
+    needs to know which event channel carries stim times.  Returns an
+    empty list for all other formats (stim detection is handled internally).
+    """
+    file_path = _resolve_path(file_path)
+    fmt = detect_format(file_path)
+    if fmt == 'spike2_smr':
+        return _spike2_smr.list_event_channels(file_path)
+    return []
 
 
 def extract_emg_waveform_and_fs(file_path: str, channel_idx: int = 0):
@@ -202,12 +227,14 @@ def extract_emg_waveform_and_fs(file_path: str, channel_idx: int = 0):
     """
     file_path = _resolve_path(file_path)
     fmt = detect_format(file_path)
+    if fmt == 'spike2_smr':
+        return _spike2_smr.extract_emg_waveform_and_fs(file_path, channel_idx)
     if fmt == 'labchart':
         return _labchart.extract_emg_waveform_and_fs(file_path, channel_idx)
+    if fmt == 'cfwb':
+        return _cfwb.extract_emg_waveform_and_fs(file_path, channel_idx)
     if fmt == 'generic_tsv':
         return _generic_tsv.extract_emg_waveform_and_fs(file_path, channel_idx)
-    if fmt == 'kinemg_csv':
-        return _kinemg_csv.extract_emg_waveform_and_fs(file_path, channel_idx)
     return _spike2.extract_emg_waveform_and_fs(file_path, channel_idx)
 
 
@@ -215,12 +242,13 @@ def extract_stim_times(file_path: str, marker_name: str) -> dict:
     """
     Return stimulation timestamps.
 
-    For Spike-2 : marker_name selects the DigMark channel
-                  (e.g. 'Keyboard', 'TTL').
-    For LabChart: marker_name is used as the stim-type label
-                  (single uppercase letter, e.g. 'A').
-    For Generic TSV: marker_name is used as the stim-type label.
-                  Timing is derived from the designated Stim/Trigger channel.
+    For Spike-2 SMR : marker_name selects the event/epoch channel by name.
+    For Spike-2 text: marker_name selects the DigMark channel
+                      (e.g. 'Keyboard', 'TTL').
+    For LabChart    : marker_name is used as the stim-type label
+                      (single uppercase letter, e.g. 'A').
+    For CFWB        : stim channel is auto-detected by title keyword.
+    For Generic TSV : stim channel is set in the sidecar config.
 
     Returns
     -------
@@ -228,10 +256,12 @@ def extract_stim_times(file_path: str, marker_name: str) -> dict:
     """
     file_path = _resolve_path(file_path)
     fmt = detect_format(file_path)
+    if fmt == 'spike2_smr':
+        return _spike2_smr.extract_stim_times(file_path, marker_name)
     if fmt == 'labchart':
         return _labchart.extract_stim_times(file_path, marker_name)
+    if fmt == 'cfwb':
+        return _cfwb.extract_stim_times(file_path, marker_name)
     if fmt == 'generic_tsv':
         return _generic_tsv.extract_stim_times(file_path, marker_name)
-    if fmt == 'kinemg_csv':
-        return _kinemg_csv.extract_stim_times(file_path, marker_name)
     return _spike2.extract_stim_times(file_path, marker_name)
