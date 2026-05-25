@@ -3392,10 +3392,58 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                     return
 
         # ── Filter stim types to those with at least one event in the selected range
-        if _fmt in ('labchart', 'generic_tsv'):
-            # For LabChart, stim types come from the pipeline (stim channel detection).
-            # Pre-populate with a single type 'A' — user can relabel in Stage 1a.
-            stim_types_found = {'A'}
+        if _fmt in ('labchart', 'generic_tsv', 'cfwb'):
+            _mc = self.marker_choice.get()
+            stim_types_found = {_mc} if _mc else {'A'}
+
+        elif _fmt == 'spike2_smr':
+            # Use get_event_codes_for_channel (cached segment) to get all
+            # marker codes, then filter by the selected crop range.
+            try:
+                from .formats.spike2_smr import (
+                    get_event_codes_for_channel as _smr_codes,
+                    load_config as _smr_lcfg,
+                    has_config  as _smr_hcfg,
+                )
+                _stim_ch = (
+                    _smr_lcfg(fpath).get("stim_channel", self.marker_choice.get())
+                    if _smr_hcfg(fpath) else self.marker_choice.get()
+                )
+                _codes = _smr_codes(fpath, _stim_ch)
+                if _codes:
+                    # We have discrete event codes — get their timestamps and
+                    # filter to only those present in the selected crop range
+                    from .io import extract_stim_times as _io_est
+                    try:
+                        _all_stim = _io_est(fpath, _stim_ch)
+                    except Exception:
+                        _all_stim = {c: [] for c in _codes}
+
+                    if self.crop_ranges:
+                        stim_types_found = {
+                            stype for stype, times in _all_stim.items()
+                            if any(start <= t <= end
+                                   for t in times
+                                   for start, end in self.crop_ranges)
+                        } or set(_codes)
+                    elif self.crop_start is not None and self.crop_end is not None:
+                        stim_types_found = {
+                            stype for stype, times in _all_stim.items()
+                            if any(self.crop_start <= t <= self.crop_end for t in times)
+                        } or set(_codes)
+                    else:
+                        stim_types_found = set(_all_stim.keys()) or set(_codes)
+                else:
+                    # No discrete codes (analogue threshold fallback)
+                    stim_types_found = {_stim_ch} if _stim_ch else {'A'}
+            except Exception as _e:
+                self.log(f"   ⚠️  Could not scan SMR codes: {_e} — using fallback")
+                _mc = self.marker_choice.get()
+                stim_types_found = {_mc} if _mc else {'A'}
+
+            if stim_types_found:
+                self.log(f"   Marker codes in range: {', '.join(sorted(stim_types_found))}")
+
         elif self.crop_ranges:
             stim_types_found = {
                 stype for stype, times in stim_events.items()
