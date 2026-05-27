@@ -1,6 +1,6 @@
 # MEP-CMAP Analyser
 
-**Version 0.9.9.3 | May 2026**  
+**Version 0.9.9.4 | May 2026**  
 *Author: Justin Andrushko PhD, Northumbria University*
 
 [![PyPI version](https://badge.fury.io/py/mep-cmap-analyser.svg)](https://pypi.org/project/mep-cmap-analyser/)
@@ -95,7 +95,11 @@ For any other tabular text file (tab, space, or comma delimited). A one-time, fo
 | **Paired-pulse ratio** | Conditioned / reference amplitude for SICI, ICF, or any custom pairing |
 | **Z-score (within type)** | Standardised amplitude within each stimulus type |
 | **Z-score (pooled)** | Standardised amplitude across all conditions in the file |
-| **Detrended PTP (mV)** | Linearly detrended amplitude to remove slow amplitude drift |
+| **Detrended PTP — within condition (mV)** | Linearly detrended amplitude within each stimulus type, removing condition-specific drift across trials |
+| **Detrended PTP — session (mV)** | Linearly detrended amplitude using a single trend fitted across all trials in chronological order, capturing session-wide drift such as fatigue or potentiation |
+| **Overall trial number** | Chronological trial index across all stimulus types, based on stimulus timestamp order |
+| **Stimulus time (s)** | Absolute timestamp of each stimulus in the recording (seconds from recording start) |
+| **Inter-stimulus interval (s)** | Time elapsed since the immediately preceding stimulus (any type); useful as a covariate when stimulation order is randomised or variable |
 
 ### MEP Onset Detection
 
@@ -337,7 +341,10 @@ study/
 | `participant_id` | File or BIDS subject identifier |
 | `stim_type` | Stimulus type label as configured in Stage 1a |
 | `stim_label` | Custom display label |
-| `trial` | Trial index (1-based) |
+| `trial` | Trial index within this stimulus type (1-based) |
+| `Segment_Overall` | Chronological trial number across all stimulus types, ordered by stimulus timestamp |
+| `Stim_Time(s)` | Absolute timestamp of the stimulus in the recording (seconds from recording start) |
+| `Time_Since_Last_Stim(s)` | Time elapsed since the immediately preceding stimulus of any type; blank for the first trial. Useful as a covariate when stimulation order is randomised or inter-stimulus intervals vary |
 | `limb` | Limb identifier parsed from filename or entered manually |
 | `measure` | Measure label |
 | `PTP(mV)` | MEP / CMAP peak-to-peak amplitude |
@@ -352,7 +359,10 @@ study/
 | `Reference_Mean(mV)` | Reference amplitude used |
 | `Z_PTP_Within` | Z-score within this stim type |
 | `Z_PTP_Pooled` | Z-score pooled across all stim types |
-| `PTP_Detrended(mV)` | Linearly detrended PTP amplitude |
+| `PTP_Detrended_WithinCond(mV)` | Linearly detrended amplitude with the trend estimated separately within each stimulus type |
+| `PTP_Detrended_WithinCond_Z` | Z-score of the within-condition detrend residuals |
+| `PTP_Detrended_Session(mV)` | Linearly detrended amplitude with a single trend fitted across all trials in chronological order |
+| `PTP_Detrended_Session_Z` | Z-score of the session-level detrend residuals |
 | `Outlier_Decision` | Include / Exclude / Reviewed |
 | `Manual_Note` | Annotation from the Data Inspector |
 
@@ -431,7 +441,7 @@ The Rust extension `mep_cmap_io` is compiled automatically during the build proc
 
 If you use MEP-CMAP Analyser in published research, please cite:
 
-> Andrushko, J.W. (2026). MEP-CMAP Analyser (Version 0.9.9.3) [Software].
+> Andrushko, J.W. (2026). MEP-CMAP Analyser (Version 0.9.9.4) [Software].
 > Northumbria University. https://github.com/jandrushko/mep-cmap-analyser
 
 ---
