@@ -429,33 +429,36 @@ def pipeline_quantify_segments(stim_type, segs_all, prestim_all,
 
         # ── shared fields ────────────────────────────────────────────────
         # LAT_COLS indices:
-        # [0-3] ID, [4-5] limb/measure, [6] PTP, [7] Latency
-        # [8] SilentPeriod, [9] SP_MEP_Offset, [10] SP_EMG_Return, [11] MEP_cSP_Ratio
-        # [12] AUC, [13-14] baseline, [15-16] Z_PreStimRMS/Z_PTP_Within
-        # [17-21] pooled/detrend (WithinCond + Session), [22] Outlier_Decision
-        # [23-26] normalisation, [27] note
+        # [0-3] ID (File/StimType/Stim_Label/Segment)
+        # [4-6] timing (Segment_Overall/Stim_Time/Time_Since_Last_Stim) — Stage 8
+        # [7-8] limb/measure, [9] PTP, [10] Latency
+        # [11] SilentPeriod, [12] SP_MEP_Offset, [13] SP_EMG_Return, [14] MEP_cSP_Ratio
+        # [15] AUC, [16-17] baseline, [18-19] Z_PreStimRMS/Z_PTP_Within
+        # [20-24] pooled/detrend (WithinCond + Session), [25] Outlier_Decision
+        # [26-29] normalisation, [30] note
         _mep_csp = round(float(man_ptp) / float(silent_dur), 4) \
                    if (isinstance(silent_dur, (int, float)) and silent_dur > 0
                        and man_ptp is not None) else None
         common = [
             name, stim_type, custom_labels.get(stim_type, ""), idx + 1,  # [0-3]
-            cfg.limb, cfg.measure,                                        # [4-5]
-            None, None,                                                   # [6-7]  PTP/Lat
-            silent_dur, sp_mep_offset_ms, sp_emg_return_ms, _mep_csp,   # [8-11] SP
-            auc_val,                                                      # [12]
-            round(rms_all[idx], 4), round(preptp_all[idx], 4),           # [13-14]
-            round(rms_z_full[idx], 3), None, None, None, None, None, None,  # [15-21]
-            decision,                                                          # [22]
-            None, None, None, None,                                           # [23-26] norm
-            note_txt,                                                          # [27]
+            None, None, None,                                              # [4-6] timing
+            cfg.limb, cfg.measure,                                        # [7-8]
+            None, None,                                                   # [9-10] PTP/Lat
+            silent_dur, sp_mep_offset_ms, sp_emg_return_ms, _mep_csp,   # [11-14] SP
+            auc_val,                                                      # [15]
+            round(rms_all[idx], 4), round(preptp_all[idx], 4),           # [16-17]
+            round(rms_z_full[idx], 3), None, None, None, None, None, None,  # [18-24]
+            decision,                                                          # [25]
+            None, None, None, None,                                           # [26-29] norm
+            note_txt,                                                          # [30]
         ]
 
         auto_row   = common.copy()
         manual_row = common.copy()
-        auto_row  [6] = round(auto_ptp, 2)
-        auto_row  [7] = round(auto_lat, 2) if auto_lat is not None else "Not Detected"
-        manual_row[6] = round(man_ptp, 2)
-        manual_row[7] = round(man_lat, 2) if man_lat is not None else "Not Detected"
+        auto_row  [9] = round(auto_ptp, 2)
+        auto_row  [10] = round(auto_lat, 2) if auto_lat is not None else "Not Detected"
+        manual_row[9] = round(man_ptp, 2)
+        manual_row[10] = round(man_lat, 2) if man_lat is not None else "Not Detected"
 
         auto_rows.append(auto_row)
         manual_rows.append(manual_row)
@@ -465,7 +468,7 @@ def pipeline_quantify_segments(stim_type, segs_all, prestim_all,
 
     ptp_z_full = (zscore(ptps) if len(ptps) > 1 else np.zeros_like(ptps))
     for i, (ar, mr) in enumerate(zip(auto_rows, manual_rows)):
-        ar[16] = mr[16] = round(float(ptp_z_full[i]), 3)  # Z_PTP_Within
+        ar[19] = mr[19] = round(float(ptp_z_full[i]), 3)  # Z_PTP_Within
 
     # ── summary rows ─────────────────────────────────────────────────────────
     lat_pos     = [v for v in latencies if v is not None and v >= 0]
@@ -583,6 +586,13 @@ def pipeline_compute_pooled_stats(ptps_per_stim, stim_times_per_stim,
         sess_det_mean_by_type[st][local_i] = sess_det[chron_i]
         sess_det_z_by_type[st][local_i]    = sess_det_z[chron_i]
 
+    # ── Build timing lookups from chronological order ────────────────────────
+    # overall_rank: (stim_type, local_idx) → (chron_rank, stim_time_s, time_since_last_s)
+    overall_rank = {}
+    for chron_i, (t, _p, st, local_i) in enumerate(all_trials):
+        tsl = round(t - all_trials[chron_i - 1][0], 4) if chron_i > 0 else None
+        overall_rank[(st, local_i)] = (chron_i + 1, round(t, 4), tsl)
+
     # ── Write all computed values back into latency rows (in-place) ──────────
     cum_off = 0
     for st, pa in reversed(list(ptps_per_stim.items())):
@@ -595,12 +605,16 @@ def pipeline_compute_pooled_stats(ptps_per_stim, stim_times_per_stim,
             wdz = round(float(wc_det_z_by_type[st][ti]),      3)
             sdv = round(float(sess_det_mean_by_type[st][ti]), 4)
             sdz = round(float(sess_det_z_by_type[st][ti]),    3)
+            seg_ov, stim_t, tsl = overall_rank.get((st, ti), (None, None, None))
             for rows in (latency_rows_auto, latency_rows_manual):
-                rows[-abs_i][17] = pz   # Z_PTP_Pooled
-                rows[-abs_i][18] = wdv  # PTP_Detrended_WithinCond(mV)
-                rows[-abs_i][19] = wdz  # PTP_Detrended_WithinCond_Z
-                rows[-abs_i][20] = sdv  # PTP_Detrended_Session(mV)
-                rows[-abs_i][21] = sdz  # PTP_Detrended_Session_Z
+                rows[-abs_i][4]  = seg_ov  # Segment_Overall
+                rows[-abs_i][5]  = stim_t  # Stim_Time(s)
+                rows[-abs_i][6]  = tsl     # Time_Since_Last_Stim(s)
+                rows[-abs_i][20] = pz      # Z_PTP_Pooled
+                rows[-abs_i][21] = wdv     # PTP_Detrended_WithinCond(mV)
+                rows[-abs_i][22] = wdz     # PTP_Detrended_WithinCond_Z
+                rows[-abs_i][23] = sdv     # PTP_Detrended_Session(mV)
+                rows[-abs_i][24] = sdz     # PTP_Detrended_Session_Z
         cum_off += n
 
 
@@ -636,6 +650,9 @@ def pipeline_bootstrap_comparisons(ptp_data, rms_data, preptp_data,
 LAT_COLS = [
     # Identification
     "File", "StimType", "Stim_Label", "Segment",
+    "Segment_Overall",           # chronological trial number across all stim types
+    "Stim_Time(s)",              # absolute timestamp of the stimulation in the recording
+    "Time_Since_Last_Stim(s)",   # ISI from previous stim (any type); blank for first stim
     "Limb", "Measure",
     # Core MEP metrics
     "PTP(mV)", "Latency(ms)",

@@ -298,10 +298,16 @@ struct LcBlock {
 }
 
 fn labchart_parse_blocks(lines: &[String]) -> Vec<LcBlock> {
+    // Anchor on "Interval=" — the first line of every LabChart block header.
+    // Previously anchored on "ChannelTitle=" which placed the header window
+    // *after* Interval= and ExcelDateTime=, so both were never found and every
+    // block received the fallback values (fs=2000, edt_sec=0.0).  With all
+    // edt_sec==0 every block's abs_block_start collapsed to ~0, causing all
+    // stim times to be identical and the waveform blocks to overwrite each other.
     let block_starts: Vec<usize> = lines
         .iter()
         .enumerate()
-        .filter(|(_, l)| l.starts_with("ChannelTitle="))
+        .filter(|(_, l)| l.starts_with("Interval="))
         .map(|(i, _)| i)
         .collect();
 
@@ -310,23 +316,29 @@ fn labchart_parse_blocks(lines: &[String]) -> Vec<LcBlock> {
         let header_end = start + 9;
         let header = &lines[start..header_end.min(lines.len())];
 
+        // "Interval=\t0.001 s" — value is tab-separated and has a unit suffix.
+        // Must split on tab first, then take the first whitespace-delimited token.
         let fs = header
             .iter()
             .find(|l| l.starts_with("Interval="))
-            .and_then(|l| {
-                let v = l.trim_start_matches("Interval=").trim();
-                v.parse::<f64>().ok()
+            .and_then(|l| l.split('\t').nth(1))
+            .and_then(|v| {
+                v.trim()
+                    .split_whitespace()
+                    .next()
+                    .and_then(|s| s.parse::<f64>().ok())
             })
+            .filter(|&v| v > 0.0)
             .map(|interval| (1.0 / interval).round() as i64)
             .unwrap_or(2000);
 
+        // "ExcelDateTime=\t46141.45\t29/04/2026 ..." — value is the first tab field;
+        // trailing human-readable date must be discarded before parsing.
         let edt_sec = header
             .iter()
             .find(|l| l.starts_with("ExcelDateTime="))
-            .and_then(|l| {
-                let v = l.trim_start_matches("ExcelDateTime=").trim();
-                v.parse::<f64>().ok()
-            })
+            .and_then(|l| l.split('\t').nth(1))
+            .and_then(|v| v.trim().parse::<f64>().ok())
             .map(|edt| (edt - 25569.0) * 86400.0)
             .unwrap_or(0.0);
 
