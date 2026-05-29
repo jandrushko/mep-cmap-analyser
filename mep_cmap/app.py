@@ -3165,7 +3165,12 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                             text="Stim/trigger channel:",
                             anchor="w", width=22,
                         ).grid(row=1, column=0, sticky="w", pady=6)
-                        stim_var = tk.StringVar(value=_stim_options[0])
+                        _digmark_default = next(
+                            (o for o in _stim_options if "DigMark" in o),
+                            _stim_options[0]
+                        )
+                        stim_var = tk.StringVar(value=_digmark_default)
+
                         ttk.Combobox(
                             frm, textvariable=stim_var,
                             values=_stim_options, state="readonly", width=30,

@@ -1,6 +1,6 @@
 # MEP-CMAP Analyser
 
-**Version 0.9.9.5 | May 2026**  
+**Version 0.9.9.6 | May 2026**  
 *Author: Justin Andrushko PhD, Northumbria University*
 
 [![PyPI version](https://badge.fury.io/py/mep-cmap-analyser.svg)](https://pypi.org/project/mep-cmap-analyser/)
