@@ -1,6 +1,6 @@
 # MEP-CMAP Analyser
 
-**Version 0.9.9.4 | May 2026**  
+**Version 0.9.9.5 | May 2026**  
 *Author: Justin Andrushko PhD, Northumbria University*
 
 [![PyPI version](https://badge.fury.io/py/mep-cmap-analyser.svg)](https://pypi.org/project/mep-cmap-analyser/)
@@ -103,11 +103,13 @@ For any other tabular text file (tab, space, or comma delimited). A one-time, fo
 
 ### MEP Onset Detection
 
-Two detection methods are available and switchable per file:
+Three detection methods are available. The global default is set in **Settings → Preferences → Detection** and can be overridden per file in Stage 1a without affecting the preference. All methods share the same physiological latency bounds (see [Physiological Latency Profiles](#physiological-latency-profiles)) and return `None` rather than a floor value when no confident onset is found, so ambiguous trials are flagged rather than silently mislabelled.
 
-**Peak-fraction method (default)** — finds the largest positive and negative peaks in the MEP window, then scans backward from the dominant peak to find where the signal first crosses a fraction of that peak (configurable, default 15%). A minimum peak amplitude threshold guards against noise false-positives.
+**Derivative-based method — Bigoni et al. 2022 (default)** — identifies the onset as the start of the longest sustained positive-derivative run in the rising edge of the MEP waveform. An optional Savitzky-Golay smoothing step reduces noise before differentiation. This method does not rely on pre-stimulus baseline statistics and therefore makes no assumptions about background EMG level, making it robust for both resting-state and active-contraction paradigms and for biphasic MEP waveforms of either polarity. The implementation follows the algorithm described in Bigoni et al. [6] with adaptations for variable sampling rates and variable muscle-group search windows. Two parameters are tuneable in Preferences: smoothing window (default 2 ms) and minimum positive-run length (default 1 ms).
 
-**Bootstrap threshold method** — estimates a noise threshold from the pre-stimulus baseline using a bootstrap distribution, then scans forward within a physiologically plausible latency window to find the first sample exceeding the criterion. Latency windows are defined per stimulus type and have built-in defaults based on published normative data (see [Physiological Latency Profiles](#physiological-latency-profiles)):
+**Peak-fraction method** — finds the largest positive and negative peaks in the MEP window, then scans backward from the dominant peak to find where the signal first crosses a fraction of that peak (configurable, default 15%). A minimum peak amplitude threshold guards against noise false-positives. Works well on clean, high-amplitude MEPs with a near-silent pre-stimulus baseline.
+
+**Bootstrap threshold method** — estimates a noise threshold from the pre-stimulus baseline using a bootstrap distribution, then scans backward from the dominant peak within a physiologically plausible latency window. More sensitive than the peak-fraction method on low-amplitude signals where the peak-fraction threshold is set too low relative to noise. Latency windows are defined per stimulus type and have built-in defaults based on published normative data (see [Physiological Latency Profiles](#physiological-latency-profiles)):
 
 | Stimulus / Muscle target | Latency window |
 |---|---|
@@ -122,7 +124,7 @@ Two detection methods are available and switchable per file:
 | PNS → upper limb (M-wave) | 2–12 ms |
 | PNS → lower limb (M-wave) | 4–18 ms |
 
-Default windows and the pre-selected muscle group for new stimulus types can be changed globally in **Settings → Preferences → Latency Profiles**. Per-file overrides set in Stage 1a are saved independently and are not affected by preference changes.
+Default windows and the pre-selected muscle group for new stimulus types can be changed globally in **Settings → Preferences → Latency Profiles**. Per-file overrides set in Stage 1a are saved independently and are not affected by preference changes. All three onset methods respect these bounds.
 
 ### Cortical Silent Period (cSP) Detection
 
@@ -384,7 +386,7 @@ The output is at the trial level with outlier Z-scores included as covariates, r
 
 ## Physiological Latency Profiles
 
-The bootstrap onset detector searches for MEP onset within a per-muscle physiological window. Default windows are listed below; all assume contralateral cortical stimulation with active muscle facilitation (resting latencies are typically 1–3 ms longer). Windows can be overridden per stimulus type in Stage 1a, and the global defaults can be edited in **Settings → Preferences → Latency Profiles**.
+The derivative-based (Bigoni), bootstrap, and peak-fraction onset detectors all search for MEP onset within a per-muscle physiological window. Default windows are listed below; all assume contralateral cortical stimulation with active muscle facilitation (resting latencies are typically 1–3 ms longer). Windows can be overridden per stimulus type in Stage 1a, and the global defaults can be edited in **Settings → Preferences → Latency Profiles**.
 
 | Stimulus type / Muscle target | Window (ms) | Reference(s) |
 |---|---|---|
@@ -441,7 +443,7 @@ The Rust extension `mep_cmap_io` is compiled automatically during the build proc
 
 If you use MEP-CMAP Analyser in published research, please cite:
 
-> Andrushko, J.W. (2026). MEP-CMAP Analyser (Version 0.9.9.4) [Software].
+> Andrushko, J.W. (2026). MEP-CMAP Analyser (Version 0.9.9.5) [Software].
 > Northumbria University. https://github.com/jandrushko/mep-cmap-analyser
 
 ---
@@ -458,9 +460,11 @@ If you use MEP-CMAP Analyser in published research, please cite:
 
 [5] Orth, M., & Rothwell, J.C. (2004). The cortical silent period: intrinsic variability and relation to the waveform of the transcranial magnetic stimulation pulse. *Clinical Neurophysiology*, 115(5), 1076–1082. https://doi.org/10.1016/j.clinph.2003.12.005
 
-[6] Hupfeld, K.E., Swanson, C.W., Fling, B.W., & Seidler, R.D. (2021). TMS-induced silent periods: A review of methods and call for consistency. *Journal of Neuroscience Methods*, 346, 108950. https://doi.org/10.1016/j.jneumeth.2020.108950
+[6] Bigoni, C., Cadic-Melchior, A., Vassiliadis, P., Morishita, T., & Hummel, F.C. (2022). An automatized method to determine latencies of motor-evoked potentials under physiological and pathophysiological conditions. *Journal of Neural Engineering*, 19(2), 024002. https://doi.org/10.1088/1741-2552/ac636c
 
-[7] Rossini, P.M., et al. (2015). Non-invasive electrical and magnetic stimulation of the brain, spinal cord, roots and peripheral nerves: Basic principles and procedures for routine clinical and research application. *Clinical Neurophysiology*, 126(6), 1071–1107. https://doi.org/10.1016/j.clinph.2015.02.001
+[7] Hupfeld, K.E., Swanson, C.W., Fling, B.W., & Seidler, R.D. (2021). TMS-induced silent periods: A review of methods and call for consistency. *Journal of Neuroscience Methods*, 346, 108950. https://doi.org/10.1016/j.jneumeth.2020.108950
+
+[8] Rossini, P.M., et al. (2015). Non-invasive electrical and magnetic stimulation of the brain, spinal cord, roots and peripheral nerves: Basic principles and procedures for routine clinical and research application. *Clinical Neurophysiology*, 126(6), 1071–1107. https://doi.org/10.1016/j.clinph.2015.02.001
 
 ---
 

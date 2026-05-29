@@ -13,6 +13,17 @@ DEFAULTS   = {
     "font_scale":          1.0,
     "latency_profiles":    None,   # None → use LATENCY_PROFILE_DEFAULTS
     "default_latency_key": None,   # None → use DEFAULT_LATENCY_KEY
+    "onset_method":        "bigoni",  # "peak_fraction" | "bootstrap" | "bigoni"
+    # Peak-fraction method parameters
+    "onset_peak_frac":          0.15,
+    "onset_min_peak_amplitude": 0.05,
+    "onset_slope_threshold":    0.08,
+    # Bootstrap method parameters
+    "onset_bootstrap_crit":     1.96,
+    "onset_bootstrap_n":        500,
+    # Bigoni method parameters
+    "onset_bigoni_smooth_ms":   2.0,
+    "onset_bigoni_min_run_ms":  1.0,
 }
 
 # ── Canonical latency profiles ────────────────────────────────────────────────
@@ -125,6 +136,64 @@ class Preferences:
         self._data["default_latency_key"] = list(default_key)
         self.save()
 
+    # ── Onset detection method ────────────────────────────────────────────────
+
+    @property
+    def onset_method(self) -> str:
+        """Active onset detection method key. One of: 'peak_fraction', 'bootstrap'."""
+        return str(self._data.get("onset_method", "peak_fraction"))
+
+    # ── Peak-fraction parameters ──────────────────────────────────────────────
+
+    @property
+    def onset_peak_frac(self) -> float:
+        return float(self._data.get("onset_peak_frac", 0.15))
+
+    @property
+    def onset_min_peak_amplitude(self) -> float:
+        return float(self._data.get("onset_min_peak_amplitude", 0.05))
+
+    @property
+    def onset_slope_threshold(self) -> float:
+        return float(self._data.get("onset_slope_threshold", 0.08))
+
+    # ── Bootstrap parameters ──────────────────────────────────────────────────
+
+    @property
+    def onset_bootstrap_crit(self) -> float:
+        return float(self._data.get("onset_bootstrap_crit", 1.96))
+
+    @property
+    def onset_bootstrap_n(self) -> int:
+        return int(self._data.get("onset_bootstrap_n", 500))
+
+    @property
+    def onset_bigoni_smooth_ms(self) -> float:
+        return float(self._data.get("onset_bigoni_smooth_ms", 2.0))
+
+    @property
+    def onset_bigoni_min_run_ms(self) -> float:
+        return float(self._data.get("onset_bigoni_min_run_ms", 1.0))
+
+    def set_onset_prefs(self, method: str,
+                        peak_frac: float, min_peak_amplitude: float,
+                        slope_threshold: float,
+                        bootstrap_crit: float, bootstrap_n: int,
+                        bigoni_smooth_ms: float = 2.0,
+                        bigoni_min_run_ms: float = 1.0):
+        """Persist all onset detection preferences."""
+        self._data["onset_method"]              = method
+        self._data["onset_peak_frac"]           = round(float(peak_frac), 4)
+        self._data["onset_min_peak_amplitude"]  = round(float(min_peak_amplitude), 4)
+        self._data["onset_slope_threshold"]     = round(float(slope_threshold), 4)
+        self._data["onset_bootstrap_crit"]      = round(float(bootstrap_crit), 4)
+        self._data["onset_bootstrap_n"]         = int(bootstrap_n)
+        self._data["onset_bigoni_smooth_ms"]    = round(float(bigoni_smooth_ms), 2)
+        self._data["onset_bigoni_min_run_ms"]   = round(float(bigoni_min_run_ms), 2)
+        self.save()
+
+    # ── DPI / scaling ─────────────────────────────────────────────────────────
+
     def detect_dpi(self, root) -> float:
         """
         Use tk's own scaling to get physical DPI.
@@ -204,10 +273,7 @@ def apply_scaling(root):
     except Exception:
         pass
 
-    # ── 3. Tk Menu widgets ────────────────────────────────────────────────────
-    # On Windows, Menu widgets ignore TkMenuFont and use the system menu font
-    # unless font= is set explicitly on each menu instance.
-    # We walk the widget tree and reconfigure every Menu widget found.
+    # Tk Menu widgets
     def _fix_menus(widget):
         try:
             if widget.winfo_class() == "Menu":
@@ -221,7 +287,6 @@ def apply_scaling(root):
             pass
     _fix_menus(root)
 
-    # Also set via option_add so future menus created after this call are correct
     try:
         root.option_add("*Menu.font", font_spec)
     except Exception:
@@ -272,13 +337,12 @@ def open_preferences_dialog(root, on_apply=None):
                   "saved independently and are not affected by changes here.",
              justify="left", fg="grey").pack(anchor="w", padx=12, pady=(10, 6))
 
-    # Scrollable table area
     canvas_frame = tk.Frame(lat_tab)
     canvas_frame.pack(fill="both", expand=True, padx=8, pady=(0, 6))
 
-    canvas  = tk.Canvas(canvas_frame, highlightthickness=0)
+    canvas    = tk.Canvas(canvas_frame, highlightthickness=0)
     scrollbar = ttk.Scrollbar(canvas_frame, orient="vertical", command=canvas.yview)
-    inner   = tk.Frame(canvas)
+    inner     = tk.Frame(canvas)
 
     inner.bind("<Configure>",
                lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
@@ -288,13 +352,11 @@ def open_preferences_dialog(root, on_apply=None):
     canvas.pack(side="left", fill="both", expand=True)
     scrollbar.pack(side="right", fill="y")
 
-    # Enable mouse-wheel scrolling inside the canvas
     def _on_mousewheel(event):
         canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
     canvas.bind_all("<MouseWheel>", _on_mousewheel)
     win.bind("<Destroy>", lambda e: canvas.unbind_all("<MouseWheel>"))
 
-    # Column headers
     _bold = ("TkDefaultFont", 9, "bold")
     for col, (text, w) in enumerate([
         ("Default", 7), ("Stim type", 18), ("Muscle group", 26),
@@ -305,23 +367,19 @@ def open_preferences_dialog(root, on_apply=None):
     ttk.Separator(inner, orient="horizontal")\
         .grid(row=1, column=0, columnspan=6, sticky="ew", padx=4, pady=2)
 
-    # One radio-group variable — value = "stim_type::muscle"
     current_key = prefs.default_latency_key
     radio_var   = tk.StringVar(value=f"{current_key[0]}::{current_key[1]}")
 
-    # Working copy of profiles (edited in-place by the entries)
     working_profiles = [dict(p) for p in prefs.latency_profiles]
-
-    # Build canonical lookup for reset-to-default per row
     canonical = {(p["stim_type"], p["muscle"]): (p["min_ms"], p["max_ms"])
                  for p in LATENCY_PROFILE_DEFAULTS}
 
-    row_vars: list[tuple] = []   # (stim_type, muscle, v_min, v_max)
+    row_vars: list[tuple] = []
 
     for i, profile in enumerate(working_profiles):
         st  = profile["stim_type"]
         mg  = profile["muscle"]
-        row = i + 2   # rows 0=header, 1=separator, then data
+        row = i + 2
 
         radio_val = f"{st}::{mg}"
         tk.Radiobutton(inner, variable=radio_var, value=radio_val, width=2)\
@@ -339,7 +397,6 @@ def open_preferences_dialog(root, on_apply=None):
         tk.Entry(inner, textvariable=v_max, width=6, justify="center")\
             .grid(row=row, column=4, padx=4, sticky="w")
 
-        # Reset button restores this row to its factory value (if known)
         def _make_reset(vm_in, vm_ax, s=st, m=mg):
             def _reset():
                 defaults = canonical.get((s, m))
@@ -352,10 +409,8 @@ def open_preferences_dialog(root, on_apply=None):
                               command=_make_reset(v_min, v_max),
                               relief="flat", cursor="hand2")
         reset_btn.grid(row=row, column=5, padx=(2, 6))
-
         row_vars.append((st, mg, v_min, v_max))
 
-    # Reset-all button
     def _reset_all():
         for st, mg, v_min, v_max in row_vars:
             d = canonical.get((st, mg))
@@ -365,6 +420,120 @@ def open_preferences_dialog(root, on_apply=None):
 
     tk.Button(lat_tab, text="Reset all to defaults", command=_reset_all)\
         .pack(anchor="e", padx=12, pady=(2, 6))
+
+    # ── Tab 3: Detection Method ───────────────────────────────────────────────
+    det_tab = tk.Frame(notebook)
+    notebook.add(det_tab, text="Detection")
+
+    tk.Label(det_tab, text="Onset Latency Detection Method",
+             font=("TkDefaultFont", 11, "bold")).pack(pady=(14, 4), anchor="w", padx=16)
+
+    tk.Label(det_tab,
+             text="Sets the global default method. Individual files can override\n"
+                  "this in Stage 1a without affecting the preference here.",
+             justify="left", fg="grey").pack(anchor="w", padx=16, pady=(0, 10))
+
+    method_var = tk.StringVar(value=prefs.onset_method)
+
+    # ── Method descriptions ───────────────────────────────────────────────────
+    METHOD_DESCRIPTIONS = {
+        "peak_fraction": (
+            "Peak Fraction\n\n"
+            "Finds the largest peak in the MEP window, sets a threshold at a\n"
+            "fraction of that peak, then backtracks to find the onset. Fast and\n"
+            "works well on clean, high-amplitude MEPs."
+        ),
+        "bootstrap": (
+            "Bootstrap Threshold\n\n"
+            "Estimates a noise threshold from the pre-stimulus baseline using a\n"
+            "bootstrap distribution, then finds the onset via a peak-anchored\n"
+            "backward scan within the physiological latency window. More robust\n"
+            "on noisy or low-amplitude signals."
+        ),
+        "bigoni": (
+            "Derivative-based (Bigoni et al. 2022)\n\n"
+            "Identifies the onset as the start of the longest sustained positive\n"
+            "derivative run in the rising edge of the MEP. Does not rely on\n"
+            "pre-stimulus baseline statistics — robust on active-contraction data\n"
+            "and biphasic waveforms. Reference: J Neural Eng 19 (2022) 024002."
+        ),
+    }
+
+    # Radio buttons
+    radio_frame = tk.Frame(det_tab)
+    radio_frame.pack(anchor="w", padx=16, pady=(0, 6))
+
+    desc_lbl = tk.Label(det_tab, text="", justify="left", fg="#444",
+                        wraplength=460, anchor="w")
+    desc_lbl.pack(anchor="w", padx=16, pady=(0, 12))
+
+    def _update_desc(*_):
+        desc_lbl.config(text=METHOD_DESCRIPTIONS.get(method_var.get(), ""))
+        _toggle_param_frames()
+
+    for key, label in [("peak_fraction", "Peak Fraction"),
+                        ("bootstrap",    "Bootstrap Threshold"),
+                        ("bigoni",       "Derivative-based (Bigoni et al. 2022)")]:
+        tk.Radiobutton(radio_frame, text=label, variable=method_var,
+                       value=key, command=_update_desc)\
+            .pack(anchor="w", pady=2)
+
+    # ── Parameter frames (show/hide based on selection) ───────────────────────
+    # Peak-fraction parameters
+    pf_frame = tk.LabelFrame(det_tab, text="Peak Fraction parameters", padx=10, pady=8)
+
+    def _pf_row(parent, label, var, row):
+        tk.Label(parent, text=label, anchor="w", width=28)\
+            .grid(row=row, column=0, sticky="w", pady=3)
+        tk.Entry(parent, textvariable=var, width=8, justify="center")\
+            .grid(row=row, column=1, padx=8, sticky="w")
+
+    pf_peak_frac_var = tk.StringVar(value=str(prefs.onset_peak_frac))
+    pf_min_amp_var   = tk.StringVar(value=str(prefs.onset_min_peak_amplitude))
+    pf_slope_var     = tk.StringVar(value=str(prefs.onset_slope_threshold))
+
+    _pf_row(pf_frame, "Peak fraction (0–1)",        pf_peak_frac_var, 0)
+    _pf_row(pf_frame, "Min peak amplitude (mV)",    pf_min_amp_var,   1)
+    _pf_row(pf_frame, "Slope threshold (mV/ms)",    pf_slope_var,     2)
+
+    # Bootstrap parameters
+    bs_frame = tk.LabelFrame(det_tab, text="Bootstrap parameters", padx=10, pady=8)
+
+    bs_crit_var = tk.StringVar(value=str(prefs.onset_bootstrap_crit))
+    bs_n_var    = tk.StringVar(value=str(prefs.onset_bootstrap_n))
+
+    _pf_row(bs_frame, "Criterion (SD multiplier)",  bs_crit_var, 0)
+    _pf_row(bs_frame, "Bootstrap iterations",       bs_n_var,    1)
+
+    # Bigoni parameters
+    bg_frame = tk.LabelFrame(det_tab, text="Derivative-based parameters", padx=10, pady=8)
+
+    bg_smooth_var  = tk.StringVar(value=str(prefs.onset_bigoni_smooth_ms))
+    bg_run_var     = tk.StringVar(value=str(prefs.onset_bigoni_min_run_ms))
+
+    _pf_row(bg_frame, "Smoothing window (ms)",      bg_smooth_var, 0)
+    _pf_row(bg_frame, "Min positive run (ms)",      bg_run_var,    1)
+
+    tk.Label(bg_frame,
+             text="Set smoothing to 0 to disable. Min run filters\n"
+                  "single-sample noise spikes from onset selection.",
+             fg="grey", justify="left").grid(row=2, column=0, columnspan=2,
+                                             sticky="w", pady=(4, 0))
+
+    def _toggle_param_frames():
+        m = method_var.get()
+        bs_frame.pack_forget()
+        pf_frame.pack_forget()
+        bg_frame.pack_forget()
+        if m == "peak_fraction":
+            pf_frame.pack(anchor="w", padx=16, pady=(0, 8), fill="x")
+        elif m == "bootstrap":
+            bs_frame.pack(anchor="w", padx=16, pady=(0, 8), fill="x")
+        elif m == "bigoni":
+            bg_frame.pack(anchor="w", padx=16, pady=(0, 8), fill="x")
+
+    # Initialise
+    _update_desc()
 
     # ── Shared Apply / Reset / Cancel row ────────────────────────────────────
     def _apply():
@@ -385,22 +554,39 @@ def open_preferences_dialog(root, on_apply=None):
             updated.append({"stim_type": st, "muscle": mg,
                              "min_ms": mn, "max_ms": mx})
 
-        raw_key   = radio_var.get().split("::", 1)
-        def_key   = tuple(raw_key) if len(raw_key) == 2 else DEFAULT_LATENCY_KEY
+        raw_key = radio_var.get().split("::", 1)
+        def_key = tuple(raw_key) if len(raw_key) == 2 else DEFAULT_LATENCY_KEY
         prefs.set_latency_prefs(updated, def_key)
+
+        # Onset detection
+        try:
+            pf   = float(pf_peak_frac_var.get())
+            mpa  = float(pf_min_amp_var.get())
+            slp  = float(pf_slope_var.get())
+            crit = float(bs_crit_var.get())
+            n    = int(bs_n_var.get())
+            bsm  = float(bg_smooth_var.get())
+            brn  = float(bg_run_var.get())
+            prefs.set_onset_prefs(method_var.get(), pf, mpa, slp, crit, n, bsm, brn)
+        except ValueError:
+            pass
 
     def _reset_font():
         scale_var.set(100); _apply()
 
     btn_row = tk.Frame(win)
     btn_row.pack(pady=(6, 12))
-    tk.Button(btn_row, text="Apply",          width=10, command=_apply).pack(side="left", padx=4)
-    tk.Button(btn_row, text="Reset font 100%",width=14, command=_reset_font).pack(side="left", padx=4)
-    tk.Button(btn_row, text="Cancel",         width=10, command=win.destroy).pack(side="left", padx=4)
+    tk.Button(btn_row, text="Apply",           width=10, command=_apply).pack(side="left", padx=4)
+    tk.Button(btn_row, text="Reset font 100%", width=14, command=_reset_font).pack(side="left", padx=4)
+    tk.Button(btn_row, text="Cancel",          width=10, command=win.destroy).pack(side="left", padx=4)
 
     win.update_idletasks()
-    win.minsize(560, 440)
-    x = root.winfo_rootx() + (root.winfo_width()  - win.winfo_width())  // 2
-    y = root.winfo_rooty() + (root.winfo_height() - win.winfo_height()) // 2
-    win.geometry(f"+{x}+{y}")
+    win.minsize(700, 520)
+    try:
+        win.state("zoomed")          # Windows / Linux maximise
+    except Exception:
+        # macOS doesn't support "zoomed" — use screen dimensions instead
+        sw = win.winfo_screenwidth()
+        sh = win.winfo_screenheight()
+        win.geometry(f"{sw}x{sh}+0+0")
     win.grab_set()

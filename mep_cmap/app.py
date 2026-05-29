@@ -822,12 +822,12 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self.lp_order_var = tk.IntVar(value=2)
 
         # ─── Other Settings (time windows, bootstrap, etc.) ──────────────────
-        self.onset_peak_fraction      = tk.DoubleVar(value=0.15)
-        self.onset_min_amplitude      = tk.DoubleVar(value=0.1)
-        self.onset_slope_threshold    = tk.DoubleVar(value=0.08)
-        self.onset_method             = tk.StringVar(value="bootstrap")
-        self.onset_bootstrap_crit     = tk.DoubleVar(value=1.96)
-        self.onset_bootstrap_n        = tk.IntVar(value=500)
+        self.onset_peak_fraction      = tk.DoubleVar(value=prefs.onset_peak_frac)
+        self.onset_min_amplitude      = tk.DoubleVar(value=prefs.onset_min_peak_amplitude)
+        self.onset_slope_threshold    = tk.DoubleVar(value=prefs.onset_slope_threshold)
+        self.onset_method             = tk.StringVar(value=prefs.onset_method)
+        self.onset_bootstrap_crit     = tk.DoubleVar(value=prefs.onset_bootstrap_crit)
+        self.onset_bootstrap_n        = tk.IntVar(value=prefs.onset_bootstrap_n)
         self.pre_time = tk.IntVar(value=20)
         self.post_time = tk.IntVar(value=400)
         self.ptp_start = tk.IntVar(value=10)
@@ -3637,11 +3637,12 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         win = tk.Toplevel(self.root)
         win.title("Select marker source")
 
-        v = tk.StringVar(value=choices[0])
+        default = "DigMark" if "DigMark" in choices else choices[0]
+        v = tk.StringVar(value=default)
 
         tk.Label(win, text="Multiple marker sources found.\nChoose one:")\
             .pack(padx=10, pady=(10, 4))
-        ttk.OptionMenu(win, v, choices[0], *choices).pack(padx=10, pady=6)
+        ttk.OptionMenu(win, v, default, *choices).pack(padx=10, pady=6)
 
         def _ok():
             self._marker_choice_result = v.get()   # <-- plain string
