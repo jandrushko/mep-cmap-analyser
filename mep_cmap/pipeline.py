@@ -42,6 +42,8 @@ from .io import extract_emg_waveform_and_fs, extract_stim_times
 from .filters import adaptive_mains_cancel, design_notch_sos
 from .detection     import (detect_mep_onset_peak_fraction,
                              detect_mep_onset_bootstrap,
+                             detect_mep_onset_bigoni,
+                             detect_mep_onset_bigoni_walkback,
                              compute_bootstrap_threshold)
 from .normalisation import compute_mmax, apply_normalisation
 
@@ -75,10 +77,13 @@ class PipelineConfig:
     peak_fraction:         float = 0.15
     min_peak_amplitude:    float = 0.05
     slope_threshold:       float = 0.08
-    # "peak_fraction" (default) or "bootstrap"
-    onset_method:          str   = "peak_fraction"
-    onset_bootstrap_crit:  float = 1.96
-    onset_bootstrap_n:     int   = 500
+    # "peak_fraction" | "bootstrap" | "bigoni" | "bigoni_walkback"
+    onset_method:              str   = "peak_fraction"
+    onset_bootstrap_crit:      float = 1.96
+    onset_bootstrap_n:         int   = 500
+    onset_bigoni_smooth_ms:    float = 0.5
+    onset_bigoni_min_run_ms:   float = 0.5
+    onset_bigoni_walkback_sd:  float = 1.0
     latency_map:           dict  = field(default_factory=dict)
     # Outlier detection
     outlier_threshold:     float = 1.96
@@ -304,9 +309,10 @@ def pipeline_quantify_segments(stim_type, segs_all, prestim_all,
     for idx, seg in enumerate(segs_all):
         # ── automatic metrics ────────────────────────────────────────────
         auto_ptp = _np_ptp(seg[ptp_start_idx:ptp_end_idx])
+        _lat     = cfg.latency_map.get(stim_type, (10.0, 50.0))
+        _min_lat, _max_lat = _lat if _lat else (10.0, 50.0)
+
         if cfg.onset_method == "bootstrap":
-            _lat     = cfg.latency_map.get(stim_type, (10.0, 50.0))
-            _min_lat, _max_lat = _lat if _lat else (10.0, 50.0)
             auto_lat = detect_mep_onset_bootstrap(
                 seg, fs,
                 pre_ms=cfg.prestim_ms,
@@ -317,6 +323,31 @@ def pipeline_quantify_segments(stim_type, segs_all, prestim_all,
                 min_peak_amplitude=cfg.min_peak_amplitude,
                 criterion=cfg.onset_bootstrap_crit,
                 n_boot=cfg.onset_bootstrap_n,
+            )
+        elif cfg.onset_method == "bigoni":
+            auto_lat = detect_mep_onset_bigoni(
+                seg, fs,
+                pre_ms=cfg.prestim_ms,
+                search_start_ms=cfg.ptp_start,
+                search_end_ms=cfg.ptp_end,
+                min_latency_ms=_min_lat,
+                max_latency_ms=_max_lat,
+                min_peak_amplitude=cfg.min_peak_amplitude,
+                smooth_window_ms=cfg.onset_bigoni_smooth_ms,
+                min_run_ms=cfg.onset_bigoni_min_run_ms,
+            )
+        elif cfg.onset_method == "bigoni_walkback":
+            auto_lat = detect_mep_onset_bigoni_walkback(
+                seg, fs,
+                pre_ms=cfg.prestim_ms,
+                search_start_ms=cfg.ptp_start,
+                search_end_ms=cfg.ptp_end,
+                min_latency_ms=_min_lat,
+                max_latency_ms=_max_lat,
+                min_peak_amplitude=cfg.min_peak_amplitude,
+                smooth_window_ms=cfg.onset_bigoni_smooth_ms,
+                min_run_ms=cfg.onset_bigoni_min_run_ms,
+                walkback_sd_mult=cfg.onset_bigoni_walkback_sd,
             )
         else:
             auto_lat = detect_mep_onset_peak_fraction(
@@ -883,6 +914,9 @@ def run_pipeline(input_path,
                  onset_method="peak_fraction",
                  onset_bootstrap_crit=1.96,
                  onset_bootstrap_n=500,
+                 onset_bigoni_smooth_ms=0.5,
+                 onset_bigoni_min_run_ms=0.5,
+                 onset_bigoni_walkback_sd=1.0,
                  latency_map=None,
                  filter_harmonics=False,
                  enable_inspector=False,
@@ -930,6 +964,9 @@ def run_pipeline(input_path,
         onset_method=onset_method,
         onset_bootstrap_crit=onset_bootstrap_crit,
         onset_bootstrap_n=onset_bootstrap_n,
+        onset_bigoni_smooth_ms=onset_bigoni_smooth_ms,
+        onset_bigoni_min_run_ms=onset_bigoni_min_run_ms,
+        onset_bigoni_walkback_sd=onset_bigoni_walkback_sd,
         latency_map=latency_map or {},
         outlier_threshold=outlier_threshold,
         enable_outlier_review=enable_outlier_review,

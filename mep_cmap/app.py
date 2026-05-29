@@ -523,6 +523,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             onset_method          = self.onset_method.get(),
             onset_bootstrap_crit  = self.onset_bootstrap_crit.get(),
             onset_bootstrap_n     = self.onset_bootstrap_n.get(),
+            onset_bigoni_smooth_ms   = self.onset_bigoni_smooth_ms.get(),
+            onset_bigoni_min_run_ms  = self.onset_bigoni_min_run_ms.get(),
+            onset_bigoni_walkback_sd = self.onset_bigoni_walkback_sd.get(),
             latency_map           = dict(self.latency_map),
 
             # misc
@@ -591,6 +594,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             onset_method        = self.onset_method.get(),
             onset_bootstrap_crit= self.onset_bootstrap_crit.get(),
             onset_bootstrap_n   = self.onset_bootstrap_n.get(),
+            onset_bigoni_smooth_ms   = self.onset_bigoni_smooth_ms.get(),
+            onset_bigoni_min_run_ms  = self.onset_bigoni_min_run_ms.get(),
+            onset_bigoni_walkback_sd = self.onset_bigoni_walkback_sd.get(),
             latency_map         = dict(self.latency_map),
             # CSP detection
             csp_search_start_ms = self.csp_search_start_ms.get(),
@@ -696,6 +702,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                 onset_method         = params["onset_method"],
                 onset_bootstrap_crit = params["onset_bootstrap_crit"],
                 onset_bootstrap_n    = params["onset_bootstrap_n"],
+                onset_bigoni_smooth_ms   = params.get("onset_bigoni_smooth_ms",   0.5),
+                onset_bigoni_min_run_ms  = params.get("onset_bigoni_min_run_ms",  0.5),
+                onset_bigoni_walkback_sd = params.get("onset_bigoni_walkback_sd", 1.0),
                 latency_map          = params.get("latency_map", {}),
                 csp_types            = params.get("csp_types", set()),
                 csp_min_silence_ms   = params.get("csp_min_silence_ms", 25.0),
@@ -828,6 +837,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         self.onset_method             = tk.StringVar(value=prefs.onset_method)
         self.onset_bootstrap_crit     = tk.DoubleVar(value=prefs.onset_bootstrap_crit)
         self.onset_bootstrap_n        = tk.IntVar(value=prefs.onset_bootstrap_n)
+        self.onset_bigoni_smooth_ms   = tk.DoubleVar(value=prefs.onset_bigoni_smooth_ms)
+        self.onset_bigoni_min_run_ms  = tk.DoubleVar(value=prefs.onset_bigoni_min_run_ms)
+        self.onset_bigoni_walkback_sd = tk.DoubleVar(value=prefs.onset_bigoni_walkback_sd)
         self.pre_time = tk.IntVar(value=20)
         self.post_time = tk.IntVar(value=400)
         self.ptp_start = tk.IntVar(value=10)
@@ -1024,59 +1036,43 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
             row=3, column=0, columnspan=4, sticky='w', padx=6)
 
         # ── Sub-section: Onset Detection ─────────────────────────────────────
-        # Row 4: method + min amplitude
-        tk.Label(time_frame, text="Method:").grid(
-            row=4, column=0, sticky='e', padx=6)
-        onset_method_cb = ttk.Combobox(
-            time_frame, textvariable=self.onset_method,
-            values=["peak_fraction", "bootstrap"],
-            state="readonly", width=14)
-        onset_method_cb.grid(row=4, column=1, sticky='w')
-        tk.Label(time_frame, text="Min amplitude (mV):").grid(
-            row=4, column=2, sticky='e', padx=6)
-        tk.Entry(time_frame, textvariable=self.onset_min_amplitude, width=6).grid(
-            row=4, column=3, sticky='w')
+        # Method label (read-only, reflects current preference)
+        _METHOD_LABELS = {
+            "peak_fraction":  "Peak Fraction",
+            "bootstrap":      "Bootstrap Threshold",
+            "bigoni":         "Derivative-based (Bigoni et al. 2022)",
+            "bigoni_walkback":"Derivative-based + Walkback (Modified Bigoni)",
+        }
+        _method_display = _METHOD_LABELS.get(self.onset_method.get(), self.onset_method.get())
+        self._onset_method_lbl = tk.Label(
+            time_frame, text=f"Method: {_method_display}", anchor="w", fg="#444")
+        self._onset_method_lbl.grid(row=4, column=0, columnspan=3, sticky='w', padx=6, pady=(2, 0))
 
-        # Row 5: method-specific params (peak_fraction and bootstrap share this row)
-        self._pf_lbl1 = tk.Label(time_frame, text="Peak fraction:")
-        self._pf_lbl1.grid(row=5, column=0, sticky='e', padx=6)
-        self._pf_ent1 = tk.Entry(time_frame, textvariable=self.onset_peak_fraction, width=6)
-        self._pf_ent1.grid(row=5, column=1, sticky='w')
-        self._pf_lbl2 = tk.Label(time_frame, text="Slope threshold (mV/ms):")
-        self._pf_lbl2.grid(row=5, column=2, sticky='e', padx=6)
-        self._pf_ent2 = tk.Entry(time_frame, textvariable=self.onset_slope_threshold, width=6)
-        self._pf_ent2.grid(row=5, column=3, sticky='w')
+        def _update_onset_label(*_):
+            m = self.onset_method.get()
+            self._onset_method_lbl.config(
+                text=f"Method: {_METHOD_LABELS.get(m, m)}")
 
-        self._bs_lbl1 = tk.Label(time_frame, text="Z-score criterion:")
-        self._bs_lbl1.grid(row=5, column=0, sticky='e', padx=6)
-        self._bs_ent1 = tk.Entry(time_frame, textvariable=self.onset_bootstrap_crit, width=6)
-        self._bs_ent1.grid(row=5, column=1, sticky='w')
-        self._bs_lbl2 = tk.Label(time_frame, text="Bootstrap n:")
-        self._bs_lbl2.grid(row=5, column=2, sticky='e', padx=6)
-        self._bs_ent2 = tk.Entry(time_frame, textvariable=self.onset_bootstrap_n, width=6)
-        self._bs_ent2.grid(row=5, column=3, sticky='w')
+        self.onset_method.trace_add("write", _update_onset_label)
 
-        def _on_onset_method_change(*_):
-            is_pf = self.onset_method.get() == "peak_fraction"
-            if is_pf:
-                # Show peak-fraction widgets, hide bootstrap widgets
-                for w in (self._pf_lbl1, self._pf_ent1,
-                          self._pf_lbl2, self._pf_ent2):
-                    w.grid()
-                for w in (self._bs_lbl1, self._bs_ent1,
-                          self._bs_lbl2, self._bs_ent2):
-                    w.grid_remove()
-            else:
-                # Show bootstrap widgets, hide peak-fraction widgets
-                for w in (self._pf_lbl1, self._pf_ent1,
-                          self._pf_lbl2, self._pf_ent2):
-                    w.grid_remove()
-                for w in (self._bs_lbl1, self._bs_ent1,
-                          self._bs_lbl2, self._bs_ent2):
-                    w.grid()
+        def _open_detection_prefs():
+            from .preferences import open_preferences_dialog, prefs as _prefs
+            def _on_prefs_apply(r):
+                self.onset_method.set(_prefs.onset_method)
+                self.onset_bigoni_smooth_ms.set(_prefs.onset_bigoni_smooth_ms)
+                self.onset_bigoni_min_run_ms.set(_prefs.onset_bigoni_min_run_ms)
+                self.onset_bigoni_walkback_sd.set(_prefs.onset_bigoni_walkback_sd)
+                self.onset_bootstrap_crit.set(_prefs.onset_bootstrap_crit)
+                self.onset_bootstrap_n.set(_prefs.onset_bootstrap_n)
+                self.onset_peak_fraction.set(_prefs.onset_peak_frac)
+                self.onset_slope_threshold.set(_prefs.onset_slope_threshold)
+                _update_onset_label()
+            open_preferences_dialog(self.root, on_apply=_on_prefs_apply)
 
-        self.onset_method.trace_add("write", _on_onset_method_change)
-        _on_onset_method_change()  # set initial visibility
+        tk.Button(
+            time_frame, text="⚙ Configure in Preferences → Detection",
+            command=_open_detection_prefs, cursor="hand2"
+        ).grid(row=4, column=3, sticky='w', padx=6, pady=(2, 4))
 
         # ─── CSP Detection Settings ────────────────────────────────────────────────
         csp_frame = tk.LabelFrame(self.main_frame,
@@ -1243,6 +1239,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                 "onset_method":          self.onset_method.get(),
                 "onset_bootstrap_crit":  self.onset_bootstrap_crit.get(),
                 "onset_bootstrap_n":     self.onset_bootstrap_n.get(),
+                "onset_bigoni_smooth_ms":   self.onset_bigoni_smooth_ms.get(),
+                "onset_bigoni_min_run_ms":  self.onset_bigoni_min_run_ms.get(),
+                "onset_bigoni_walkback_sd": self.onset_bigoni_walkback_sd.get(),
                 "enable_inspector":      self.enable_inspector.get(),
                 "generate_individual_plots": self.generate_individual_plots.get(),
                 "csp_search_start_ms":   self.csp_search_start_ms.get(),
@@ -1484,6 +1483,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                 self.onset_method.set(_s("onset_method","bootstrap"))
                 self.onset_bootstrap_crit.set(_f("onset_bootstrap_crit",1.96))
                 self.onset_bootstrap_n.set(_i("onset_bootstrap_n",500))
+                self.onset_bigoni_smooth_ms.set(_f("onset_bigoni_smooth_ms",0.5))
+                self.onset_bigoni_min_run_ms.set(_f("onset_bigoni_min_run_ms",0.5))
+                self.onset_bigoni_walkback_sd.set(_f("onset_bigoni_walkback_sd",1.0))
                 self.onset_peak_fraction.set(_f("onset_peak_fraction",0.15))
                 self.onset_min_amplitude.set(_f("onset_min_amplitude",0.1))
                 self.onset_slope_threshold.set(_f("onset_slope_threshold",0.08))
@@ -3170,7 +3172,6 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
                             _stim_options[0]
                         )
                         stim_var = tk.StringVar(value=_digmark_default)
-
                         ttk.Combobox(
                             frm, textvariable=stim_var,
                             values=_stim_options, state="readonly", width=30,
@@ -3642,12 +3643,11 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin):
         win = tk.Toplevel(self.root)
         win.title("Select marker source")
 
-        default = "DigMark" if "DigMark" in choices else choices[0]
-        v = tk.StringVar(value=default)
+        v = tk.StringVar(value=choices[0])
 
         tk.Label(win, text="Multiple marker sources found.\nChoose one:")\
             .pack(padx=10, pady=(10, 4))
-        ttk.OptionMenu(win, v, default, *choices).pack(padx=10, pady=6)
+        ttk.OptionMenu(win, v, choices[0], *choices).pack(padx=10, pady=6)
 
         def _ok():
             self._marker_choice_result = v.get()   # <-- plain string

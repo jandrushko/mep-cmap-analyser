@@ -34,6 +34,7 @@ from .onset_peak_fraction import detect_mep_onset_peak_fraction      # noqa: F40
 from .onset_bootstrap import detect_mep_onset_bootstrap              # noqa: F401
 
 from .onset_bigoni import detect_mep_onset_bigoni                    # noqa: F401
+from .onset_bigoni_walkback import detect_mep_onset_bigoni_walkback  # noqa: F401
 
 from .csp_detection import detect_csp_bootstrap                      # noqa: F401
 
@@ -45,7 +46,7 @@ from .quantification import (                                         # noqa: F4
 )
 
 # VERSION STAMP
-DETECTION_VERSION = "2025-modular-v2"
+DETECTION_VERSION = "2025-modular-v3"
 
 # ── Method registry ───────────────────────────────────────────────────────────
 # Maps preference key → callable
@@ -56,6 +57,7 @@ _METHOD_REGISTRY = {
     "peak_fraction": detect_mep_onset_peak_fraction,
     "bootstrap":     detect_mep_onset_bootstrap,
     "bigoni":        detect_mep_onset_bigoni,
+    "bigoni_walkback": detect_mep_onset_bigoni_walkback,
 }
 
 # Human-readable labels for the preferences UI
@@ -64,6 +66,7 @@ ONSET_METHOD_LABELS = {
     "peak_fraction": "Peak Fraction",
     "bootstrap":     "Bootstrap Threshold",
     "bigoni":        "Derivative-based (Bigoni et al. 2022)",
+    "bigoni_walkback": "Derivative-based + Walkback (Modified Bigoni)",
 }
 
 

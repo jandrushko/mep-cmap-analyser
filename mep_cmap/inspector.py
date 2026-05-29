@@ -19,6 +19,8 @@ from tkinter import ttk, scrolledtext
 from .compat import _np_trapz, _np_ptp
 from .detection import (detect_mep_onset_peak_fraction,
                         detect_mep_onset_bootstrap,
+                        detect_mep_onset_bigoni,
+                        detect_mep_onset_bigoni_walkback,
                         detect_csp_bootstrap)
 
 class DraggablePoint:
@@ -123,6 +125,8 @@ class DataInspectorWindow:
                  visible_pre_ms=None,
                  onset_method="peak_fraction",
                  onset_bootstrap_crit=1.96, onset_bootstrap_n=500,
+                 onset_bigoni_smooth_ms=0.5, onset_bigoni_min_run_ms=0.5,
+                 onset_bigoni_walkback_sd=1.0,
                  csp_search_start_ms=40, csp_search_end_ms=400,
                  csp_min_silence_ms=25, csp_min_return_ms=40,
                  csp_criterion=1.96, csp_significance=0.99,
@@ -151,9 +155,12 @@ class DataInspectorWindow:
         # visible_pre_ms: how much pre-stim to SHOW (xlim)
         # _analysis_pre_ms: full pre-stim used for detection (may be larger)
         self.visible_pre_ms       = visible_pre_ms
-        self.onset_method         = onset_method
-        self.onset_bootstrap_crit = onset_bootstrap_crit
-        self.onset_bootstrap_n    = onset_bootstrap_n
+        self.onset_method              = onset_method
+        self.onset_bootstrap_crit      = onset_bootstrap_crit
+        self.onset_bootstrap_n         = onset_bootstrap_n
+        self.onset_bigoni_smooth_ms    = onset_bigoni_smooth_ms
+        self.onset_bigoni_min_run_ms   = onset_bigoni_min_run_ms
+        self.onset_bigoni_walkback_sd  = onset_bigoni_walkback_sd
         self.csp_search_start_ms  = csp_search_start_ms
         self.csp_search_end_ms    = csp_search_end_ms
         self.csp_min_silence_ms   = csp_min_silence_ms
@@ -499,9 +506,10 @@ class DataInspectorWindow:
         _pre_ms = (self._analysis_pre_ms
                    if self._analysis_pre_ms is not None
                    else abs(int(self.t[0])))
+        _lat = self.latency_map.get(self.cur_type, (10.0, 50.0))
+        _min_lat, _max_lat = _lat if _lat else (10.0, 50.0)
+
         if self.onset_method == "bootstrap":
-            _lat = self.latency_map.get(self.cur_type, (10.0, 50.0))
-            _min_lat, _max_lat = _lat if _lat else (10.0, 50.0)
             onset_ms = detect_mep_onset_bootstrap(
                            emg, fs,
                            pre_ms=_pre_ms,
@@ -511,12 +519,33 @@ class DataInspectorWindow:
                            max_latency_ms=_max_lat,
                            criterion=self.onset_bootstrap_crit,
                            n_boot=self.onset_bootstrap_n)
+        elif self.onset_method == "bigoni":
+            onset_ms = detect_mep_onset_bigoni(
+                           emg, fs,
+                           pre_ms=_pre_ms,
+                           search_start_ms=self.ptp_start_ms or 10,
+                           search_end_ms=self.ptp_end_ms or 50,
+                           min_latency_ms=_min_lat,
+                           max_latency_ms=_max_lat,
+                           smooth_window_ms=self.onset_bigoni_smooth_ms,
+                           min_run_ms=self.onset_bigoni_min_run_ms)
+        elif self.onset_method == "bigoni_walkback":
+            onset_ms = detect_mep_onset_bigoni_walkback(
+                           emg, fs,
+                           pre_ms=_pre_ms,
+                           search_start_ms=self.ptp_start_ms or 10,
+                           search_end_ms=self.ptp_end_ms or 50,
+                           min_latency_ms=_min_lat,
+                           max_latency_ms=_max_lat,
+                           smooth_window_ms=self.onset_bigoni_smooth_ms,
+                           min_run_ms=self.onset_bigoni_min_run_ms,
+                           walkback_sd_mult=self.onset_bigoni_walkback_sd)
         else:
             onset_ms = detect_mep_onset_peak_fraction(
                            emg, fs,
                            pre_ms=_pre_ms,
                            poststim_start_ms=self.ptp_start_ms or 10,
-                           poststim_end_ms=self.ptp_end_ms   or 50)
+                           poststim_end_ms=self.ptp_end_ms or 50)
         stim_idx = np.argmin(np.abs(self.t))
         onset    = stim_idx if onset_ms is None else stim_idx + int(round(onset_ms / dt_ms))
         onset    = max(onset, stim_idx)

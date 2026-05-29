@@ -22,8 +22,9 @@ DEFAULTS   = {
     "onset_bootstrap_crit":     1.96,
     "onset_bootstrap_n":        500,
     # Bigoni method parameters
-    "onset_bigoni_smooth_ms":   2.0,
-    "onset_bigoni_min_run_ms":  1.0,
+    "onset_bigoni_smooth_ms":   0.5,
+    "onset_bigoni_min_run_ms":  0.5,
+    "onset_bigoni_walkback_sd": 1.0,
 }
 
 # ── Canonical latency profiles ────────────────────────────────────────────────
@@ -169,18 +170,23 @@ class Preferences:
 
     @property
     def onset_bigoni_smooth_ms(self) -> float:
-        return float(self._data.get("onset_bigoni_smooth_ms", 2.0))
+        return float(self._data.get("onset_bigoni_smooth_ms", 0.5))
 
     @property
     def onset_bigoni_min_run_ms(self) -> float:
-        return float(self._data.get("onset_bigoni_min_run_ms", 1.0))
+        return float(self._data.get("onset_bigoni_min_run_ms", 0.5))
+
+    @property
+    def onset_bigoni_walkback_sd(self) -> float:
+        return float(self._data.get("onset_bigoni_walkback_sd", 1.0))
 
     def set_onset_prefs(self, method: str,
                         peak_frac: float, min_peak_amplitude: float,
                         slope_threshold: float,
                         bootstrap_crit: float, bootstrap_n: int,
-                        bigoni_smooth_ms: float = 2.0,
-                        bigoni_min_run_ms: float = 1.0):
+                        bigoni_smooth_ms: float = 0.5,
+                        bigoni_min_run_ms: float = 0.5,
+                        bigoni_walkback_sd: float = 1.0):
         """Persist all onset detection preferences."""
         self._data["onset_method"]              = method
         self._data["onset_peak_frac"]           = round(float(peak_frac), 4)
@@ -190,6 +196,7 @@ class Preferences:
         self._data["onset_bootstrap_n"]         = int(bootstrap_n)
         self._data["onset_bigoni_smooth_ms"]    = round(float(bigoni_smooth_ms), 2)
         self._data["onset_bigoni_min_run_ms"]   = round(float(bigoni_min_run_ms), 2)
+        self._data["onset_bigoni_walkback_sd"]  = round(float(bigoni_walkback_sd), 2)
         self.save()
 
     # ── DPI / scaling ─────────────────────────────────────────────────────────
@@ -299,11 +306,18 @@ def open_preferences_dialog(root, on_apply=None):
 
     win = tk.Toplevel(root)
     win.title("Preferences")
-    win.transient(root)
+    # win.transient(root)
     win.resizable(True, True)
 
+    win.rowconfigure(0, weight=1)
+    win.rowconfigure(1, weight=0)
+    win.columnconfigure(0, weight=1)
+
     notebook = ttk.Notebook(win)
-    notebook.pack(fill="both", expand=True, padx=10, pady=(10, 0))
+    notebook.grid(row=0, column=0, sticky="nsew", padx=10, pady=(10, 0))
+
+    btn_row = tk.Frame(win)
+    btn_row.grid(row=1, column=0, pady=(6, 12))
 
     # ── Tab 1: Font & UI ──────────────────────────────────────────────────────
     font_tab = tk.Frame(notebook)
@@ -450,6 +464,14 @@ def open_preferences_dialog(root, on_apply=None):
             "backward scan within the physiological latency window. More robust\n"
             "on noisy or low-amplitude signals."
         ),
+        "bigoni_walkback": (
+            "Derivative-based + Walkback (Modified Bigoni)\n\n"
+            "Runs the Bigoni derivative algorithm to find the steepest rising\n"
+            "edge, then walks back to the true point of departure from\n"
+            "baseline. Corrects the systematic late-placement of the standard\n"
+            "Bigoni method on clean waveforms. The SD multiplier controls\n"
+            "how far back the walkback travels — lower = earlier onset."
+        ),
         "bigoni": (
             "Derivative-based (Bigoni et al. 2022)\n\n"
             "Identifies the onset as the start of the longest sustained positive\n"
@@ -473,7 +495,8 @@ def open_preferences_dialog(root, on_apply=None):
 
     for key, label in [("peak_fraction", "Peak Fraction"),
                         ("bootstrap",    "Bootstrap Threshold"),
-                        ("bigoni",       "Derivative-based (Bigoni et al. 2022)")]:
+                        ("bigoni",       "Derivative-based (Bigoni et al. 2022)"),
+                        ("bigoni_walkback", "Derivative-based + Walkback (Modified Bigoni)")]:
         tk.Radiobutton(radio_frame, text=label, variable=method_var,
                        value=key, command=_update_desc)\
             .pack(anchor="w", pady=2)
@@ -506,10 +529,12 @@ def open_preferences_dialog(root, on_apply=None):
     _pf_row(bs_frame, "Bootstrap iterations",       bs_n_var,    1)
 
     # Bigoni parameters
-    bg_frame = tk.LabelFrame(det_tab, text="Derivative-based parameters", padx=10, pady=8)
+    bg_frame = tk.LabelFrame(det_tab, text="Derivative-based parameters", padx=10, pady=12)
+
 
     bg_smooth_var  = tk.StringVar(value=str(prefs.onset_bigoni_smooth_ms))
     bg_run_var     = tk.StringVar(value=str(prefs.onset_bigoni_min_run_ms))
+    bg_wb_sd_var   = tk.StringVar(value=str(prefs.onset_bigoni_walkback_sd))
 
     _pf_row(bg_frame, "Smoothing window (ms)",      bg_smooth_var, 0)
     _pf_row(bg_frame, "Min positive run (ms)",      bg_run_var,    1)
@@ -520,17 +545,27 @@ def open_preferences_dialog(root, on_apply=None):
              fg="grey", justify="left").grid(row=2, column=0, columnspan=2,
                                              sticky="w", pady=(4, 0))
 
+    wb_frame = tk.LabelFrame(det_tab, text="Walkback parameters", padx=10, pady=8)
+    _pf_row(wb_frame, "Walkback SD multiplier", bg_wb_sd_var, 0)
+    tk.Label(wb_frame, text="Lower = earlier onset. Default 1.0.",
+             fg="grey", justify="left").grid(row=1, column=0, columnspan=2,
+                                             sticky="w", pady=(4, 0))
+
     def _toggle_param_frames():
         m = method_var.get()
         bs_frame.pack_forget()
         pf_frame.pack_forget()
         bg_frame.pack_forget()
+        wb_frame.pack_forget()
         if m == "peak_fraction":
             pf_frame.pack(anchor="w", padx=16, pady=(0, 8), fill="x")
         elif m == "bootstrap":
             bs_frame.pack(anchor="w", padx=16, pady=(0, 8), fill="x")
         elif m == "bigoni":
             bg_frame.pack(anchor="w", padx=16, pady=(0, 8), fill="x")
+        elif m == "bigoni_walkback":
+            bg_frame.pack(anchor="w", padx=16, pady=(0, 4), fill="x")
+            wb_frame.pack(anchor="w", padx=16, pady=(0, 8), fill="x")
 
     # Initialise
     _update_desc()
@@ -540,8 +575,6 @@ def open_preferences_dialog(root, on_apply=None):
         # Font scale
         prefs.set_font_scale(scale_var.get() / 100.0)
         apply_scaling(root)
-        if on_apply:
-            on_apply(root)
 
         # Latency profiles
         updated = []
@@ -567,26 +600,28 @@ def open_preferences_dialog(root, on_apply=None):
             n    = int(bs_n_var.get())
             bsm  = float(bg_smooth_var.get())
             brn  = float(bg_run_var.get())
-            prefs.set_onset_prefs(method_var.get(), pf, mpa, slp, crit, n, bsm, brn)
+            bwb  = float(bg_wb_sd_var.get())
+            prefs.set_onset_prefs(method_var.get(), pf, mpa, slp, crit, n, bsm, brn, bwb)
         except ValueError:
             pass
+
+        if on_apply:
+            on_apply(root)
 
     def _reset_font():
         scale_var.set(100); _apply()
 
-    btn_row = tk.Frame(win)
-    btn_row.pack(pady=(6, 12))
     tk.Button(btn_row, text="Apply",           width=10, command=_apply).pack(side="left", padx=4)
     tk.Button(btn_row, text="Reset font 100%", width=14, command=_reset_font).pack(side="left", padx=4)
     tk.Button(btn_row, text="Cancel",          width=10, command=win.destroy).pack(side="left", padx=4)
 
     win.update_idletasks()
+    sw = win.winfo_screenwidth()
+    sh = win.winfo_screenheight()
+    w  = min(900, int(sw * 0.75))
+    h  = min(750, int(sh * 0.80))
+    x  = (sw - w) // 2
+    y  = (sh - h) // 2
+    win.geometry(f"{w}x{h}+{x}+{y}")
     win.minsize(700, 520)
-    try:
-        win.state("zoomed")          # Windows / Linux maximise
-    except Exception:
-        # macOS doesn't support "zoomed" — use screen dimensions instead
-        sw = win.winfo_screenwidth()
-        sh = win.winfo_screenheight()
-        win.geometry(f"{sw}x{sh}+0+0")
     win.grab_set()

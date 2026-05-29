@@ -9,17 +9,20 @@ Derivative-based MEP onset detector based on the method described in:
     J Neural Eng. 19 (2022) 024002.
     https://doi.org/10.1088/1741-2552/ac636c
 
-The algorithm does not rely on pre-stimulus baseline statistics and therefore
-does not require 'magic numbers' for threshold tuning. It identifies the onset
-as the start of the steepest sustained rising edge in the MEP waveform.
+Original implementation: https://github.com/clovbig/MEP_latency
 
-Key adaptation for MEP-CMAP Analyser:
-- Variable sampling rate (not fixed to 3 kHz)
-- Variable search window (not fixed to 10–50 ms)
+The algorithm does not rely on pre-stimulus baseline statistics and therefore
+does not require threshold tuning. It identifies the onset as the start of
+the longest consecutive run of positive-derivative samples in the rising edge
+of the MEP waveform.
+
+Adaptations for MEP-CMAP Analyser:
+- Variable sampling rate (original fixed to 3 kHz)
+- Variable search window (original fixed to 10–50 ms)
 - Physiological latency bounds (min_latency_ms / max_latency_ms)
-- Active-contraction compatibility: works on the raw signal rather than
-  requiring near-silent pre-stimulus baseline
-- Returns None rather than a floor value when detection is uncertain
+- Optional Savitzky-Golay smoothing before differentiation
+- min_run_ms expressed in time rather than samples (sampling-rate agnostic)
+- Returns None rather than 'nan' when detection fails
 
   • detect_mep_onset_bigoni
 """
@@ -36,29 +39,32 @@ def detect_mep_onset_bigoni(
         min_latency_ms=None,
         max_latency_ms=None,
         min_peak_amplitude=0.05,
-        smooth_window_ms=2.0,
-        min_run_ms=1.0,
+        smooth_window_ms=0.5,
+        min_run_ms=0.5,
         artefact_blank_ms=2.0):
     """
     Derivative-based MEP onset detector (Bigoni et al., J Neural Eng 2022).
 
-    Algorithm
-    ---------
-    1.  Extract the post-stimulus search window [search_start_ms, search_end_ms].
-    2.  Apply amplitude gate — return None if no MEP is present.
-    3.  Optionally smooth with a Savitzky-Golay filter to reduce derivative noise.
-    4.  Find the dominant peak (max absolute value) and its polarity.
-    5.  If the MEP is negative-first (trough before peak), negate the window so
-        the dominant deflection always rises positively — this ensures the
-        derivative approach works correctly for biphasic MEPs of either polarity.
-    6.  Compute the approximate first derivative (np.diff) of the rectified
-        signal from the start of the window up to and including the dominant peak.
-    7.  Find all consecutive runs of positive derivative samples.
-    8.  Select the longest such run — this corresponds to the steepest sustained
-        rising edge of the MEP, which is the most reliable indicator of onset.
-    9.  The onset is the first sample of that longest run.
-   10.  Apply physiological bounds: clamp to [min_latency_ms, max_latency_ms].
-        Return None if the result falls outside the window after clamping.
+    Faithful implementation of the double-diff run-finding algorithm from
+    https://github.com/clovbig/MEP_latency (epoch_c.py, latency_bigoni_method)
+    with adaptations for variable sampling rate and search windows.
+
+    Algorithm (matching original)
+    ------------------------------
+    1.  Extract the post-stimulus search window.
+    2.  Amplitude gate — return None if no MEP present.
+    3.  Optional Savitzky-Golay smoothing.
+    4.  Find positive peak (argmax) and negative peak (argmin).
+    5.  If negative peak comes before positive peak, negate the signal
+        so the dominant deflection always rises positively.
+    6.  Compute np.diff over signal[:p_peak] — the rising portion only.
+    7.  Find indices where derivative > 0 (idx_positive).
+    8.  Find consecutive pairs within idx_positive (idx_positive_diff).
+    9.  Find consecutive pairs within idx_positive_diff (idx_positive_diff_diff).
+   10.  Split into chunks; find the longest chunk >= min_run_samp.
+   11.  Onset = idx_positive[idx_positive_diff[c_longest[0]]] mapped back
+        to the full signal index space.
+   12.  Apply physiological bounds — return None if outside.
 
     Parameters
     ----------
@@ -72,13 +78,12 @@ def detect_mep_onset_bigoni(
     max_latency_ms      : float or None   physiological ceiling (ms post-stim).
                           If None, defaults to search_end_ms.
     min_peak_amplitude  : float           amplitude gate in mV (default 0.05)
-    smooth_window_ms    : float           Savitzky-Golay window in ms (default 2.0 ms).
-                          Set to 0 to disable smoothing.
-    min_run_ms          : float           minimum length of positive-derivative run
-                          to be considered as a candidate onset (default 1.0 ms).
-                          Prevents single-sample noise spikes from being selected.
+    smooth_window_ms    : float           Savitzky-Golay window in ms (default 0.5).
+                          Set to 0 to disable. Small values preserve edge sharpness.
+    min_run_ms          : float           minimum chunk length in ms (default 0.5).
+                          Equivalent to min_len=4 samples at 3 kHz in the original.
     artefact_blank_ms   : float           hard floor — onset never placed before
-                          this time (ms post-stim), regardless of other settings.
+                          this time (ms post-stim).
 
     Returns
     -------
@@ -87,10 +92,10 @@ def detect_mep_onset_bigoni(
     ms_per_samp = 1000.0 / fs
 
     # ── Index arithmetic ──────────────────────────────────────────────────────
-    stim_idx     = int(pre_ms * fs / 1000)
-    win_start    = int((pre_ms + search_start_ms) * fs / 1000)
-    win_end      = int((pre_ms + search_end_ms)   * fs / 1000)
-    win_end      = min(win_end, len(signal))
+    stim_idx  = int(pre_ms * fs / 1000)
+    win_start = int((pre_ms + search_start_ms) * fs / 1000)
+    win_end   = int((pre_ms + search_end_ms)   * fs / 1000)
+    win_end   = min(win_end, len(signal))
 
     if win_start >= win_end or win_start >= len(signal):
         return None
@@ -98,7 +103,7 @@ def detect_mep_onset_bigoni(
     # Physiological bounds
     _min_lat = min_latency_ms if min_latency_ms is not None else artefact_blank_ms
     _max_lat = max_latency_ms if max_latency_ms is not None else search_end_ms
-    _min_lat = max(_min_lat, artefact_blank_ms)  # hard floor
+    _min_lat = max(_min_lat, artefact_blank_ms)
 
     # ── Amplitude gate ────────────────────────────────────────────────────────
     window = signal[win_start:win_end].copy()
@@ -110,8 +115,6 @@ def detect_mep_onset_bigoni(
         return None
 
     # ── Optional smoothing ────────────────────────────────────────────────────
-    # Savitzky-Golay smoothing reduces derivative noise without shifting edges.
-    # Window length must be odd and >= 3.
     if smooth_window_ms > 0:
         sg_win = max(3, int(smooth_window_ms * fs / 1000))
         if sg_win % 2 == 0:
@@ -119,66 +122,58 @@ def detect_mep_onset_bigoni(
         if sg_win < len(window):
             window = savgol_filter(window, window_length=sg_win, polyorder=2)
 
-    # ── Step 4: find dominant peak and polarity ───────────────────────────────
-    # Use the max absolute value as the dominant peak.
-    abs_window   = np.abs(window)
-    peak_local   = int(np.argmax(abs_window))   # index within window
+    # ── Steps 4–5: polarity correction (faithful to original) ────────────────
+    p_peak = int(np.argmax(window))
+    n_peak = int(np.argmin(window))
 
-    # Determine polarity: is the dominant peak positive or negative?
-    # If negative (trough before peak in original), negate so the rising
-    # edge always goes upward — required for derivative logic.
-    if window[peak_local] < 0:
+    if p_peak > n_peak:
+        # Negative deflection comes first — negate so dominant rise is positive
         window = -window
+        p_peak = int(np.argmax(window))
 
-    # ── Step 5: slice from window start to (inclusive of) dominant peak ───────
-    # Only examine the rising portion of the MEP.
-    rise_segment = window[:peak_local + 1]
-    if len(rise_segment) < 2:
+    if p_peak < 2:
         return None
 
-    # ── Step 6: approximate first derivative ─────────────────────────────────
-    deriv = np.diff(rise_segment)       # length = len(rise_segment) - 1
+    # ── Step 6: first derivative over rising portion only ────────────────────
+    first_derv = np.diff(window[:p_peak])
 
-    # ── Step 7–8: find all positive-derivative runs, pick the longest ─────────
+    # ── Steps 7–9: double-diff run finding (faithful to original) ────────────
+    idx_positive = np.argwhere(first_derv > 0).flatten()
+    if len(idx_positive) < 2:
+        return None
+
+    idx_positive_diff = np.where(np.diff(idx_positive) == 1)[0]
+    if len(idx_positive_diff) < 2:
+        return None
+
+    idx_positive_diff_diff = np.where(np.diff(idx_positive_diff) == 1)[0]
+    if len(idx_positive_diff_diff) == 0:
+        return None
+
+    # Split into chunks of consecutive indices
+    split_points = (np.where(np.diff(idx_positive_diff_diff) > 1)[0] + 1).tolist()
+    chunks = np.split(idx_positive_diff_diff, split_points)
+
+    # ── Step 10: find the longest chunk >= min_run_samp ───────────────────────
     min_run_samp = max(1, int(min_run_ms * fs / 1000))
-    positive     = deriv > 0
+    c_longest    = None
+    max_len      = min_run_samp
 
-    # Run-length encode the positive mask
-    best_start  = None
-    best_len    = 0
-    run_start   = None
+    for c in chunks:
+        if len(c) > max_len:
+            max_len   = len(c)
+            c_longest = c
 
-    for i, p in enumerate(positive):
-        if p:
-            if run_start is None:
-                run_start = i
-        else:
-            if run_start is not None:
-                run_len = i - run_start
-                if run_len > best_len:
-                    best_len  = run_len
-                    best_start = run_start
-                run_start = None
-
-    # Handle run extending to the end
-    if run_start is not None:
-        run_len = len(positive) - run_start
-        if run_len > best_len:
-            best_len   = run_len
-            best_start = run_start
-
-    # No qualifying positive run found
-    if best_start is None or best_len < min_run_samp:
+    if c_longest is None:
         return None
 
-    # ── Step 9: onset = first sample of the longest positive-derivative run ───
-    # best_start is an index into `deriv`, which is offset by 1 from `window`.
-    # Adding win_start converts back to the full-signal index space.
-    onset_in_window = best_start          # index in rise_segment / window
+    # ── Step 11: map onset back to full signal index space ────────────────────
+    # Matches original: idx_positive[idx_positive_diff[c_longest[0]]]
+    onset_in_window = int(idx_positive[idx_positive_diff[c_longest[0]]])
     onset_global    = win_start + onset_in_window
     latency_ms      = (onset_global - stim_idx) * ms_per_samp
 
-    # ── Step 10: physiological bounds check ──────────────────────────────────
+    # ── Step 12: physiological bounds check ──────────────────────────────────
     if latency_ms < _min_lat or latency_ms > _max_lat:
         return None
 

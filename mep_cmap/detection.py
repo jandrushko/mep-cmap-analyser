@@ -20,6 +20,7 @@ from .detection import (                          # noqa: F401
     detect_mep_onset_peak_fraction,
     detect_mep_onset_bootstrap,
     detect_mep_onset_bigoni,
+    detect_mep_onset_bigoni_walkback,
     # Silent period
     detect_csp_bootstrap,
     # Shared baseline
