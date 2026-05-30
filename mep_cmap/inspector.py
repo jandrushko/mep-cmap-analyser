@@ -210,7 +210,6 @@ class DataInspectorWindow:
 
         self.fig = plt.Figure(figsize=(12, 6))
         self.ax_raw = self.fig.add_subplot(111)
-        self.ax_abs = None                                     # build on-demand
         self.canvas = FigureCanvasTkAgg(self.fig, master=self.fig_frame)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
 
@@ -295,8 +294,9 @@ class DataInspectorWindow:
         self.cur_idx  = 0
         self.dd_event.current(0)
 
-        # Span selector (created on demand)
+        # Span selector and fill collections (on main plot)
         self._auc_span = None
+        self._auc_fill = []
 
         # Maximise the inspector window on open — gives the most room for
         # the figure and makes marker placement much easier.
@@ -716,44 +716,68 @@ class DataInspectorWindow:
         self.ax_raw.legend(loc="upper right", fontsize=12, frameon=False)
         self.fig._draggables = self._dpts
 
-        # ---------- AUC panel ------------------------------------------------
-        show_auc = self.enable_auc.get()
+        # ---------- AUC selector on main plot --------------------------------
+        # Remove any previous fill patches
+        for _fc in self._auc_fill:
+            try: _fc.remove()
+            except Exception: pass
+        self._auc_fill = []
 
-        if show_auc and self.ax_abs is None:
-            self.ax_abs = self.fig.add_axes([0.12, 0.10, 0.85, 0.25],
-                                            sharex=self.ax_raw)
-        elif not show_auc and self.ax_abs is not None:
-            self.fig.delaxes(self.ax_abs)
-            self.ax_abs = None
+        show_auc = self.enable_auc.get()
+        if not show_auc:
             if self._auc_span is not None:
                 self._auc_span.set_visible(False)
                 self._auc_span = None
+        else:
+            def _draw_auc_fill(a0, a1):
+                for _fc in self._auc_fill:
+                    try: _fc.remove()
+                    except Exception: pass
+                self._auc_fill = []
+                t_win   = self.t[a0:a1]
+                emg_win = emg[a0:a1]
+                fc_pos = self.ax_raw.fill_between(
+                    t_win, 0, emg_win,
+                    where=(emg_win >= 0),
+                    alpha=0.35, color="tab:blue", zorder=2)
+                fc_neg = self.ax_raw.fill_between(
+                    t_win, 0, emg_win,
+                    where=(emg_win < 0),
+                    alpha=0.35, color="tab:blue", zorder=2)
+                self._auc_fill = [fc_pos, fc_neg]
+                self.canvas.draw_idle()
 
-        if show_auc:
-            self.ax_abs.clear()
-            # Show the unrectified waveform so the shape is easy to read;
-            # AUC is still computed on the rectified signal in _refresh_status.
-            self.ax_abs.plot(self.t, emg, color="0.4", lw=0.8)
-            self.ax_abs.axhline(0, color="k", lw=0.5, ls=":")
-            self.ax_abs.set_ylabel(self._ylab("EMG (AUC selector)"))
-            # Shade any already-stored AUC window on the unrectified plot.
             if "auc_start_idx" in m and "auc_end_idx" in m:
-                a0, a1 = m["auc_start_idx"], m["auc_end_idx"]
-                self.ax_abs.axvspan(self.t[a0], self.t[a1],
-                                    alpha=0.2, color="tab:blue", zorder=0)
+                _draw_auc_fill(m["auc_start_idx"], m["auc_end_idx"])
 
             def _auc_cb(x0, x1):
-                m["auc_start_idx"], m["auc_end_idx"] = sorted((
-                    np.argmin(np.abs(self.t - x0)),
-                    np.argmin(np.abs(self.t - x1))
+                i0, i1 = sorted((
+                    int(np.argmin(np.abs(self.t - x0))),
+                    int(np.argmin(np.abs(self.t - x1)))
                 ))
+                m["auc_start_idx"] = i0
+                m["auc_end_idx"]   = i1
+                _draw_auc_fill(i0, i1)
+                self._refresh_status()
+
+            def _auc_change_cb(span):
+                x0, x1 = span.extents
+                i0, i1 = sorted((
+                    int(np.argmin(np.abs(self.t - x0))),
+                    int(np.argmin(np.abs(self.t - x1)))
+                ))
+                m["auc_start_idx"] = i0
+                m["auc_end_idx"]   = i1
+                _draw_auc_fill(i0, i1)
                 self._refresh_status()
 
             self._auc_span = SpanSelector(
-                self.ax_abs, _auc_cb, "horizontal",
-                useblit=True,
-                props=dict(alpha=.30, facecolor="tab:blue"),
-                interactive=True
+                self.ax_raw, _auc_cb, "horizontal",
+                useblit=False,
+                props=dict(alpha=0.0, facecolor="tab:blue"),
+                interactive=True,
+                drag_from_anywhere=True,
+                onmove_callback=_auc_change_cb,
             )
 
             if "auc_start_idx" in m and "auc_end_idx" in m:
@@ -761,8 +785,9 @@ class DataInspectorWindow:
                                           self.t[m["auc_end_idx"]])
 
         # ---------- figure geometry ------------------------------------------
-        # When maximised, let the figure fill the available canvas height
-        # rather than forcing a fixed inch value that leaves empty space.
+        # AUC selector now lives on the main plot — no second subplot.
+        # Only adjust height for extra channel subplot if active.
+        has_extra = bool(self._extra_axes)
         try:
             _canvas_h_px = self.canvas.get_tk_widget().winfo_height()
             _canvas_w_px = self.canvas.get_tk_widget().winfo_width()
@@ -771,18 +796,14 @@ class DataInspectorWindow:
                 _fig_h = _canvas_h_px / _dpi
                 _fig_w = _canvas_w_px / _dpi
             else:
-                _fig_h = self.FIG_H_RAW + (self.FIG_H_EXTRA if show_auc else 0)
+                _fig_h = self.FIG_H_RAW + (self.FIG_H_EXTRA if has_extra else 0)
                 _fig_w = 12
         except Exception:
-            _fig_h = self.FIG_H_RAW + (self.FIG_H_EXTRA if show_auc else 0)
+            _fig_h = self.FIG_H_RAW + (self.FIG_H_EXTRA if has_extra else 0)
             _fig_w = 12
 
         self.fig.set_size_inches(_fig_w, _fig_h)
-
-        if show_auc:
-            self.ax_raw.set_position([0.07, 0.42, 0.90, 0.53])
-            self.ax_abs.set_position([0.07, 0.10, 0.90, 0.25])
-        else:
+        if not has_extra:
             self.ax_raw.set_position([0.07, 0.10, 0.90, 0.85])
         
         self._resize_window()
@@ -837,8 +858,7 @@ class DataInspectorWindow:
         chan_name = self._extra_chan_var.get()
         if chan_name == "None" or chan_name not in self._extra_segs:
             # Only reset to full height if AUC panel is not visible
-            if self.ax_abs is None:
-                self.ax_raw.set_position([0.10, 0.12, 0.87, 0.80])
+            self.ax_raw.set_position([0.07, 0.10, 0.90, 0.85])
             self.canvas.draw_idle()
             return
 
@@ -846,8 +866,7 @@ class DataInspectorWindow:
         # Expect new format: {"emg": array, "time": array, "fs": float,
         #                     "stim_times": {stim_type: [t_sec, ...]}}
         if not isinstance(chan_data, dict) or "emg" not in chan_data:
-            if self.ax_abs is None:
-                self.ax_raw.set_position([0.10, 0.12, 0.87, 0.80])
+            self.ax_raw.set_position([0.07, 0.10, 0.90, 0.85])
             self.canvas.draw_idle()
             return
 
@@ -873,9 +892,7 @@ class DataInspectorWindow:
         # Time axis in ms relative to stim
         t_wide_ms = (time_full[_s:_e] - t0_sec) * 1000.0
 
-        # ── Layout: position ax_raw + ax_abs (AUC) + ax_ex (extra) ──────────
-        show_auc = self.ax_abs is not None
-
+        # ── Layout: ax_raw (top) + ax_ex (extra channel, bottom) ────────────
         try:
             _canvas_h_px = self.canvas.get_tk_widget().winfo_height()
             _canvas_w_px = self.canvas.get_tk_widget().winfo_width()
@@ -884,23 +901,15 @@ class DataInspectorWindow:
                 _fig_h = _canvas_h_px / _dpi
                 _fig_w = _canvas_w_px / _dpi
             else:
-                _fig_h = self.FIG_H_RAW + self.FIG_H_EXTRA * (2 if show_auc else 1)
+                _fig_h = self.FIG_H_RAW + self.FIG_H_EXTRA
                 _fig_w = 12
         except Exception:
-            _fig_h = self.FIG_H_RAW + self.FIG_H_EXTRA * (2 if show_auc else 1)
+            _fig_h = self.FIG_H_RAW + self.FIG_H_EXTRA
             _fig_w = 12
 
         self.fig.set_size_inches(_fig_w, _fig_h)
-
-        if show_auc:
-            # AUC + extra channel: 3-panel layout
-            self.ax_raw.set_position([0.07, 0.62, 0.90, 0.33])
-            self.ax_abs.set_position([0.07, 0.36, 0.90, 0.22])
-            ax_ex = self.fig.add_axes([0.07, 0.07, 0.90, 0.22])
-        else:
-            # extra channel only: 2-panel layout
-            self.ax_raw.set_position([0.07, 0.52, 0.90, 0.43])
-            ax_ex = self.fig.add_axes([0.07, 0.10, 0.90, 0.35])
+        self.ax_raw.set_position([0.07, 0.52, 0.90, 0.43])
+        ax_ex = self.fig.add_axes([0.07, 0.10, 0.90, 0.35])
 
         self._extra_axes.append(ax_ex)
         self._resize_window()

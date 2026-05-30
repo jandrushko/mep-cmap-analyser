@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mep-cmap-analyser"
-version = "0.9.9.7"
+version = "0.9.9.8"
 description = "BIDS-compliant TMS/EMG neurophysiology analysis tool for MEP and CMAP quantification"
 readme = "README.md"
 license = { file = "LICENSE" }
