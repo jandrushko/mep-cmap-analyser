@@ -3840,7 +3840,10 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin):
         EXCLUDE = ("metric_definitions", "metrics_definitions",
                    "channel_info", "_readme")
         import glob as _glob
-        _EXTS = ("*.txt", "*.smr", "*.adibin", "*.edf", "*.bdf")
+        # Only the BrainVision .vhdr header is globbed — never .eeg/.vmrk —
+        # so each recording enters the queue once, not three times.
+        _EXTS = ("*.txt", "*.smr", "*.adibin", "*.edf", "*.bdf",
+                 "*.vhdr", "*.acq")
         all_files = []
         for _pat in _EXTS:
             all_files.extend(_glob.glob(os.path.join(raw, "**", _pat), recursive=True))
@@ -3889,7 +3892,10 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin):
             "_readme",
         )
         import glob as _glob
-        _EXTS = ("*.txt", "*.smr", "*.adibin", "*.edf", "*.bdf")
+        # Only the BrainVision .vhdr header is globbed — never .eeg/.vmrk —
+        # so each recording enters the queue once, not three times.
+        _EXTS = ("*.txt", "*.smr", "*.adibin", "*.edf", "*.bdf",
+                 "*.vhdr", "*.acq")
         all_files = []
         for _pat in _EXTS:
             all_files.extend(_glob.glob(os.path.join(folder, "**", _pat), recursive=True))
@@ -3924,10 +3930,15 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin):
         fpaths = filedialog.askopenfilenames(
             title="Select data file(s)",
             filetypes=[
-                ("All supported formats", "*.txt *.smr *.adibin *.edf *.bdf"),
+                ("All supported formats",
+                 "*.txt *.smr *.adibin *.edf *.bdf *.vhdr *.acq *.mat *.csv"),
                 ("Spike2 / LabChart text export", "*.txt"),
                 ("Spike2 native", "*.smr"),
                 ("ADInstruments binary", "*.adibin"),
+                ("BrainVision header", "*.vhdr"),
+                ("BIOPAC AcqKnowledge", "*.acq"),
+                ("LabChart / AcqKnowledge MATLAB export", "*.mat"),
+                ("KinEMG / NI-DAQ CSV", "*.csv"),
                 ("BIDS EDF/BDF", "*.edf *.bdf"),
                 ("All files", "*.*"),
             ]
@@ -4023,6 +4034,42 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin):
             self.log("📋 BIDS EDF/BDF format — stim times from sidecar _events.tsv "
                      "(or EDF+ annotations)")
             # stim_events populated later via extract_stim_times in pipeline
+
+        elif _fmt in ('brainvision', 'labchart_mat', 'mne'):
+            # Marker-based formats: the file's own event labels define the stim
+            # types, so they must be read at load time.  Without this branch the
+            # format falls through to the Spike2 text scanner below, stim_events
+            # stays empty, stim_types_found is empty, and _build_labels_tab() is
+            # never called — the workflow silently stalls after the crop step.
+            _disp = {'brainvision': 'BrainVision',
+                     'labchart_mat': 'LabChart MATLAB export',
+                     'mne': 'MNE-supported'}.get(_fmt, _fmt)
+            self.marker_choice.set('A')
+            self.log(f"📋 {_disp} format detected — stim times from embedded "
+                     f"event markers")
+            try:
+                # '' = return every label; the marker argument is a filter for
+                # these readers, and at discovery time we want all stim types.
+                stim_events = extract_stim_times(fpath, '')
+            except Exception as _e:
+                self.log(f"   ⚠️  Could not read event markers: {_e}")
+                stim_events = {}
+            if stim_events:
+                self.available_markers = sorted(stim_events)
+                self.log("   Event labels found: " + ", ".join(
+                    f"{k} ({len(v)})" for k, v in sorted(stim_events.items())))
+            else:
+                self.log("   ⚠️  No event markers found in this recording")
+
+        elif _fmt in ('acqknowledge_acq', 'acqknowledge_mat', 'brainsight'):
+            # Trigger/marker-channel formats: one stim type, labelled by
+            # marker_choice — same contract as labchart / cfwb.
+            _disp = {'acqknowledge_acq': 'BIOPAC AcqKnowledge',
+                     'acqknowledge_mat': 'BIOPAC AcqKnowledge MATLAB export',
+                     'brainsight': 'Brainsight neuronavigation'}.get(_fmt, _fmt)
+            self.marker_choice.set('A')
+            self.log(f"📋 {_disp} format detected — stim times from event "
+                     f"markers / trigger channel")
 
         elif _fmt == 'spike2_smr':
             self.log("📋 Spike2 SMR format detected — reading via Neo")
@@ -4211,7 +4258,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin):
                 self.log(f"❌ Error reading SMR file: {e}")
                 return
 
-        else:
+        elif _fmt == 'spike2':
             # Spike2 text export: scan for DigMark channels and stim timestamps
             stim_pattern = re.compile(r'^([\d.]+)\s+"(.{1})\?\?\?"')
             try:
@@ -4238,6 +4285,30 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin):
             elif marker_set:
                 self.available_markers = sorted(marker_set)
                 self.marker_choice.set(next(iter(marker_set)))
+
+        else:
+            # No load-time handler for this format.
+            #
+            # Every value detect_format() can return must be represented in the
+            # chain above.  When one is not, stim_events stays empty, so
+            # stim_types_found is empty, so _build_labels_tab() is never called
+            # and the workflow stalls silently after the crop step with no error
+            # shown to the user.  This branch previously held the Spike2 text
+            # scanner, which meant any unhandled format was silently scanned for
+            # DigMark lines and found nothing.  Fail loudly instead.
+            #
+            # tests/test_format_coverage.py asserts this branch is unreachable.
+            self.log(f"⚠️  Format '{_fmt}' can be read but has no load-time "
+                     f"handler in _browse_file_path(), so its stimulus types "
+                     f"cannot be determined. Please report this bug.")
+            messagebox.showwarning(
+                "Format not wired into the workflow",
+                f"{os.path.basename(fpath)} was recognised as format "
+                f"'{_fmt}' and its data can be read, but the analysis "
+                f"workflow has no handler for it yet, so no stimulus types "
+                f"could be identified.\n\nPlease report this at:\n"
+                f"https://github.com/jandrushko/mep-cmap-analyser/issues",
+                parent=self.root)
         
         # ── populate inline channel dropdown
         chan_list = list_waveform_channels(fpath)
@@ -4406,7 +4477,8 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin):
                     return
 
         # ── Filter stim types to those with at least one event in the selected range
-        if _fmt in ('labchart', 'generic_tsv', 'cfwb'):
+        if _fmt in ('labchart', 'generic_tsv', 'cfwb',
+                    'acqknowledge_acq', 'acqknowledge_mat', 'brainsight'):
             _mc = self.marker_choice.get()
             stim_types_found = {_mc} if _mc else {'A'}
 
@@ -4458,12 +4530,13 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin):
             if stim_types_found:
                 self.log(f"   Marker codes in range: {', '.join(sorted(stim_types_found))}")
 
-        elif _fmt == 'edf':
-            # BIDS EDF/BDF: stim types come from the sidecar _events.tsv
-            # (or EDF+ annotations) — read the actual trial types present so the
-            # labels tab matches what the pipeline will produce.
+        elif _fmt in ('edf', 'brainvision', 'labchart_mat', 'mne'):
+            # Marker-based formats (BIDS EDF/BDF sidecar _events.tsv or EDF+
+            # annotations; BrainVision .vmrk; LabChart .mat comments; MNE
+            # annotations) — read the actual labels present so the labels tab
+            # matches what the pipeline will produce.
             try:
-                _all_stim = extract_stim_times(fpath, self.marker_choice.get())
+                _all_stim = extract_stim_times(fpath, '')
             except Exception as _e:
                 self.log(f"   ⚠️  Could not read events: {_e}")
                 _all_stim = {}

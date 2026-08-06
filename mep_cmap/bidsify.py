@@ -371,6 +371,75 @@ def read_back_signature(path: str, ref_counts=None) -> dict:
         r.close()
 
 
+# ── Multi-file source formats ─────────────────────────────────────────────────
+#
+# BrainVision splits one recording across a .vhdr header, a .vmrk marker file
+# and a binary data file (.eeg, or .dat/.seg for some exports).  Copying only
+# the file the user selected leaves an orphan in sourcedata/ that no reader can
+# open.  sourcedata_path preserves the original basename, so the header's
+# DataFile= / MarkerFile= pointers stay valid and need no rewriting — the
+# siblings simply have to travel with it.
+
+_BV_EXTS = ('.vhdr', '.vmrk', '.eeg', '.dat', '.seg')
+
+
+def _brainvision_members(src: str) -> list:
+    """Return every file belonging to a BrainVision recording, incl. `src`."""
+    base, ext = os.path.splitext(src)
+    vhdr = src if ext.lower() == '.vhdr' else base + '.vhdr'
+    members = {src}
+    if os.path.isfile(vhdr):
+        members.add(vhdr)
+        # Prefer the header's own DataFile=/MarkerFile= entries
+        try:
+            with open(vhdr, 'r', encoding='utf-8', errors='replace') as f:
+                for line in f:
+                    s = line.strip()
+                    if s.startswith(';'):
+                        continue
+                    for key in ('DataFile=', 'MarkerFile='):
+                        if s.startswith(key):
+                            cand = os.path.join(os.path.dirname(vhdr),
+                                                s[len(key):].strip())
+                            if os.path.isfile(cand):
+                                members.add(cand)
+        except Exception:
+            pass
+    # Basename fallback for anything the header did not name
+    for e in _BV_EXTS:
+        cand = os.path.splitext(vhdr)[0] + e
+        if os.path.isfile(cand):
+            members.add(cand)
+    return sorted(members)
+
+
+def _copy_source_siblings(src: str, dst: str) -> list:
+    """
+    Copy any companion files a multi-file format needs alongside `src`.
+
+    `src` has already been copied to `dst`; siblings are placed in the same
+    directory under their own basenames.  Returns the sibling paths copied.
+    """
+    ext = os.path.splitext(src)[1].lower()
+    if ext not in _BV_EXTS:
+        return []
+
+    dst_dir = os.path.dirname(dst)
+    copied = []
+    for member in _brainvision_members(src):
+        if os.path.abspath(member) == os.path.abspath(src):
+            continue                       # already copied as the primary
+        target = os.path.join(dst_dir, os.path.basename(member))
+        if os.path.abspath(member) == os.path.abspath(target):
+            continue                       # source == destination; nothing to do
+        try:
+            shutil.copy2(member, target)
+            copied.append(target)
+        except Exception:
+            pass                           # a missing sibling must not abort BIDS-ify
+    return copied
+
+
 # ── Sidecar / TSV writers ─────────────────────────────────────────────────────
 def _write_json(path: str, obj: dict) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -549,6 +618,9 @@ def execute_plan(plan: Plan,
             # 1) copy native → sourcedata (copy, never move)
             os.makedirs(os.path.dirname(pf.sourcedata_path), exist_ok=True)
             shutil.copy2(pf.item.source_path, pf.sourcedata_path)
+            for _sib in _copy_source_siblings(pf.item.source_path,
+                                              pf.sourcedata_path):
+                log(f"  + sibling: {os.path.basename(_sib)}")
 
             # 2) full read into a Recording
             rec = build_recording(pf.item.source_path,

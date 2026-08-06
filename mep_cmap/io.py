@@ -55,6 +55,7 @@ from .formats import brainvision  as _brainvision
 from .formats import edf          as _edf
 from .formats import cfwb        as _cfwb
 from .formats import generic_tsv as _generic_tsv
+from .formats import mne_bridge  as _mne_bridge   # optional; lazy-imports mne
 
 def _generic_has_config(file_path: str) -> bool:
     return _generic_tsv.has_config(file_path)
@@ -158,6 +159,13 @@ def detect_format(file_path: str) -> str:
     if _edf.is_edf(file_path):
         return 'edf'
 
+    # Optional MNE fallback — LAST resort, after every native reader has been
+    # consulted, so a validated reader can never be displaced.  Claims only an
+    # explicit allowlist of extensions no native reader owns, and only when
+    # MNE is actually installed.
+    if _mne_bridge.is_mne_readable(file_path):
+        return 'mne'
+
     with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
         first_line = f.readline()
         second_line = f.readline()
@@ -226,6 +234,8 @@ def list_waveform_channels(file_path: str) -> list:
         return _brainvision.list_waveform_channels(file_path)
     if fmt == 'edf':
         return _edf.list_waveform_channels(file_path)
+    if fmt == 'mne':
+        return _mne_bridge.list_waveform_channels(file_path)
     if fmt == 'brainsight':
         return _brainsight.list_waveform_channels(file_path)
     if fmt == 'labchart_mat':
@@ -254,9 +264,72 @@ def list_event_channels(file_path: str) -> list:
     return []
 
 
+# ── Amplitude unit normalisation ─────────────────────────────────────────────
+#
+# Readers return each channel in the file's *native* unit (BrainVision at
+# 0.1 µV resolution returns µV; Spike-2 and LabChart typically return mV).
+# The analysis pipeline, however, treats millivolts as the canonical unit:
+# LAT_COLS / SUM_HDR hardcode column names such as "PTP(mV)", "AUC(mV·s)" and
+# "cSP_MEP_Ratio(ms/mV)".  Without a conversion step a µV recording is written
+# into a column labelled mV — a silent 1000x error that leaves ratios and
+# Z-scores correct while every absolute amplitude is wrong.
+#
+# _to_mV() is the single conversion point.  It scales only when the reader's
+# unit string is unambiguously recognised, and passes the waveform through
+# untouched (preserving the original unit string) when the unit is unknown or
+# None, so behaviour is unchanged for readers that do not report a unit.
+
+_MV_SCALE = {
+    'v':          1e3,   'volt':       1e3,   'volts':      1e3,
+    'mv':         1.0,   'millivolt':  1.0,   'millivolts': 1.0,
+    'uv':         1e-3,  'microvolt':  1e-3,  'microvolts': 1e-3,
+    '\u00b5v':    1e-3,  # MICRO SIGN + V
+    '\u03bcv':    1e-3,  # GREEK SMALL LETTER MU + V
+    'nv':         1e-6,  'nanovolt':   1e-6,  'nanovolts':  1e-6,
+}
+
+# Records the most recent conversion as (native_unit, scale_factor) so callers
+# (e.g. the GUI log pane) can report what was applied.  None when no scaling
+# was needed or the unit was unrecognised.
+LAST_UNIT_CONVERSION = None
+
+
+def _to_mV(emg, unit):
+    """
+    Scale a waveform into millivolts based on its reader-reported unit.
+
+    Returns
+    -------
+    (emg, unit) : the waveform in mV and the canonical unit string 'mV' when
+                  the unit was recognised; otherwise the inputs unchanged.
+    """
+    global LAST_UNIT_CONVERSION
+    LAST_UNIT_CONVERSION = None
+
+    if unit is None:
+        return emg, unit
+
+    # Tolerate decoration seen in the wild: '*mV*', ' (µV) ', 'uV.'
+    key = str(unit).strip().strip('*').strip().strip('()[]').strip().rstrip('.')
+    scale = _MV_SCALE.get(key.lower())
+    if scale is None:
+        return emg, unit          # unrecognised — never guess, never scale
+    if scale == 1.0:
+        return emg, 'mV'          # already mV; canonicalise the label only
+
+    import numpy as _np
+    LAST_UNIT_CONVERSION = (str(unit).strip(), scale)
+    return _np.asarray(emg, dtype=float) * scale, 'mV'
+
+
 def extract_emg_waveform_and_fs(file_path: str, channel_idx: int = 0):
     """
     Load EMG waveform, sampling rate, and voltage unit for the given channel.
+
+    The waveform is normalised to millivolts — the canonical unit assumed by
+    the analysis pipeline and its hardcoded "(mV)" column headers — whenever
+    the underlying reader reports a recognised unit.  Readers that report no
+    unit are passed through unchanged.
 
     Parameters
     ----------
@@ -265,10 +338,17 @@ def extract_emg_waveform_and_fs(file_path: str, channel_idx: int = 0):
 
     Returns
     -------
-    emg  : np.ndarray  raw EMG samples
+    emg  : np.ndarray  EMG samples, in mV where the unit was recognised
     fs   : int         sampling frequency in Hz
-    unit : str | None  voltage unit (e.g. 'mV'), or None
+    unit : str | None  'mV' where normalised; the reader's own unit otherwise
     """
+    emg, fs, unit = _extract_emg_native(file_path, channel_idx)
+    emg, unit = _to_mV(emg, unit)
+    return emg, fs, unit
+
+
+def _extract_emg_native(file_path: str, channel_idx: int = 0):
+    """Dispatch to the format reader; returns the file's native unit."""
     file_path = _resolve_path(file_path)
     fmt = detect_format(file_path)
     if fmt == 'spike2_smr':
@@ -281,6 +361,8 @@ def extract_emg_waveform_and_fs(file_path: str, channel_idx: int = 0):
         return _brainvision.extract_emg_waveform_and_fs(file_path, channel_idx)
     if fmt == 'edf':
         return _edf.extract_emg_waveform_and_fs(file_path, channel_idx)
+    if fmt == 'mne':
+        return _mne_bridge.extract_emg_waveform_and_fs(file_path, channel_idx)
     if fmt == 'brainsight':
         return _brainsight.extract_emg_waveform_and_fs(file_path, channel_idx)
     if fmt == 'labchart_mat':
@@ -322,6 +404,8 @@ def extract_stim_times(file_path: str, marker_name: str, stim_channel: str = Non
         return _brainvision.extract_stim_times(file_path, marker_name)
     if fmt == 'edf':
         return _edf.extract_stim_times(file_path, marker_name)
+    if fmt == 'mne':
+        return _mne_bridge.extract_stim_times(file_path, marker_name)
     if fmt == 'brainsight':
         return _brainsight.extract_stim_times(file_path, marker_name)
     if fmt == 'labchart_mat':

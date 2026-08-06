@@ -2,8 +2,8 @@ cff-version: 1.2.0
 message: "If you use MEP-CMAP Analyser in published research, please cite it as below."
 title: "MEP-CMAP Analyser"
 type: software
-version: "1.2.6"
-date-released: "2026-08-05"
+version: "1.2.8"
+date-released: "2026-08-06"
 license: MIT
 # After publishing on Zenodo, open the record page and look under "Cite all
 # versions". If the concept DOI shown there differs from the value below, put
@@ -20,7 +20,7 @@ url: "https://pypi.org/project/mep-cmap-analyser/"
 identifiers:
   - type: doi
     value: "10.5281/zenodo.21810844"
-    description: "Archived release of version 1.2.6"
+    description: "Archived release of version 1.2.8"
   - type: url
     value: "https://pypi.org/project/mep-cmap-analyser/"
     description: "Python Package Index release"

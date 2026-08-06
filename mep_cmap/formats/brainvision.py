@@ -225,10 +225,11 @@ def extract_stim_times(file_path: str, marker_name: str = '') -> dict:
     Return stim times from the .vmrk markers, grouped by marker description
     (e.g. 'S255'), excluding 'New Segment' boundaries.
 
-    Parameters
-    ----------
-    marker_name : if it matches a description (case-insensitive), only that
-                  group is returned; otherwise all groups are returned.
+    ``marker_name`` is accepted for API parity but deliberately ignored: the
+    .vmrk descriptions define the stim types, and this tool supports many
+    types per recording (paired-pulse, multi-intensity).  Filtering here would
+    silently drop every type except the one the marker dropdown happens to
+    hold.  Same contract as formats/edf.py.
 
     Returns
     -------
@@ -257,15 +258,12 @@ def extract_stim_times(file_path: str, marker_name: str = '') -> dict:
         except ValueError:
             continue
         label = desc if desc else (mtype if mtype else 'A')
-        out.setdefault(label, []).append(pos / fs)
+        # .vmrk positions are 1-based ("Position in data points"): the leading
+        # 'New Segment' marker sits at position 1, i.e. the first sample, t=0.
+        # Subtract 1 before converting, or every event lands one sample late.
+        out.setdefault(label, []).append(max(pos - 1, 0) / fs)
 
     for label in out:
         out[label].sort()
-
-    if marker_name:
-        want = marker_name.strip().lower()
-        match = {k: v for k, v in out.items() if k.lower() == want}
-        if match:
-            return match
 
     return out

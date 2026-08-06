@@ -1,13 +1,13 @@
 # MEP-CMAP Analyser
 
-**Version 1.2.7 | August 2026**  
+**Version 1.2.8 | August 2026**  
 *Author:* [*Justin Andrushko PhD, Northumbria University*](https://researchportal.northumbria.ac.uk/en/persons/justin-w-andrushko/)
 
 *Collaborators:* [*David Cunningham PhD*](https://fescenter.org/team/investigators/cunningham-david-phd/) *(*[*TMS Analysis ToolBox*](https://github.com/CunninghamLab/TMSAnalysisToolBox)*) ·* [*Nicholas Holmes PhD*](https://www.birmingham.ac.uk/staff/profiles/sportex/holmes-nick) *·* [*TMSMultiLab*](https://github.com/TMSMultiLab/TMSMultiLab/wiki)
 
-[![PyPI version](https://badge.fury.io/py/mep-cmap-analyser.svg)](https://pypi.org/project/mep-cmap-analyser/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/jandrushko/mep-cmap-analyser/blob/main/LICENSE)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[!\[PyPI version](https://badge.fury.io/py/mep-cmap-analyser.svg)](https://pypi.org/project/mep-cmap-analyser/)
+[!\[License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/jandrushko/mep-cmap-analyser/blob/main/LICENSE)
+[!\[Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 
 **PyPI:** https://pypi.org/project/mep-cmap-analyser/  
 **GitHub:** https://github.com/jandrushko/mep-cmap-analyser  
@@ -41,7 +41,7 @@ The tool is not limited to any single measure or paradigm. It handles motor evok
 * **Broader format support** — added BIOPAC AcqKnowledge (`.acq` and `.mat`), Brainsight neuronavigation exports, BrainVision, and LabChart MATLAB exports.
 * **Cross-platform polish** — readable coloured action buttons on macOS, Windows, and Linux, and consistent font scaling across the interface.
 
-**Point releases (1.2.1–1.2.7):** EDF/BDF files (including BIDS-ify output) now load correctly, plus release-pipeline and repository cleanup.
+**Point releases (1.2.1–1.2.8):** EDF/BDF files (including BIDS-ify output) now load correctly, plus release-pipeline and repository cleanup.
 
 \---
 
@@ -49,7 +49,7 @@ The tool is not limited to any single measure or paradigm. It handles motor evok
 
 ```
 Setup                         First Level: Single File                  Second Level: Group
-├── Dataset                   ├── 1a  Labels \\\& Analysis Setup      ├── Group Analysis (LME)
+├── Dataset                   ├── 1a  Labels \\\\\\\& Analysis Setup      ├── Group Analysis (LME)
 └── BIDS-ify                  ├── 1b  Data Filtering                  └── Add-ons
                                ├── 1c  Feature Detection Setup
                                │       (+ ▶ Run Analysis)
@@ -69,11 +69,11 @@ The tool auto-detects the file format on open (by extension, binary signature, o
 
 #### Spike-2 native (`.smr`) — *requires `neo`*
 
-Native Spike-2 binary files read directly via the [Neo](https://neo.readthedocs.io) library — no text-export step. On first open a dialog identifies the EMG channel and stim/trigger channel; the choice is saved to a sidecar (`.smr\\\_config.json`) and not asked again. DigMark marker codes (A, B, C, …) are decoded from the event channel and each appears as a separate stimulus type. Neo is installed automatically with `pip install mep-cmap-analyser`.
+Native Spike-2 binary files read directly via the [Neo](https://neo.readthedocs.io) library — no text-export step. On first open a dialog identifies the EMG channel and stim/trigger channel; the choice is saved to a sidecar (`.smr\\\\\\\_config.json`) and not asked again. DigMark marker codes (A, B, C, …) are decoded from the event channel and each appears as a separate stimulus type. Neo is installed automatically with `pip install mep-cmap-analyser`.
 
 #### Spike-2 text export (`.txt`)
 
-Exported via **File → Export → Text**. Waveform channels are read along with DigMark event timestamps; any number of stimulus types and marker codes are supported. I/O is accelerated by the compiled Rust extension (`mep\\\_cmap\\\_io`).
+Exported via **File → Export → Text**. Waveform channels are read along with DigMark event timestamps; any number of stimulus types and marker codes are supported. I/O is accelerated by the compiled Rust extension (`mep\\\\\\\_cmap\\\\\\\_io`).
 
 #### LabChart text export (`.txt`)
 
@@ -188,24 +188,24 @@ For designs where the background excitability of spinal motoneurones varies acro
 
 MEP amplitude covaries positively with the level of background EMG in the period immediately preceding the pulse, over a range far below any conventional rejection threshold. Rather than discarding trials, the amplitude is regressed on pre-stimulus r.m.s. EMG by median quantile regression within each sample (one participant, one stimulus type, one intensity, one block), and each trial's residual is re-expressed relative to an uncertainty-weighted reference value. The reference blends the regression intercept with the median of the fitted values, weighted by the relative standard error of the fitted ordinate at each point, so where no association is present the adjustment vanishes.
 
-The implementation is verified against the author's own reference code and example data (`annotated_QR_example_code.R`, Zenodo 20037178); `tests/test_carson_compensation.py` locks the slope, intercept, intercept weighting and reference value to his published values.
+The implementation is verified against the author's own reference code and example data (`annotated\_QR\_example\_code.R`, Zenodo 20037178); `tests/test\_carson\_compensation.py` locks the slope, intercept, intercept weighting and reference value to his published values.
 
 Reported per trial:
 
-| Column | Description |
-| --- | --- |
-| `Adjusted_PTP_QR(mV)` | Excitability-compensated PTP |
-| `Normalised_Adjusted_PTP_QR` | Adjusted PTP as a fraction of the reference mean |
-| `EMGComp_Slope`, `EMGComp_Intercept` | Fitted relationship, in PTP units per PreStimRMS unit |
-| `EMGComp_InterceptWeight` | Wi, the weight given to the intercept in the reference value |
-| `EMGComp_Adjustment(mV)` | reference minus median(fitted): the shift applied to the sample |
-| `EMGComp_N`, `EMGComp_Method` | Trials in the fit, and the backend or fallback reason |
-| `EMGComp_PseudoR2` | Koenker-Machado pseudo-R-squared |
-| `EMGComp_Rho_Pre`, `EMGComp_Rho_Post` | Spearman rho with pre-stimulus RMS before and after adjustment; the second should be near zero |
+|Column|Description|
+|-|-|
+|`Adjusted\_PTP\_QR(mV)`|Excitability-compensated PTP|
+|`Normalised\_Adjusted\_PTP\_QR`|Adjusted PTP as a fraction of the reference mean|
+|`EMGComp\_Slope`, `EMGComp\_Intercept`|Fitted relationship, in PTP units per PreStimRMS unit|
+|`EMGComp\_InterceptWeight`|Wi, the weight given to the intercept in the reference value|
+|`EMGComp\_Adjustment(mV)`|reference minus median(fitted): the shift applied to the sample|
+|`EMGComp\_N`, `EMGComp\_Method`|Trials in the fit, and the backend or fallback reason|
+|`EMGComp\_PseudoR2`|Koenker-Machado pseudo-R-squared|
+|`EMGComp\_Rho\_Pre`, `EMGComp\_Rho\_Post`|Spearman rho with pre-stimulus RMS before and after adjustment; the second should be near zero|
 
-Two points worth knowing when reading the output. First, adjusted amplitudes **larger** than unadjusted are expected, not a fault: within any sample the low-RMS trials always shift upward, and a whole sample shifts upward whenever `EMGComp_Slope` is negative (74 of Carson's 182 participants). Second, the per-trial shift is exactly `reference - (intercept + slope * PreStimRMS)`, so plotting `Adjusted_PTP_QR(mV) - PTP(mV)` against `PreStimRMS` must give a straight line with slope `-EMGComp_Slope`. That is the quickest check that a suspicious file is behaving correctly. Before comparing adjusted values across conditions, check that the slopes and intercepts are comparable, as the paper recommends.
+Two points worth knowing when reading the output. First, adjusted amplitudes **larger** than unadjusted are expected, not a fault: within any sample the low-RMS trials always shift upward, and a whole sample shifts upward whenever `EMGComp\_Slope` is negative (74 of Carson's 182 participants). Second, the per-trial shift is exactly `reference - (intercept + slope \* PreStimRMS)`, so plotting `Adjusted\_PTP\_QR(mV) - PTP(mV)` against `PreStimRMS` must give a straight line with slope `-EMGComp\_Slope`. That is the quickest check that a suspicious file is behaving correctly. Before comparing adjusted values across conditions, check that the slopes and intercepts are comparable, as the paper recommends.
 
-Background EMG is quantified as the r.m.s. of a `prestim_ms` window (default 100 ms) ending `rms_guard_ms` before the pulse (default 3 ms, matching the paper, and widened automatically if a stimulus type needs a longer artefact gap). The window's DC offset is removed first, since an offset is not motoneurone activity and carrying it into the r.m.s. adds between-trial variance that masks the association the method exists to remove.
+Background EMG is quantified as the r.m.s. of a `prestim\_ms` window (default 100 ms) ending `rms\_guard\_ms` before the pulse (default 3 ms, matching the paper, and widened automatically if a stimulus type needs a longer artefact gap). The window's DC offset is removed first, since an offset is not motoneurone activity and carrying it into the r.m.s. adds between-trial variance that masks the association the method exists to remove.
 
 Compensation is skipped for M-wave runs, which are direct muscle responses rather than spinally mediated, and typically span multiple intensities. Trials marked Removed or Excluded are left out of the fit and receive no compensation values; trials flagged by the z-screen but kept by the reviewer stay in, since retaining datapoints is one of the stated benefits of the method.
 
@@ -217,7 +217,7 @@ Any stimulus type can be designated as a conditioned stimulus and paired with a 
 
 * Z-score flagging on PTP amplitude and RMS with a configurable threshold (default ±1.96)
 * Interactive review dialog showing the flagged waveform in context, with include / exclude / note options
-* Decisions persist across reruns — reviewed trials are not re-presented — and are recorded in the trial CSV's `Outlier\\\_Decision` column
+* Decisions persist across reruns — reviewed trials are not re-presented — and are recorded in the trial CSV's `Outlier\\\\\\\_Decision` column
 
 ### Data Inspector
 
@@ -227,8 +227,8 @@ Per-trial interactive review with a zoomed trial view plus a wider context windo
 
 Add-ons are optional, drop-in Python modules that run **after** processing, read the saved results, and write **their own new files** — they never modify core outputs. They come in two scopes:
 
-* **First-level (single-file) add-ons** run on each recording's saved waveform bundle (`<prefix>\\\_segments.npz`) and appear on the **First Level → Add-ons** tab.
-* **Second-level (group-level) add-ons** run on the merged group table (`group\\\_level\\\_LME\\\_ready.csv`) and appear on the **Second Level → Add-ons** tab.
+* **First-level (single-file) add-ons** run on each recording's saved waveform bundle (`<prefix>\\\\\\\_segments.npz`) and appear on the **First Level → Add-ons** tab.
+* **Second-level (group-level) add-ons** run on the merged group table (`group\\\\\\\_level\\\\\\\_LME\\\\\\\_ready.csv`) and appear on the **Second Level → Add-ons** tab.
 
 Built-in add-ons:
 
@@ -238,7 +238,7 @@ Built-in add-ons:
 |**rectified\_area**|single-file|Rectified area under each MEP over the analysis window (a minimal example)|
 |**group\_summary**|group-level|Per-condition mean, SD, and N of every metric across the group (a minimal example)|
 
-Add-ons can declare their own settings, which render as controls in the add-on's box (for example, MEPFeatX exposes a tunable noise-gate ratio for handling MEPs recorded during voluntary contraction). Point the tool at your own add-ons folder in **Settings → Preferences → Add-ons**; place first-level add-ons in a `single\\\_file/` subfolder and group-level add-ons in a `group\\\_level/` subfolder. See [Writing Add-ons](#writing-add-ons).
+Add-ons can declare their own settings, which render as controls in the add-on's box (for example, MEPFeatX exposes a tunable noise-gate ratio for handling MEPs recorded during voluntary contraction). Point the tool at your own add-ons folder in **Settings → Preferences → Add-ons**; place first-level add-ons in a `single\\\\\\\_file/` subfolder and group-level add-ons in a `group\\\\\\\_level/` subfolder. See [Writing Add-ons](#writing-add-ons).
 
 ### BIDS-ify
 
@@ -254,7 +254,7 @@ Every setting the user touches — filter parameters, time windows, onset method
 * A persistent queue tracks status (Not Started, In Progress, Needs Review, Complete, Stale)
 * Excluded files are remembered and not re-added on refresh; a right-click menu restores them, marks files for reprocessing, or opens the derivatives folder
 * Process a highlighted recording with **Run selected**
-* Queue state is saved to `dataset\\\_session.json`
+* Queue state is saved to `dataset\\\\\\\_session.json`
 
 ### Check for Updates
 
@@ -295,9 +295,9 @@ Pre-built builds for each platform are on the [Releases page](https://github.com
 
 |Platform|File|
 |-|-|
-|Windows|`MEP-CMAP\\\_Analyser\\\_Windows.zip`|
-|macOS|`MEP-CMAP\\\_Analyser\\\_Mac.zip`|
-|Linux|`MEP-CMAP\\\_Analyser\\\_Linux.tar.gz`|
+|Windows|`MEP-CMAP\\\\\\\_Analyser\\\\\\\_Windows.zip`|
+|macOS|`MEP-CMAP\\\\\\\_Analyser\\\\\\\_Mac.zip`|
+|Linux|`MEP-CMAP\\\\\\\_Analyser\\\\\\\_Linux.tar.gz`|
 
 ### Option 3: Run from source
 
@@ -305,7 +305,7 @@ Pre-built builds for each platform are on the [Releases page](https://github.com
 git clone https://github.com/jandrushko/mep-cmap-analyser.git
 cd mep-cmap-analyser
 pip install -r requirements.txt
-python -m mep\\\_cmap
+python -m mep\\\\\\\_cmap
 ```
 
 \---
@@ -338,7 +338,7 @@ Normalise processed results against a reference file, and/or run first-level add
 
 ### 7\. Second Level → Group Analysis (LME)
 
-The tool scans the derivatives folder and lists completed sessions. Assign study-design columns (Group, Condition, Timepoint, or any custom factor), configure stim roles, select sessions to include, and click **▶ Build group analysis file** to produce `group\\\_level\\\_LME\\\_ready.csv`.
+The tool scans the derivatives folder and lists completed sessions. Assign study-design columns (Group, Condition, Timepoint, or any custom factor), configure stim roles, select sessions to include, and click **▶ Build group analysis file** to produce `group\\\\\\\_level\\\\\\\_LME\\\\\\\_ready.csv`.
 
 ### 8\. Second Level → Add-ons *(optional)*
 
@@ -353,48 +353,48 @@ Results are written to a `derivatives/` folder beside the raw data, following BI
 ```
 study/
 ├── rawdata/
-│   └── sub-001/ses-01/sub-001\\\_ses-01\\\_recording.txt
+│   └── sub-001/ses-01/sub-001\\\\\\\_ses-01\\\\\\\_recording.txt
 └── derivatives/
-    ├── dataset\\\_session.json               ← file queue and processing status
-    ├── study\\\_design.json                  ← Second-Level design configuration
-    ├── group\\\_level\\\_LME\\\_ready.csv          ← merged group output (Second Level)
+    ├── dataset\\\\\\\_session.json               ← file queue and processing status
+    ├── study\\\\\\\_design.json                  ← Second-Level design configuration
+    ├── group\\\\\\\_level\\\\\\\_LME\\\\\\\_ready.csv          ← merged group output (Second Level)
     └── sub-001/
         └── ses-01/
-            ├── sub-001\\\_ses-01\\\_session.json           ← full session state
+            ├── sub-001\\\\\\\_ses-01\\\\\\\_session.json           ← full session state
             ├── results/
-            │   ├── sub-001\\\_ses-01\\\_<StimType>\\\_trials.csv   ← one per stim type
-            │   ├── sub-001\\\_ses-01\\\_...\\\_segments.npz        ← waveform bundle (add-on input)
-            │   └── ...                                    ← add-on outputs, e.g. \\\*\\\_mepfeatx.csv
+            │   ├── sub-001\\\\\\\_ses-01\\\\\\\_<StimType>\\\\\\\_trials.csv   ← one per stim type
+            │   ├── sub-001\\\\\\\_ses-01\\\\\\\_...\\\\\\\_segments.npz        ← waveform bundle (add-on input)
+            │   └── ...                                    ← add-on outputs, e.g. \\\\\\\*\\\\\\\_mepfeatx.csv
             └── figures/                                   ← add-on figures, e.g. MEPFeatX plots
 ```
 
 ### Trial-level CSV columns
 
-Each `<prefix>\\\_<StimType>\\\_trials.csv` contains the full column set below. Which
+Each `<prefix>\\\\\\\_<StimType>\\\\\\\_trials.csv` contains the full column set below. Which
 columns are *populated* depends on what you enabled — cSP columns fill only when
 cSP detection is on, normalisation columns when a reference file is set, and the
 excitability-compensation block when that option is run.
 
 |Column(s)|Description|
 |-|-|
-|`File`, `StimType`, `Stim\\\_Label`|Recording identifier and stimulus-type code / display label|
-|`Segment`, `Segment\\\_Overall`|Trial index within the condition, and chronological index across all conditions|
-|`Stim\\\_Time(s)`, `Time\\\_Since\\\_Last\\\_Stim(s)`|Absolute stimulus time and inter-stimulus interval|
+|`File`, `StimType`, `Stim\\\\\\\_Label`|Recording identifier and stimulus-type code / display label|
+|`Segment`, `Segment\\\\\\\_Overall`|Trial index within the condition, and chronological index across all conditions|
+|`Stim\\\\\\\_Time(s)`, `Time\\\\\\\_Since\\\\\\\_Last\\\\\\\_Stim(s)`|Absolute stimulus time and inter-stimulus interval|
 |`Limb`|Limb identifier (from filename or entered)|
-|`PTP(mV)`, `Latency(ms)`, `AUC(mV\\\*s)`|Core response: peak-to-peak amplitude, onset latency (`Not Marked` when unresolved), and area under the rectified EMG|
+|`PTP(mV)`, `Latency(ms)`, `AUC(mV\\\\\\\*s)`|Core response: peak-to-peak amplitude, onset latency (`Not Marked` when unresolved), and area under the rectified EMG|
 |`Measure`|Optional auxiliary / manual measurement (blank unless used)|
-|`cSP\\\_Duration(ms)`, `cSP\\\_MEP\\\_Offset(ms)`, `cSP\\\_EMG\\\_Return(ms)`, `cSP\\\_MEP\\\_Ratio(ms/mV)`|Silent-period duration (`Not Marked` when absent), stimulus→cSP-start, stimulus→EMG-return, and cSP ÷ PTP ratio (Orth \& Rothwell, 2004 \[5])|
-|`PreStimRMS`, `PreStimPTP`, `PTP\\\_per\\\_PreStimRMS`, `Z\\\_PreStimRMS`|Pre-stimulus baseline EMG: RMS, peak-to-peak, PTP-per-RMS, and standardised RMS|
-|`Z\\\_PTP\\\_Within`, `Z\\\_PTP\\\_Pooled`|PTP z-scores within each condition and pooled across conditions|
-|`PTP\\\_Detrended\\\_WithinCond(mV)` + `\\\_Z`, `PTP\\\_Detrended\\\_Session(mV)` + `\\\_Z`|Amplitude detrended within condition and across the whole session (fatigue / potentiation), each with its z-score|
-|`Reference\\\_Type`, `Reference\\\_Mean(mV)`, `Reference\\\_N`, `Normalised\\\_PTP`, `Normalised\\\_PTP\\\_per\\\_PreStimRMS`|Mmax / reference normalisation: reference used, its mean and N, and the normalised amplitudes|
-|`Adjusted\\\_PTP\\\_QR(mV)`, `Normalised\\\_Adjusted\\\_PTP\\\_QR`|**Excitability-compensated PTP** — adjusted for spinal motoneurone excitability by quantile regression on pre-stimulus EMG (Carson, 2026 \[9]), raw and reference-normalised|
-|`EMGComp\\\_Method`, `EMGComp\\\_N`, `EMGComp\\\_Slope`, `EMGComp\\\_Intercept`, `EMGComp\\\_InterceptWeight`, `EMGComp\\\_Adjustment(mV)`, `EMGComp\\\_PseudoR2`, `EMGComp\\\_Rho\\\_Post`|Excitability-compensation fit: method / status, N, regression coefficients and intercept weighting, per-trial adjustment, and diagnostics (pseudo-R² and residual PTP–EMG correlation)|
-|`Outlier\\\_Decision`, `Manual\\\_Note`|Review outcome (`Not flagged` or your include / exclude decision) and free-text annotation|
+|`cSP\\\\\\\_Duration(ms)`, `cSP\\\\\\\_MEP\\\\\\\_Offset(ms)`, `cSP\\\\\\\_EMG\\\\\\\_Return(ms)`, `cSP\\\\\\\_MEP\\\\\\\_Ratio(ms/mV)`|Silent-period duration (`Not Marked` when absent), stimulus→cSP-start, stimulus→EMG-return, and cSP ÷ PTP ratio (Orth \& Rothwell, 2004 \[5])|
+|`PreStimRMS`, `PreStimPTP`, `PTP\\\\\\\_per\\\\\\\_PreStimRMS`, `Z\\\\\\\_PreStimRMS`|Pre-stimulus baseline EMG: RMS, peak-to-peak, PTP-per-RMS, and standardised RMS|
+|`Z\\\\\\\_PTP\\\\\\\_Within`, `Z\\\\\\\_PTP\\\\\\\_Pooled`|PTP z-scores within each condition and pooled across conditions|
+|`PTP\\\\\\\_Detrended\\\\\\\_WithinCond(mV)` + `\\\\\\\_Z`, `PTP\\\\\\\_Detrended\\\\\\\_Session(mV)` + `\\\\\\\_Z`|Amplitude detrended within condition and across the whole session (fatigue / potentiation), each with its z-score|
+|`Reference\\\\\\\_Type`, `Reference\\\\\\\_Mean(mV)`, `Reference\\\\\\\_N`, `Normalised\\\\\\\_PTP`, `Normalised\\\\\\\_PTP\\\\\\\_per\\\\\\\_PreStimRMS`|Mmax / reference normalisation: reference used, its mean and N, and the normalised amplitudes|
+|`Adjusted\\\\\\\_PTP\\\\\\\_QR(mV)`, `Normalised\\\\\\\_Adjusted\\\\\\\_PTP\\\\\\\_QR`|**Excitability-compensated PTP** — adjusted for spinal motoneurone excitability by quantile regression on pre-stimulus EMG (Carson, 2026 \[9]), raw and reference-normalised|
+|`EMGComp\\\\\\\_Method`, `EMGComp\\\\\\\_N`, `EMGComp\\\\\\\_Slope`, `EMGComp\\\\\\\_Intercept`, `EMGComp\\\\\\\_InterceptWeight`, `EMGComp\\\\\\\_Adjustment(mV)`, `EMGComp\\\\\\\_PseudoR2`, `EMGComp\\\\\\\_Rho\\\\\\\_Post`|Excitability-compensation fit: method / status, N, regression coefficients and intercept weighting, per-trial adjustment, and diagnostics (pseudo-R² and residual PTP–EMG correlation)|
+|`Outlier\\\\\\\_Decision`, `Manual\\\\\\\_Note`|Review outcome (`Not flagged` or your include / exclude decision) and free-text annotation|
 
 ### Group-level LME-ready CSV
 
-Every trial-level column from every included session, prefixed with design columns — `participant\\\_id`, `session`, `task`, `timepoint`, `Stim\\\_Role`, and any custom between/within-subject factors defined at the second level. Output is at the trial level (outliers retained with their Z-scores as covariates rather than pre-excluded), so the analyst keeps full control of trial-level modelling. This file is also the input for group-level add-ons.
+Every trial-level column from every included session, prefixed with design columns — `participant\\\\\\\_id`, `session`, `task`, `timepoint`, `Stim\\\\\\\_Role`, and any custom between/within-subject factors defined at the second level. Output is at the trial level (outliers retained with their Z-scores as covariates rather than pre-excluded), so the analyst keeps full control of trial-level modelling. This file is also the input for group-level add-ons.
 
 \---
 
@@ -421,42 +421,42 @@ The derivative-based (Bigoni), bootstrap, and peak-fraction onset detectors all 
 
 ## Writing Add-ons
 
-An add-on is a small Python module exposing an `ADDON\\\_NAME`, an optional description/version/author, an optional `ADDON\\\_SCOPE` (`"single\\\_file"` or `"group\\\_level"`), optional `ADDON\\\_SETTINGS`, and a `run(context)` function. It reads from the context and writes **new** files into `context.results\\\_dir`.
+An add-on is a small Python module exposing an `ADDON\\\\\\\_NAME`, an optional description/version/author, an optional `ADDON\\\\\\\_SCOPE` (`"single\\\\\\\_file"` or `"group\\\\\\\_level"`), optional `ADDON\\\\\\\_SETTINGS`, and a `run(context)` function. It reads from the context and writes **new** files into `context.results\\\\\\\_dir`.
 
-**First-level (`single\\\_file`)** add-ons receive a context with the per-trial waveforms grouped by stimulus type, sampling rate, unit, a stimulus-aligned time axis, the per-trial table, the analysis config, and output paths:
+**First-level (`single\\\\\\\_file`)** add-ons receive a context with the per-trial waveforms grouped by stimulus type, sampling rate, unit, a stimulus-aligned time axis, the per-trial table, the analysis config, and output paths:
 
 ```python
-ADDON\\\_NAME  = "my\\\_addon"
-ADDON\\\_SCOPE = "single\\\_file"
+ADDON\\\\\\\_NAME  = "my\\\\\\\_addon"
+ADDON\\\\\\\_SCOPE = "single\\\\\\\_file"
 
 def run(context):
     import os, numpy as np
-    rows = \\\[]
-    for stim\\\_type, stack in context.segments.items():   # stack: (n\\\_trials, n\\\_samples)
+    rows = \\\\\\\[]
+    for stim\\\\\\\_type, stack in context.segments.items():   # stack: (n\\\\\\\_trials, n\\\\\\\_samples)
         for i, trace in enumerate(stack):
-            rows.append((stim\\\_type, i, float(np.ptp(trace))))
-    out = os.path.join(context.results\\\_dir, f"{context.bids\\\_prefix}\\\_my\\\_addon.csv")
+            rows.append((stim\\\\\\\_type, i, float(np.ptp(trace))))
+    out = os.path.join(context.results\\\\\\\_dir, f"{context.bids\\\\\\\_prefix}\\\\\\\_my\\\\\\\_addon.csv")
     # ... write `rows` to `out` ...
-    context.log(f"my\\\_addon → {os.path.basename(out)}")
-    return \\\[out]
+    context.log(f"my\\\\\\\_addon → {os.path.basename(out)}")
+    return \\\\\\\[out]
 ```
 
-**Second-level (`group\\\_level`)** add-ons receive `context.group\\\_table` (the merged group DataFrame), with `design\\\_columns` / `metric\\\_columns` split out for convenience:
+**Second-level (`group\\\\\\\_level`)** add-ons receive `context.group\\\\\\\_table` (the merged group DataFrame), with `design\\\\\\\_columns` / `metric\\\\\\\_columns` split out for convenience:
 
 ```python
-ADDON\\\_NAME  = "my\\\_group\\\_addon"
-ADDON\\\_SCOPE = "group\\\_level"
+ADDON\\\\\\\_NAME  = "my\\\\\\\_group\\\\\\\_addon"
+ADDON\\\\\\\_SCOPE = "group\\\\\\\_level"
 
 def run(context):
     import os
-    summary = context.group\\\_table.groupby("StimType")\\\[context.metric\\\_columns].mean()
-    out = os.path.join(context.results\\\_dir, f"{context.bids\\\_prefix}\\\_my\\\_group\\\_addon.csv")
-    summary.to\\\_csv(out)
-    context.log(f"my\\\_group\\\_addon → {os.path.basename(out)}")
-    return \\\[out]
+    summary = context.group\\\\\\\_table.groupby("StimType")\\\\\\\[context.metric\\\\\\\_columns].mean()
+    out = os.path.join(context.results\\\\\\\_dir, f"{context.bids\\\\\\\_prefix}\\\\\\\_my\\\\\\\_group\\\\\\\_addon.csv")
+    summary.to\\\\\\\_csv(out)
+    context.log(f"my\\\\\\\_group\\\\\\\_addon → {os.path.basename(out)}")
+    return \\\\\\\[out]
 ```
 
-Put your modules in the matching subfolder (`single\\\_file/` or `group\\\_level/`) of the add-ons folder set in **Settings → Preferences → Add-ons**. The built-in add-ons (`mepfeatx`, `rectified\\\_area`, `group\\\_summary`) are good starting templates.
+Put your modules in the matching subfolder (`single\\\\\\\_file/` or `group\\\\\\\_level/`) of the add-ons folder set in **Settings → Preferences → Add-ons**. The built-in add-ons (`mepfeatx`, `rectified\\\\\\\_area`, `group\\\\\\\_summary`) are good starting templates.
 
 \---
 
@@ -464,18 +464,18 @@ Put your modules in the matching subfolder (`single\\\_file/` or `group\\\_level
 
 ```bash
 # Windows
-python build\\\_windows.py
+python build\\\\\\\_windows.py
 
 # macOS
-python3 build\\\_mac.py
+python3 build\\\\\\\_mac.py
 
 # Linux
-python3 -m venv venv\\\_linux \\\&\\\& source venv\\\_linux/bin/activate
+python3 -m venv venv\\\\\\\_linux \\\\\\\&\\\\\\\& source venv\\\\\\\_linux/bin/activate
 pip install -r requirements.txt
-python3 build\\\_linux.py
+python3 build\\\\\\\_linux.py
 ```
 
-The build scripts create a local virtual environment, compile the Rust I/O extension (`mep\\\_cmap\\\_io`) if a Rust toolchain is present, and run PyInstaller with the platform spec. The bundled add-ons and BIDS schema ship automatically.
+The build scripts create a local virtual environment, compile the Rust I/O extension (`mep\\\\\\\_cmap\\\\\\\_io`) if a Rust toolchain is present, and run PyInstaller with the platform spec. The bundled add-ons and BIDS schema ship automatically.
 
 \---
 
@@ -495,7 +495,7 @@ The build scripts create a local virtual environment, compile the Rust I/O exten
 |`bioread`|BIOPAC AcqKnowledge `.acq` reading|
 |`tkinter`|GUI (bundled with standard Python)|
 
-The optional Rust extension `mep\\\_cmap\\\_io` provides accelerated I/O for the Spike-2 text, LabChart text, Generic TSV, and CFWB binary formats; all formats fall back to pure Python if it is unavailable.
+The optional Rust extension `mep\\\\\\\_cmap\\\\\\\_io` provides accelerated I/O for the Spike-2 text, LabChart text, Generic TSV, and CFWB binary formats; all formats fall back to pure Python if it is unavailable.
 
 \---
 
@@ -503,7 +503,7 @@ The optional Rust extension `mep\\\_cmap\\\_io` provides accelerated I/O for the
 
 If you use MEP-CMAP Analyser in published research, please cite:
 
-> Justin W. Andrushko. (2026). jandrushko/mep-cmap-analyser: MEP-CMAP Analyser (Version v1.2.6) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.21810844
+> Justin W. Andrushko. (2026). jandrushko/mep-cmap-analyser: MEP-CMAP Analyser (Version v1.2.8) \[Computer software]. Zenodo. https://doi.org/10.5281/zenodo.21810844
 > Northumbria University. https://github.com/jandrushko/mep-cmap-analyser
 
 \---
