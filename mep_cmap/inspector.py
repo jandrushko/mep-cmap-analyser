@@ -18,10 +18,54 @@ from tkinter import ttk, scrolledtext
 from .compat import _np_trapz, _np_ptp
 from .detection import (dispatch_onset,
                         CspSettings,
+                        DETECTION_VERSION,
                         detect_csp_for_trial,
                         detect_mep_offset,
                         offset_marker_field)
 from .detection.defaults import DETECTION_DEFAULTS
+
+#: Key under which per-marker provenance is stored in a segment's metadata.
+#: Maps landmark field name -> "auto" | "manual".
+#:
+#: Written into the session JSON, so it is a readable name rather than a
+#: leading-underscore private: someone opening that file to work out why a
+#: value looks wrong should be able to see who placed each marker.
+MARKER_SOURCE_KEY = "marker_source"
+
+#: Key recording which detector produced the AUTO markers in a segment.
+#: Absent on metadata written before provenance existed, which is treated as
+#: "unknown, therefore stale".
+MARKER_DETECTOR_KEY = "marker_detector_version"
+
+
+def marker_is_manual(meta, field):
+    """True when this landmark was placed by hand rather than detected.
+
+    Metadata written before provenance existed carries no marker_source at
+    all. Such a marker is reported as NOT manual, so that it is re-detected
+    rather than preserved: an auto marker from an older detector is exactly
+    what needs replacing, and a genuine manual edit that predates this is
+    recoverable by dragging it again, whereas a silently stale measurement in
+    a results file is not.
+    """
+    try:
+        return (meta or {}).get(MARKER_SOURCE_KEY, {}).get(field) == "manual"
+    except Exception:                       # noqa: BLE001 — odd session data
+        return False
+
+
+def stale_auto_markers(meta, fields, detector_version):
+    """Which of *fields* were auto-placed by a DIFFERENT detector version.
+
+    Returns the fields that should be dropped and re-detected. Manual edits
+    are never included, whatever the version.
+    """
+    meta = meta or {}
+    if meta.get(MARKER_DETECTOR_KEY) == detector_version:
+        return []
+    return [f for f in fields
+            if f in meta and not marker_is_manual(meta, f)]
+
 
 class DraggablePoint:
     """
@@ -241,6 +285,37 @@ class DataInspectorWindow:
         "mep_offset_idx":   "#0072B2",
     }
 
+    #: Which trace each marker is placed on and snaps to.
+    #:
+    #: A property of the MARKER, never of what the display happens to be
+    #: showing. The rectified trace and the RMS envelope are overlays the
+    #: analyst can turn on to judge an offset; if the visible trace also
+    #: decided where a marker landed, ticking a display box would silently
+    #: change a measurement. A peak-to-peak landmark snapped to |EMG| would
+    #: find the larger peak twice and report a positive amplitude for a
+    #: biphasic response.
+    #:
+    #: Every entry is "raw" and that is deliberate, not an oversight waiting
+    #: to be filled in. The table exists so the rule is stated once and can be
+    #: asserted by a test, rather than being an accident of _add happening to
+    #: capture the right array.
+    _SNAP_SOURCE = {
+        "ptp_min_idx":      "raw",
+        "ptp_max_idx":      "raw",
+        "onset_idx":        "raw",
+        "silent_start_idx": "raw",
+        "silent_end_idx":   "raw",
+        "mep_offset_idx":   "raw",
+    }
+
+    def _snap_array(self, field, emg):
+        """The array a marker of this kind is placed on. Raw unless stated."""
+        if self._SNAP_SOURCE.get(field, "raw") != "raw":
+            raise ValueError(
+                f"_SNAP_SOURCE names a non-raw trace for {field!r}; markers "
+                f"must be measured on the raw signal")
+        return emg
+
     # ──────────────────────────────────────────────────────────────────────
     def __init__(self, master, segments_dict, time_axis, metadata_dict,
                  label_map=None, color_map=None, emg_unit=None,
@@ -453,6 +528,16 @@ class DataInspectorWindow:
         self.show_median_var = tk.BooleanVar(value=False)
         self._median_line = None
         self.note_enable_var = tk.BooleanVar(value=True)
+        # Overlay state. Both off by default: the raw trace is what the
+        # analyst reads amplitudes off, and an overlay that appears uninvited
+        # competes with it.
+        self.show_rect_var = tk.BooleanVar(value=False)
+        self.show_env_var = tk.BooleanVar(value=False)
+        # Envelopes are keyed by (stim_type, trial) and built once per trial.
+        # Toggling a checkbox is then a redraw, not a recomputation, which is
+        # what makes flashing the overlay on and off with R/E useful for
+        # judging an ambiguous offset.
+        self._env_cache = {}
 
         _edit_state = "disabled" if self.read_only else "normal"
 
@@ -482,6 +567,51 @@ class DataInspectorWindow:
         tk.Checkbutton(self.btn_bar, text="Show event-type median",
                     variable=self.show_median_var,
                     command=lambda: self._plot()).pack(side="left", padx=12)
+
+        # ── Rectified / envelope overlay ───────────────────────────────
+        # DISPLAY ONLY. Neither of these changes a measurement: which trace a
+        # marker snaps to is a property of the marker (see _SNAP_SOURCE), not
+        # of what happens to be visible, so a peak-to-peak landmark cannot be
+        # dragged onto the rectified trace even while it is shown. They are
+        # enabled in read-only previews too, since looking is not editing.
+        tk.Frame(self.btn_bar, width=2, bg="grey").pack(
+            side="left", fill="y", padx=8)
+        tk.Checkbutton(self.btn_bar, text="Rectified (R)",
+                    variable=self.show_rect_var,
+                    command=lambda: self._plot()).pack(side="left")
+        tk.Checkbutton(self.btn_bar, text="Envelope (E)",
+                    variable=self.show_env_var,
+                    command=lambda: self._plot()).pack(side="left", padx=(6, 0))
+
+        # Flashing an overlay on and off tells you far more about an ambiguous
+        # offset than a static one does, and reaching for a checkbox each time
+        # is slow enough to stop people doing it. Bound on the toplevel so the
+        # canvas does not have to hold focus.
+        #
+        # Bound with a guard for a text widget having focus: the note box is a
+        # Text, and a plain keypress binding on the window would otherwise eat
+        # every R and E typed into it.
+        def _toggle_overlay(var):
+            def _handler(event=None):
+                try:
+                    w = self.top.focus_get()
+                    if isinstance(w, (tk.Text, tk.Entry, ttk.Entry,
+                                      scrolledtext.ScrolledText)):
+                        return
+                except Exception:
+                    pass
+                var.set(not var.get())
+                self._plot()
+            return _handler
+
+        for _seq, _var in (("<KeyPress-r>", self.show_rect_var),
+                           ("<KeyPress-R>", self.show_rect_var),
+                           ("<KeyPress-e>", self.show_env_var),
+                           ("<KeyPress-E>", self.show_env_var)):
+            try:
+                self.top.bind(_seq, _toggle_overlay(_var))
+            except Exception:
+                pass
 
         if not self.read_only:
             tk.Checkbutton(self.btn_bar, text="Make a note",
@@ -620,6 +750,151 @@ class DataInspectorWindow:
             "csp_rms_window_ms":     self.csp_rms_window_ms,
         })
 
+    def _baseline_window_ms(self):
+        """
+        The pre-stimulus window the detector's threshold is computed over, as
+        (start_ms, end_ms).
+
+        Stated once because three things have to agree about it: the threshold
+        drawn on the overlay, the band shading it, and the x-limit that has to
+        be wide enough to show it. They disagreed at first -- the threshold was
+        built over the analysis baseline while the view started at
+        visible_pre_ms, so the EMG the threshold was normalised to was off the
+        left-hand edge of the plot and the line appeared to sit far below a
+        corridor it had supposedly been derived from.
+        """
+        pre_ms = (self._analysis_pre_ms
+                  if self._analysis_pre_ms is not None
+                  else abs(float(self.t[0])))
+        return -float(pre_ms), 0.0
+
+    def _rect_and_envelope(self, emg, fs):
+        """
+        |EMG| and the RMS envelope for the current trial, with the suppression
+        threshold the cSP detector would apply to it.
+
+        The envelope is built with the same function and the same window the
+        detector uses, so what is drawn is what the algorithm saw rather than
+        an approximation of it. That is the point of showing it: an offset the
+        analyst disagrees with can be checked against the envelope and the
+        threshold that produced it, instead of against the raw trace, which
+        the detector never looked at.
+
+        Returned in mV on the raw trace's own axis, NOT normalised, so the
+        overlay and the trace can share one y-axis.
+
+        Returns (rect, env, threshold_mV) with threshold None if the baseline
+        was unusable.
+        """
+        s = self._csp_settings()
+        # The settings are part of the key, not just the trial. An envelope
+        # cached under one RMS window and redrawn after the analyst changed it
+        # would show a picture that no longer matches the marker beside it --
+        # the same staleness the geometry hash guards the landmarks against.
+        key = (self.cur_type, self.cur_idx, len(emg), s)
+        hit = self._env_cache.get(key)
+        if hit is not None:
+            return hit
+
+        from .detection.envelope_stats import compute_rms_envelope
+
+        rect = np.abs(emg)
+        try:
+            env = compute_rms_envelope(emg, fs, window_ms=s.rms_window_ms)
+        except Exception:
+            env = rect
+
+        # The SAME baseline window the detector takes, not simply everything
+        # before the stimulus: the Inspector shows the full pre-stimulus
+        # epoch, which can be longer than the analysis baseline, and averaging
+        # over more of it would draw a threshold the detector never used.
+        thr = None
+        try:
+            _b0, _b1 = self._baseline_window_ms()
+            pre = env[(self.t >= _b0) & (self.t < _b1)]
+            if pre.size >= 5:
+                mu = float(pre.mean())
+                sd = float(pre.std(ddof=1)) if pre.size > 1 else 0.0
+                if np.isfinite(mu) and mu > 0:
+                    thr = max(mu - s.criterion * sd,
+                              float(s.min_threshold_frac) * mu)
+        except Exception:
+            thr = None
+
+        out = (rect, env, thr)
+        # One trial's worth of arrays each. Cleared on segment change rather
+        # than grown without limit, since a long session steps through every
+        # trial of every type.
+        if len(self._env_cache) > 8:
+            self._env_cache.clear()
+        self._env_cache[key] = out
+        return out
+
+    def _draw_overlays(self, ax, emg, fs):
+        """
+        Draw the rectified trace and/or the RMS envelope behind the raw trace.
+
+        The envelope is drawn MIRRORED, as a band between +env and -env. Drawn
+        one-sided it sits in the positive half of the axis and collides with
+        the MEP's positive peak, which is exactly where the peak-to-peak
+        markers need to stay legible. Mirrored, the raw trace runs inside a
+        corridor, one y-axis in mV still reads correctly for both, and a
+        silent period shows as the corridor pinching shut and reopening --
+        which is the shape the offset decision is actually about.
+        """
+        if not (self.show_rect_var.get() or self.show_env_var.get()):
+            return
+
+        rect, env, thr = self._rect_and_envelope(emg, fs)
+
+        if self.show_rect_var.get():
+            ax.plot(self.t, rect, color="#7F7F7F", lw=0.7, alpha=0.45,
+                    zorder=0, label="|EMG|")
+
+        if self.show_env_var.get():
+            # The baseline the threshold was derived from, shaded so it can be
+            # seen rather than inferred. Without it the threshold is a line
+            # whose provenance is invisible, and on a trial where the
+            # contraction was not held steadily it will sit somewhere the
+            # visible corridor does not explain.
+            _b0, _b1 = self._baseline_window_ms()
+            ax.axvspan(_b0, _b1, color="#4C72B0", alpha=0.06, lw=0, zorder=0)
+
+            ax.fill_between(self.t, -env, env, color="#4C72B0", alpha=0.13,
+                            lw=0, zorder=0)
+            ax.plot(self.t, env, color="#4C72B0", lw=1.0, alpha=0.55,
+                    zorder=0, label="RMS envelope")
+            ax.plot(self.t, -env, color="#4C72B0", lw=1.0, alpha=0.55,
+                    zorder=0)
+            # The threshold is the most useful part of the overlay: it turns
+            # "is the EMG back?" from a judgement into something visible.
+            #
+            # The baseline MEAN is drawn beside it, because the threshold on
+            # its own does not say how far below background it sits. That
+            # ratio is what decides how permissive detection is, and it is set
+            # by the sampling rate as much as by the criterion: the SD of a
+            # moving RMS falls as 1/sqrt(2N), so the same Z-score criterion
+            # lands near 80% of baseline at 5 kHz and nearer 70% at 2 kHz.
+            # Seeing the two lines together makes that visible instead of
+            # leaving it to be worked out.
+            if thr is not None:
+                _b0, _b1 = self._baseline_window_ms()
+                _pre = env[(self.t >= _b0) & (self.t < _b1)]
+                _mu = float(_pre.mean()) if _pre.size else None
+                for sign in (1.0, -1.0):
+                    ax.axhline(sign * thr, color="#4C72B0", lw=0.8, ls=":",
+                               alpha=0.7, zorder=0)
+                    if _mu:
+                        ax.axhline(sign * _mu, color="#4C72B0", lw=0.6,
+                                   ls="-", alpha=0.30, zorder=0)
+                if _mu:
+                    ax.annotate(f"baseline {_mu:.3f} mV\nthreshold "
+                                f"{thr:.3f} mV ({100.0 * thr / _mu:.0f}%)",
+                                xy=(_b0, thr), xytext=(3, 3),
+                                textcoords="offset points",
+                                fontsize=7, color="#4C72B0", alpha=0.85,
+                                va="bottom", ha="left", zorder=5)
+
     def _next(self):
         if self._closed():
             return
@@ -639,6 +914,18 @@ class DataInspectorWindow:
         key = (self.cur_type, self.cur_idx)
         m   = self.meta.setdefault(key, {})
         m[field] = new_idx
+        # This landmark is now the analyst's, not the detector's.
+        #
+        # Auto-detected and hand-placed markers used to be stored identically,
+        # so nothing downstream could tell them apart. That mattered when the
+        # silent-period detector changed: markers written by the previous
+        # version were reused verbatim by the new one, because dropping them
+        # would have destroyed genuine manual edits alongside them. On one
+        # recording that left the results file reporting a median cSP of
+        # 73 ms while the Inspector, re-detecting, showed ~95 ms for the same
+        # trials. Recording who placed each marker is what makes it safe to
+        # re-detect the stale ones and keep the rest.
+        m.setdefault(MARKER_SOURCE_KEY, {})[field] = "manual"
         if field == "onset_idx":
             # A placed marker is a measurement, whatever the detector managed.
             m.pop("onset_auto_failed", None)
@@ -1133,6 +1420,40 @@ class DataInspectorWindow:
                       f"the response.")
         m['_geometry'] = _geom
 
+        # ---------- discard auto landmarks from an older detector -----------
+        #
+        # The geometry check above catches a marker the segment has moved
+        # under. It does NOT catch one that is still in the right place for a
+        # detector that no longer exists.
+        #
+        # That is what happened between detection v4 and v5. Silent-period
+        # markers written by v4 sat in metadata, the pipeline preferred stored
+        # metadata over detecting, and the results file reported a median cSP
+        # of 73 ms on a recording where the Inspector, re-detecting with v5,
+        # showed about 95 ms for the same trials. Neither number was wrong
+        # given its detector; they were simply from different ones, and
+        # nothing recorded which.
+        #
+        # Only AUTO markers are dropped. A hand-placed landmark is a
+        # measurement the analyst made and no version bump invalidates it.
+        _stale_auto = stale_auto_markers(m, _LANDMARKS, DETECTION_VERSION)
+        if _stale_auto:
+            for f in _stale_auto:
+                m.pop(f, None)
+                m.get(MARKER_SOURCE_KEY, {}).pop(f, None)
+            m.pop('onset_auto_failed', None)
+            m.pop('csp_detection_failed', None)
+            m.pop('csp_reason', None)
+            m.pop('_auc_csp_tried', None)
+            if not getattr(self, '_detver_meta_warned', False):
+                self._detver_meta_warned = True
+                _was = m.get(MARKER_DETECTOR_KEY) or "an unrecorded version"
+                print(f"[inspector] Re-detecting auto-placed landmarks: they "
+                      f"were produced by {_was}, and detection is now "
+                      f"{DETECTION_VERSION}. Manually placed markers are "
+                      f"kept.")
+        m[MARKER_DETECTOR_KEY] = DETECTION_VERSION
+
         # ---------- seed metadata defaults ----------------------------------
         m.setdefault('ptp_min_idx', p_min)
         m.setdefault('ptp_max_idx', p_max)
@@ -1296,12 +1617,24 @@ class DataInspectorWindow:
                     self.t, _med, color="0.35", lw=2.2, alpha=0.35, zorder=1,
                     label="event-type median")[0]
 
+        self._draw_overlays(self.ax_raw, emg, fs)
         self.ax_raw.plot(self.t, emg, color=colour, lw=1)
         self.ax_raw.axvline(0, color="k", ls="--")
         # Limit x-axis to the visible window even if segment has more pre-stim
         _xlim_left = (-self.visible_pre_ms
                       if self.visible_pre_ms is not None
                       else self.t[0])
+        # ...but never crop the baseline the threshold came from. The view
+        # normally starts at visible_pre_ms, which on this recording is a
+        # fraction of the analysis baseline, so with the envelope on the
+        # threshold was derived from EMG that sat off the left-hand edge of
+        # the plot. The line then appeared to float well below a corridor it
+        # was supposedly a fraction of, which reads as a bug in the detector
+        # rather than as most of the evidence being out of frame.
+        if self.show_env_var.get():
+            _b0, _ = self._baseline_window_ms()
+            _xlim_left = min(_xlim_left, _b0)
+        _xlim_left = max(_xlim_left, float(self.t[0]))
         self.ax_raw.set_xlim(_xlim_left, self.t[-1])
         self.ax_raw.set(
             title=f"{lbl}  –  segment {self.cur_idx+1}/{len(self.segments[self.cur_type])}",
@@ -1323,12 +1656,20 @@ class DataInspectorWindow:
             idx0 = int(idx0)
             mk   = 'x' if field.startswith('ptp_') else 'o'
             alp  = 0.6 if field == "onset_idx" else 1.0
-            scat = self.ax_raw.scatter(self.t[idx0], emg[idx0],
+            # EVERY marker is placed on, and snaps to, the RAW trace -- see
+            # _SNAP_SOURCE. The rectified trace and the envelope are display
+            # overlays and are never handed to a marker: a peak-to-peak
+            # landmark snapped to |EMG| would report the larger of the two
+            # peaks twice and a positive amplitude for a biphasic response.
+            # The array is passed explicitly rather than captured so that
+            # adding an overlay cannot quietly change what a marker measures.
+            _snap = self._snap_array(field, emg)
+            scat = self.ax_raw.scatter(self.t[idx0], _snap[idx0],
                                        s=80, color=c, marker=mk, alpha=alp,
                                        zorder=3, label=label)
             self._dpts.append(
                 DraggablePoint(
-                    scat, self.t, emg, idx0,
+                    scat, self.t, _snap, idx0,
                     lambda i, f=field: self._update_meta(f, i),
                     role=field, radius=self.snap_radius,
                     read_only=self.read_only

@@ -53,9 +53,27 @@ def load_photo(name: str):
 
     None rather than an exception: every caller is decoration, and a missing
     image should leave a gap rather than a traceback.
+
+    A cached image is checked before it is handed back. The cache outlives the
+    Tk interpreter that built the image: the frozen build runs a splash screen
+    on its own ``tk.Tk()``, destroys it, and starts the application on a second
+    one, and an image built under the first is a live Python object wrapping a
+    Tcl image that no longer exists. Returned unchecked it is not None, so a
+    caller's fallback never runs, and the TclError only surfaces when a widget
+    tries to draw it -- which is why the About mark was absent from the release
+    build and present when run from source, where there is no splash and only
+    ever one interpreter. ``width()`` is the cheapest call that reaches Tcl and
+    so the cheapest way to find out whether the image is still real.
     """
     if name in _CACHE:
-        return _CACHE[name]
+        cached = _CACHE[name]
+        if cached is None:
+            return None
+        try:
+            cached.width()
+            return cached
+        except Exception:
+            del _CACHE[name]   # stale interpreter: fall through and rebuild
     try:
         import tkinter as tk
 

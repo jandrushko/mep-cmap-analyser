@@ -1,6 +1,6 @@
 # MEP-CMAP Analyser
 
-**Version 1.4.4 | August 2026**  
+**Version 1.4.5 | August 2026**  
 *Authors:* [*Justin W. Andrushko PhD*](https://orcid.org/0000-0003-2258-1689) · [*David A. Cunningham PhD*](https://orcid.org/0000-0003-2246-1548) *(*[*TMS Analysis ToolBox*](https://github.com/CunninghamLab/TMSAnalysisToolBox)*)*  —  *TMSMultiLab*
 
 *Collaborators:* [*Nicholas Holmes PhD*](https://www.birmingham.ac.uk/staff/profiles/sportex/holmes-nick) *·* [*TMSMultiLab*](https://github.com/TMSMultiLab/TMSMultiLab/wiki)
@@ -28,6 +28,267 @@ MEP-CMAP Analyser is a GUI pipeline for EMG data collected with transcranial mag
 Every setting, decision, and manual edit is saved in a sidecar JSON so analyses are fully reproducible and can be re-run or audited at any time.
 
 The tool is not limited to any single measure or paradigm. It handles motor evoked potentials (MEPs), compound muscle action potentials (CMAPs), cortical silent periods (cSPs), M-wave recruitment curves, paired-pulse protocols such as SICI and ICF, and any other time-locked EMG response measurable by peak-to-peak amplitude, onset latency, or area under the curve. It operates on continuous recordings, pre-epoched trial stacks, and EMG bursts recorded without stimulation.
+
+---
+
+## What's New in 1.4.5
+
+**Silent period values produced by earlier releases were wrong, in the short
+direction. Re-run any analysis that reports them.** The detector, the review
+window and the preview each measured the silent period slightly differently,
+and two of the three truncated it. Details below; `DETECTION_VERSION` is now
+`2026-modular-v5`, and it is stamped into every output so v4 and v5 results can
+be told apart. Onset and MEP offset detection are untouched and reproduce v4
+exactly.
+
+### One silent-period detector, shared by the analysis, the preview and the review
+
+Three places measured the silent period, and each built the detector's
+arguments itself:
+
+* the **Data Inspector** capped the search *end* at
+  `second peak + Max offset from MEP 2nd peak`. That setting means the silent
+  period must *start* within that distance of the response; capping the window
+  with it truncated the thing being measured. At its default of 100 ms, no
+  silent period longer than about 100 ms could be found during review, while
+  the analysis reported the true duration for the same trial. A comment above
+  the code asserted the cap was not applied there.
+* the **preview** built its configuration without a single numeric cSP
+  setting, so every one of them fell back to a default and the interface had no
+  effect on it at all. Changing *Min return* from 40 ms to 2 ms produced a
+  byte-identical preview.
+
+All three now call one function with one settings object, and the search starts
+at each trial's own second peak-to-peak landmark everywhere. A test fails if any
+caller starts building the arguments by hand again.
+
+**Search start** has been removed from the 1c panel. Nothing read it except the
+preview, and that was the preview disagreeing with the analysis. It is not kept
+as a floor: short-latency stimulus types reach their second peak well before the
+old 40 ms default, so a floor would begin the search after a genuine early
+silent period had already started.
+
+### Min return is applied, and says when it cannot be
+
+`Min return` sets how long EMG must stay back before the silence is called over.
+It was carried through the interface, the configuration and every call, and
+never read. Breakthrough EMG — a brief burst part way through an otherwise
+complete silent period — therefore ended the measurement at the first burst.
+
+It is now applied. A value shorter than the RMS smoothing window cannot be
+enforced, because a moving-window RMS cannot rise and fall faster than its own
+window; such a value is raised to the window and the trial says so rather than
+appearing to work. This is easy to reach at high sampling rates, where the two
+are set in milliseconds and compared in samples.
+
+### The silent period is measured on every trial, not only reviewed ones
+
+cSP columns were populated *only* from stored Data Inspector metadata, so a
+trial nobody had opened carried no silent period and the column described review
+history rather than the condition. On one 20-trial condition this showed as 9,
+17 or 20 trials depending on how much clicking had happened.
+
+The analysis now detects the silent period itself, through the same entry point
+the Inspector uses. Stored markers still take precedence: a landmark placed or
+checked by hand is a decision and detection never overrules it.
+
+### Markers record who placed them
+
+Auto-detected and hand-placed landmarks were stored identically, so nothing
+could tell them apart. That mattered the moment the detector changed: markers
+written by the previous version sat in the session and were reused verbatim,
+and dropping them wholesale would have destroyed genuine manual edits alongside
+them.
+
+Each landmark now carries its provenance, and the segment records which detector
+version produced its automatic markers. On opening a session written by an
+earlier version, automatic markers are re-detected and manual edits are kept.
+
+Sessions written before 1.4.5 carry no provenance, so their markers cannot be
+attributed and are all re-detected. A manual edit made before this release will
+need placing again; that is the cost of not silently reporting a stale
+measurement.
+
+### Rectified and RMS envelope overlays in the Data Inspector
+
+Two display toggles, **Rectified (R)** and **Envelope (E)**, with `R` and `E`
+flashing them on and off — an ambiguous offset is far easier to judge from an
+overlay appearing and disappearing than from a static one.
+
+The envelope is the one the detector thresholded, built with the same function
+and the same window, drawn with the suppression threshold, the baseline mean and
+the percentage between them. So a marker you disagree with can be checked
+against the signal and the line that produced it, rather than against the raw
+trace, which the detector never looks at.
+
+It is drawn mirrored, as a band between `+env` and `−env`. One-sided it sits in
+the positive half of the axis and collides with the response's positive peak,
+which is where the peak-to-peak markers have to stay legible. Mirrored, a silent
+period reads as the band pinching shut and reopening. The pre-stimulus window
+the threshold was derived from is shaded, and the view widens to include it.
+
+These are display only. Which trace a marker is measured on is a property of the
+marker, not of what happens to be visible, so nothing you tick can change a
+measurement.
+
+### Smaller corrections
+
+* **`cSP_Duration(ms)` is numeric.** It was written as `Not Marked` when a trial
+  had no silent period, which made the whole column text while the three cSP
+  columns beside it stayed numeric. `read.csv` typed one of the four
+  differently and `mean()` on it returned `NA` without complaining. Blank now.
+* **Area under the curve is computed whenever the response has a detected
+  end**, whether that end came from a baseline return or from the start of a
+  silent period. The window could previously only be closed by a baseline
+  return, so trials whose silent period was detected rather than stored lost
+  their AUC silently.
+* **A truncated silent period says so.** When EMG has not returned for the
+  required interval before the search window ends, the duration is reported as
+  a lower bound with a message suggesting a longer search window, rather than
+  as a measurement that happens to equal the window width.
+* **`design_notch_sos` is now `design_notch_filters`.** It returns transfer
+  function coefficients, not second-order sections, and the old name said
+  otherwise. The old name still works.
+* An unreachable duplicate of the detection module has been removed.
+
+---
+
+## What's New in 1.4.4
+
+### Overlay a condition's trials beside the trial-by-trial view
+
+**Preview detection** showed one trial at a time. That answers whether the
+markers landed sensibly on *that* trial, and it cannot answer whether a setting
+suits the condition, because the second question is about a distribution:
+whether onsets cluster or scatter, whether the amplitude window contains the
+response on most trials or only the large ones, whether one trial is unlike the
+rest. No single trial shows any of that, and stepping through eighty turns a
+distribution into a memory test.
+
+The preview now opens one window with two halves. Above, every chosen trial of
+the condition on shared axes, with
+
+* the **amplitude window** the analysis resolved, anchored where anchoring
+  applies,
+* the **pre-stimulus window** the baseline measures are computed over, gap
+  included,
+* a strip beneath carrying one tick per **onset**, **offset** and
+  **silent-period end**, so the spread of each is visible at a glance.
+
+Below, the ordinary Data Inspector, read-only, showing one trial. Both are
+driven by a single event-type control: as two windows with two dropdowns they
+could disagree, and one panel showing a different stimulus type from the other
+reads as the two contradicting each other rather than as controls out of step.
+
+Trials are chosen from a list beside the plot. Selecting one moves the trial
+view to it; selecting several is a request to compare them, so the view stays
+where it is. Clicking a trace does the same. Left and Right step through trials
+from anywhere in the window. A **Rectify** box rectifies the traces for display,
+before the median is taken — a rectified average being the average of the
+rectified trials rather than the rectified average of the raw ones, which differ
+wherever trials disagree in sign.
+
+Above sixty traces the drawing becomes a band of the per-sample minimum and
+maximum with the median over it. A band rather than a subsample of trials,
+because a subsample hides the outlier and the outlier is what an overlay is
+read for.
+
+Conditions cut to **different epochs are refused** rather than drawn together:
+one time axis cannot describe two, and overlaying them would show a latency
+difference that does not exist. The differing epochs are named rather than the
+option quietly going missing.
+
+### Four settings the preview was not reading
+
+Each of these was silent. The preview reported a number, the number looked
+plausible, and it had been derived without a setting that had been changed.
+
+* The **blanking gap** and the **silent-period assignment** never reached it. A
+  gap set to 50 ms had no visible effect anywhere in the preview, and the end of
+  a response was found by return-to-baseline on stimulus types where a silent
+  period defines it.
+* The window drawn as the pre-stimulus baseline was **the wrong one of the two**
+  the analysis cuts. The epoch carries its own lead-in, which the onset
+  detectors threshold against; a *separate* segment ending a gap before the
+  stimulus is what `PreStimRMS`, `PreStimPTP`, the outlier screen and the
+  excitability compensation are computed from. They are different intervals
+  whenever a gap is set.
+* That window was also resolved **once, across every stimulus type in the
+  file**, taking the largest gap — so one type's 20 ms gap displaced the shaded
+  window on every other type in the recording. It is now per drawn type.
+* **Silent-period detection could not run at all.** The detector now runs, and
+  its own account of why it found nothing is reported along with the window it
+  searched. A type with no silent period assigned is distinguished from one
+  assigned and not found.
+
+Offsets and silent periods are now found with the analysis's own detectors
+before the preview opens, as onsets already were, so the trial view shows the
+landmarks the run will produce rather than re-deriving them one trial at a time.
+The silent period is found first, because the offset rule takes a detected
+silent-period start as the end of the response: the two are one physical event.
+
+Anything reported about detection is now counted on detection alone. The count
+of pre-detected onsets had come to include trials seeded only with an offset or
+a silent period, so a type with six onsets and twenty silent periods was
+reported as twenty of twenty — a figure read to judge whether a setting is
+working, and worse than none when inflated.
+
+---
+
+## What's New in 1.4.3
+
+### Results grouped by output family
+
+One recording writes nine files per channel, so a two-channel study left
+eighteen loose files in one folder and a five-channel study forty-five, before
+any add-on. Results are now filed under `trial-level/`, `summary/`,
+`onset-methods/`, `segments/`, `add-ons/` and `report/`, grouped by what a file
+**is** rather than by which channel produced it, so an analyst comparing a
+measurement across channels has them side by side.
+
+**Filenames do not change and nothing is moved.** A file has to be identifiable
+from its name wherever it ends up, so the full BIDS prefix stays. Existing
+studies keep the flat layout they were written with, both arrangements are read,
+and a folder half in each state loads completely.
+
+### An optional trimmed copy of the trial file
+
+The trial-level table carries fifty-six columns. Most analyses use a handful,
+and a table nobody can read across on one screen is a table whose columns get
+selected in a spreadsheet by hand.
+
+**Preferences ▸ Trial columns** enables a second file, `_trials_selected.csv`,
+written beside the full one and holding a chosen subset at the same one row per
+trial. `_trials.csv` is never affected and always carries every column.
+
+Columns are chosen by group rather than individually — nobody keeps three of the
+four detrended columns — and a group whose members cannot be read without
+another pulls it in and says so in the log. Nothing is lost by using the trimmed
+file: the columns that identify a trial are always kept, so it can be merged
+back against the full one whenever a dropped column is wanted.
+
+Off by default. The choice applies to every recording, and a single recording
+can depart from it on tab 1c, where "use the preference" stays distinct from
+"off for this recording" — otherwise switching the preference on later would
+quietly switch a recording back on.
+
+### The group analysis states what its table contains
+
+**Second Level** can be built from either trial file. Where the trimmed file is
+asked for, sessions that lack one, or that did not select the same columns, are
+named and the build is refused rather than completed from whatever each session
+happens to have: a table whose columns depend on which participants were
+included is one where adding a participant silently changes the analysable
+variables. Sessions are compared on the selection each recorded at analysis
+time, not on their file headers, which cannot tell an analyst who chose to drop
+a measure from a recording that had none.
+
+Add-on outputs, previously joined unconditionally, can now be excluded or chosen
+individually. The list offered is discovered from what is actually beside the
+scanned sessions, so a third-party add-on appears without being known to the
+tool, and one present in only some sessions says so before it is chosen. The
+trial file source and the add-on choices are saved with the study design, since
+a study rebuilt under different ones is a different table.
 
 ---
 
@@ -111,7 +372,7 @@ overwritten in place rather than deleted first.
 Studies that do not use parameter sets still convert exactly as before, writing
 the flat sidecar rather than an empty table.
 
-**Point releases in the 1.4 series:** 1.4.1 kept the continuous integration suite in step with the project’s declared dependencies. 1.4.2 corrects the analysis window used by peak-to-peak amplitude, MEP offset and duration, and onset detection on any stimulus type given its own epoch window; re-detects Inspector landmarks when an event delay or an epoch changes under them; restores the TMSMultiLab mark in compiled builds; preserves channel units the quantities library cannot parse; and writes the stimulation description as `*_nibs.tsv`. Studies whose stimulus types all share one epoch window are unaffected by the window correction. 1.4.3 files results under folders named for what each file is rather than leaving them loose in one directory, adds an optional trimmed copy of the trial file for analyses that do not need all fifty-six columns, and lets the group analysis choose which trial file and which add-on outputs it is built from. Filenames are unchanged, nothing is moved, and both the flat and the foldered layouts are read, so existing studies are unaffected. 1.4.4 draws every chosen trial of a condition on one plot beside the trial-by-trial view, with the amplitude window, the pre-stimulus window and a strip of detected onsets, offsets and silent-period ends; and corrects four settings the preview was not reading, among them the blanking gap and the silent-period assignment, so that a preview now rehearses the run rather than approximating it.
+**Point releases in the 1.4 series:** 1.4.1 kept the continuous integration suite in step with the project’s declared dependencies. 1.4.2 corrects the analysis window used by peak-to-peak amplitude, MEP offset and duration, and onset detection on any stimulus type given its own epoch window; re-detects Inspector landmarks when an event delay or an epoch changes under them; restores the TMSMultiLab mark in compiled builds; preserves channel units the quantities library cannot parse; and writes the stimulation description as `*_nibs.tsv`. Studies whose stimulus types all share one epoch window are unaffected by the window correction. 1.4.3 files results under folders named for what each file is rather than leaving them loose in one directory, adds an optional trimmed copy of the trial file for analyses that do not need all fifty-six columns, and lets the group analysis choose which trial file and which add-on outputs it is built from. Filenames are unchanged, nothing is moved, and both the flat and the foldered layouts are read, so existing studies are unaffected. 1.4.4 draws every chosen trial of a condition on one plot beside the trial-by-trial view, with the amplitude window, the pre-stimulus window and a strip of detected onsets, offsets and silent-period ends; and corrects four settings the preview was not reading, among them the blanking gap and the silent-period assignment, so that a preview now rehearses the run rather than approximating it. 1.4.5 gives the analysis, the preview and the Data Inspector one silent-period detector instead of three, applies the `Min return` setting that had never been read, measures the silent period on every trial rather than only reviewed ones, and records whether each landmark was detected or placed by hand so that a change of detector re-detects the former and keeps the latter. **Silent period values from 1.4.4 and earlier were wrong in the short direction and should be re-run.**
 
 ### Channel assignment for every format
 
@@ -1039,7 +1300,9 @@ understated the limits of agreement by around a quarter.
 
 ### Cortical Silent Period (cSP) Detection
 
-A vectorised bootstrap method: a silence threshold is estimated from the pre-stimulus baseline and a search runs from a configurable offset after MEP onset. Configurable criteria include minimum silence duration (default 25 ms), minimum EMG-return window, bootstrap criterion (default 1.96 SD), significance level (default 99th percentile), search-window end, and maximum MEP-to-cSP offset. cSP detection can be enabled/disabled per stimulus type and overridden per trial in the Data Inspector. The 1c Feature Detection Setup tab exposes all of these with inline guidance.
+A bootstrap method on the RMS envelope. A suppression threshold is estimated from the pre-stimulus baseline, and the search runs from each trial's own second peak-to-peak landmark — the end of that trial's response — to a configurable end. Onset is the first sustained suppression below threshold; offset is the first sustained *return* of EMG, so breakthrough activity part way through a silent period does not end the measurement. Configurable criteria include minimum silence duration (default 25 ms), minimum EMG-return duration (default 40 ms, and never shorter than the RMS window), bootstrap criterion (default 1.96 SD), significance level (default 99th percentile), search-window end, and the maximum distance between the response and the *start* of the silent period.
+
+The analysis measures the silent period on every trial of an enabled stimulus type; the Data Inspector is for reviewing and overriding it, not for producing it. cSP detection can be enabled or disabled per stimulus type and overridden per trial. Where EMG has not returned before the search window ends, the duration is reported as a lower bound rather than as a measurement. The 1c Feature Detection Setup tab exposes all of these with inline guidance.
 
 ### M-wave Normalisation and Mmax
 
@@ -1084,7 +1347,11 @@ Any stimulus type can be designated as a conditioned stimulus and paired with a 
 
 ### Data Inspector
 
-Per-trial interactive review with a zoomed trial view plus a wider context window; draggable onset, cSP-start, and cSP-end markers; a drag-to-select AUC window; per-trial notes; and keyboard navigation. All edits are saved to the session JSON and applied on every subsequent run without re-review.
+Per-trial interactive review with a zoomed trial view plus a wider context window; draggable onset, cSP-start, and cSP-end markers; a drag-to-select AUC window; per-trial notes; and keyboard navigation.
+
+Optional **Rectified** and **RMS envelope** overlays (`R` and `E`) draw the signal the detector actually thresholded, with its suppression threshold, the baseline it was derived from, and the percentage between them — so a marker can be judged against what produced it rather than against the raw trace. They are display only and cannot change a measurement: which trace a marker is measured on is a property of the marker, not of what is visible.
+
+All edits are saved to the session JSON and applied on every subsequent run without re-review. Each landmark records whether it was detected or placed by hand, and each segment records which detector version produced its automatic markers; when the detector changes, automatic markers are re-detected and manual edits are kept.
 
 ### Add-ons (Extensible Analyses)
 
@@ -1478,7 +1745,7 @@ The optional Rust extension `mep_cmap_io` provides accelerated I/O for the Spike
 
 If you use MEP-CMAP Analyser in published research, please cite:
 
-> Justin W. Andrushko. (2026). jandrushko/mep-cmap-analyser: MEP-CMAP Analyser (Version v1.4.4) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.21810844
+> Justin W. Andrushko. (2026). jandrushko/mep-cmap-analyser: MEP-CMAP Analyser (Version v1.4.5) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.21810844
 > https://github.com/jandrushko/mep-cmap-analyser
 
 ---

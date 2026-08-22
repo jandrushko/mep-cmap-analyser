@@ -42,6 +42,8 @@ from .utils import _add_time_and_digmark
 from .io import extract_emg_waveform_and_fs, extract_stim_times
 from .filters import adaptive_mains_cancel, design_notch_sos
 from .detection     import (compute_ptp, compute_rms, compute_auc,
+                            CspSettings,
+                            detect_csp_for_trial,
                             compute_prestim_rms,
                             detect_mep_onset_peak_fraction,
                              detect_mep_onset_bootstrap,
@@ -1289,7 +1291,13 @@ def pipeline_quantify_segments(stim_type, segs_all, prestim_all,
         ptps[idx] = man_ptp
 
         # ── silent period ────────────────────────────────────────────────
-        silent_dur = "Not Marked"
+        # None, not "Not Marked". The sentinel string made cSP_Duration(ms) a
+        # TEXT column the moment any trial lacked a silent period, while its
+        # three sibling columns -- cSP_MEP_Offset, cSP_EMG_Return and
+        # cSP_MEP_Ratio -- were left empty and stayed numeric. read.csv then
+        # gives character for one column and numeric for the other three, and
+        # mean(cSP_Duration) returns NA without complaining.
+        silent_dur = None
         if mk in segments_metadata and "silent_start_idx" in segments_metadata[mk]:
             md = segments_metadata[mk]
             # Duration is a difference so offset cancels out
@@ -1305,6 +1313,53 @@ def pipeline_quantify_segments(stim_type, segs_all, prestim_all,
         else:
             sp_mep_offset_ms = None
             sp_emg_return_ms = None
+
+            # DETECT, rather than leaving the trial blank.
+            #
+            # The silent period used to come only from stored metadata, so it
+            # was measured only on trials the analyst had opened in the Data
+            # Inspector. A trial never reviewed had no cSP at all, and the
+            # column quietly described the subset of trials someone had
+            # clicked through rather than the condition.
+            #
+            # That was survivable while stale markers lingered in the session
+            # and made coverage look complete. Once markers from a superseded
+            # detector started being re-detected rather than reused, the same
+            # recording went from 17 of 20 B trials carrying a cSP to 9 -- the
+            # nine that had been opened since. The values were right and the
+            # coverage was an artefact of review history.
+            #
+            # Detection here uses the same entry point the Inspector uses, so
+            # a reviewed trial and an unreviewed one are measured identically.
+            # Stored metadata still wins when it exists: a marker the analyst
+            # placed or checked is a decision, and this must not overrule it.
+            if stim_type in cfg.csp_types:
+                try:
+                    _ptp_s = _segs_sb + int(cfg.ptp_start * fs / 1000)
+                    _ptp_e = _segs_sb + int(cfg.ptp_end   * fs / 1000)
+                    _ptp_s, _ptp_e = max(0, _ptp_s), min(len(seg), _ptp_e)
+                    if _ptp_e > _ptp_s:
+                        _w = seg[_ptp_s:_ptp_e]
+                        _pk2 = _ptp_s + int(max(int(np.argmin(_w)),
+                                                int(np.argmax(_w))))
+                        _csp_auto = detect_csp_for_trial(
+                            seg, fs,
+                            np.linspace(-_pre_type_ms, _post_type_ms,
+                                        len(seg), endpoint=False),
+                            CspSettings.from_source(cfg),
+                            second_peak_ms=(_pk2 - _segs_sb) * 1000.0 / fs,
+                            pre_ms=_pre_type_ms)
+                        if _csp_auto is not None:
+                            _s_i, _e_i = _csp_auto
+                            silent_dur = round((_e_i - _s_i) * 1000 / fs, 2)
+                            silent_durs.append(silent_dur)
+                            sp_mep_offset_ms = round(
+                                (_s_i - _segs_sb) * 1000 / fs, 2)
+                            sp_emg_return_ms = round(
+                                (_e_i - _segs_sb) * 1000 / fs, 2)
+                except Exception:           # noqa: BLE001 — never fail a run
+                    silent_dur = None
+                    sp_mep_offset_ms = sp_emg_return_ms = None
 
         # ── Onset method agreement (opt-in) ──────────────────────────────
         # Computed independently of which method is SELECTED, so the
@@ -1408,12 +1463,27 @@ def pipeline_quantify_segments(stim_type, segs_all, prestim_all,
             if a1 > a0:
                 auc_val = float(_np_trapz(np.abs(seg[a0:a1]), dx=1 / fs))
                 auc_vals_all.append(auc_val)
-        elif (man_lat is not None and mep_offset_ms is not None
-              and mep_offset_src == "envelope"):
-            # No cSP to close the window, but the response has a detected end.
-            # This is what gives resting-state recordings a principled AUC
-            # instead of requiring the endpoint to be dragged by hand.
-            a0 = _segs_sb + int(round(man_lat * fs / 1000.0))
+        elif (mep_offset_ms is not None
+              and (man_lat is not None or auto_lat is not None)
+              and mep_offset_src in ("envelope", "csp_start", "manual")):
+            # The response has a detected end, so the window can be closed.
+            #
+            # The end of the MEP is the end of the MEP however it was found:
+            # the return of EMG to baseline at rest, or the start of the
+            # silent period during contraction. They are the same event
+            # measured two ways, which is why resolve_mep_offset reports one
+            # offset with a source beside it.
+            #
+            # This used to require mep_offset_src == "envelope", on the
+            # assumption that a csp_start offset always arrived with stored
+            # metadata and was handled above. That stopped being true when the
+            # pipeline began detecting silent periods for unreviewed trials:
+            # those trials have a csp_start offset and NO stored markers, so
+            # they matched none of the branches and silently lost their AUC.
+            # Eleven of twenty B trials on one recording came out blank while
+            # carrying a perfectly good latency and offset.
+            _lat_for_auc = man_lat if man_lat is not None else auto_lat
+            a0 = _segs_sb + int(round(_lat_for_auc * fs / 1000.0))
             a1 = _segs_sb + int(round(mep_offset_ms * fs / 1000.0))
             a0 = min(max(0, a0), len(seg) - 1)
             a1 = min(max(0, a1), len(seg))
@@ -1424,7 +1494,6 @@ def pipeline_quantify_segments(stim_type, segs_all, prestim_all,
         elif mk not in segments_metadata and stim_type in cfg.csp_types:
             # Unreviewed segment with CSP enabled — try auto-detect onset+CSP
             # and compute AUC if both succeed
-            from .detection import CspSettings, detect_csp_for_trial
             _ptp_s    = _segs_sb + int(cfg.ptp_start * fs / 1000)
             _ptp_e    = _segs_sb + int(cfg.ptp_end   * fs / 1000)
             if _ptp_e < len(seg) and _ptp_s < _ptp_e:
@@ -2401,7 +2470,9 @@ def pipeline_quantify_averaged(means, segments_metadata, fs, cfg,
             "PTP(mV)": round(ptp, 6) if not np.isnan(ptp) else None,
             "MEP_RMS(mV)": round(mep_rms, 6) if not np.isnan(mep_rms) else None,
             "Latency(ms)": round(lat, 2) if lat is not None else "Not Detected",
-            "cSP_Duration(ms)": csp_dur if csp_dur is not None else "Not Marked",
+            # Left empty rather than "Not Marked", so this column stays
+            # numeric alongside the three cSP columns beside it.
+            "cSP_Duration(ms)": csp_dur,
             "cSP_MEP_Offset(ms)": csp_off,
             "cSP_EMG_Return(ms)": csp_ret,
             "cSP_MEP_Ratio(ms/mV)": csp_ratio,

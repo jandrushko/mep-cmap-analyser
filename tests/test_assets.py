@@ -275,3 +275,93 @@ def test_the_address_is_written_once():
 def test_the_about_mark_keeps_its_reference():
     body = _about()
     assert "_w.image = _l" in body
+
+
+# ── the cache outliving its interpreter ──────────────────────────────────────
+#
+# The frozen build shows a splash screen on its own tk.Tk(), destroys it, and
+# starts the application on a second one. An image built under the first is a
+# live Python object wrapping a Tcl image that no longer exists: not None, so a
+# caller's size fallback never fires, and the TclError only arrives when a
+# widget tries to draw it. That is why the About mark was missing from the
+# release build and present when run from source, where there is no splash and
+# only one interpreter ever exists.
+
+
+class _DeadImage:
+    """A PhotoImage whose interpreter has been destroyed.
+
+    Stands in for the real thing so the check runs headless, where a second
+    tk.Tk() cannot be created at all.
+    """
+
+    def width(self):
+        raise RuntimeError('image "pyimage1" doesn\'t exist')
+
+
+def test_a_stale_cached_image_is_not_handed_back():
+    from mep_cmap import assets
+    dead = _DeadImage()
+    assets._CACHE["tmsmultilab_64.png"] = dead
+    try:
+        got = assets.load_photo("tmsmultilab_64.png")
+        assert got is not dead, \
+            "an image from a destroyed interpreter was returned to a caller"
+    finally:
+        assets._CACHE.pop("tmsmultilab_64.png", None)
+
+
+def test_a_live_cached_image_is_still_reused():
+    """The staleness check must not defeat the cache: re-decoding the same PNG
+    for every window is what the cache exists to avoid."""
+    from mep_cmap import assets
+
+    class _LiveImage:
+        def width(self):
+            return 64
+
+    live = _LiveImage()
+    assets._CACHE["tmsmultilab_64.png"] = live
+    try:
+        assert assets.load_photo("tmsmultilab_64.png") is live
+    finally:
+        assets._CACHE.pop("tmsmultilab_64.png", None)
+
+
+def test_a_cached_none_is_still_honoured():
+    """A file that is genuinely absent must not be re-probed on every call."""
+    from mep_cmap import assets
+    assets._CACHE["no_such_asset.png"] = None
+    try:
+        assert assets.load_photo("no_such_asset.png") is None
+    finally:
+        assets._CACHE.pop("no_such_asset.png", None)
+
+
+def test_the_mark_survives_the_splash_being_destroyed():
+    """The real thing, when a display is available: load under one interpreter,
+    destroy it, and ask again under a second -- the launcher's exact sequence.
+    """
+    tk = pytest.importorskip("tkinter")
+    from mep_cmap import assets
+
+    try:
+        first = tk.Tk()
+    except Exception:                      # headless: covered by the fake above
+        pytest.skip("no display")
+
+    assets._CACHE.clear()
+    try:
+        assert assets.tmsmultilab_logo(64) is not None, "splash could not load it"
+    finally:
+        first.destroy()
+
+    second = tk.Tk()
+    try:
+        mark = assets.tmsmultilab_logo(64)
+        assert mark is not None, "About was handed nothing"
+        # The failure being guarded against: not None, but unusable.
+        assert mark.width() == 64
+    finally:
+        second.destroy()
+        assets._CACHE.clear()

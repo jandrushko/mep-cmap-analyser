@@ -210,16 +210,14 @@ FIELD_HELP = {
         "less any blanking gap, because a baseline reaching past the start of "
         "an epoch draws its samples from the previous trial's response."
     ),
-    "csp_search_start": (
-        "Earliest point after the stimulus at which a cortical silent period "
-        "may begin, in ms.\n\n"
-        "It should sit after the motor evoked potential, since the silence "
-        "being measured follows the response rather than containing it."
-    ),
     "csp_search_end": (
         "Latest point after the stimulus at which the silent period may end, "
         "in ms. Nothing beyond this is searched, so a window shorter than the "
-        "true silence reports the ceiling rather than the duration."
+        "true silence reports the ceiling rather than the duration.\n\n"
+        "The search STARTS at each trial's own second peak-to-peak landmark, "
+        "which is where that trial's response finished. There is no setting "
+        "for it, because a fixed start would fall inside the response on some "
+        "trials and after the silence had begun on others."
     ),
     "csp_min_silence": (
         "Shortest interval of quiet accepted as a silent period, in ms. "
@@ -227,8 +225,13 @@ FIELD_HELP = {
     ),
     "csp_min_return": (
         "How long EMG must stay back above threshold before the silence is "
-        "called over, in ms. Without it a single sample of returning activity "
-        "ends the measurement early."
+        "called over, in ms. Without it a brief burst of returning activity "
+        "ends the measurement early, which is how breakthrough EMG truncates "
+        "an otherwise complete silent period.\n\n"
+        "It cannot be shorter than the 10 ms RMS window the detector smooths "
+        "with: a return cannot be confirmed over less time than the envelope "
+        "takes to respond. A smaller value is raised to the window and the "
+        "trial says so."
     ),
     "csp_criterion": (
         "Z-score threshold multiplier defining the quiet level, relative to "
@@ -1692,7 +1695,6 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
             detection_params    = _det_params,
             latency_map         = dict(self.latency_map),
             # CSP detection
-            csp_search_start_ms = self.csp_search_start_ms.get(),
             csp_search_end_ms   = self.csp_search_end_ms.get(),
             csp_min_silence_ms  = self.csp_min_silence_ms.get(),
             csp_min_return_ms   = self.csp_min_return_ms.get(),
@@ -1808,7 +1810,6 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
             detection_params    = _det_params,
             latency_map         = dict(self.latency_map),
             # CSP detection
-            csp_search_start_ms = self.csp_search_start_ms.get(),
             csp_search_end_ms   = self.csp_search_end_ms.get(),
             csp_min_silence_ms  = self.csp_min_silence_ms.get(),
             csp_min_return_ms   = self.csp_min_return_ms.get(),
@@ -2224,7 +2225,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         self.outlier_threshold = tk.DoubleVar(value=1.96)
         self.generate_individual_plots = tk.BooleanVar(value=True)
         self.apply_humbug = tk.BooleanVar(value=False)
-        self.csp_search_start_ms    = tk.IntVar(value=40)
+        # csp_search_start_ms removed: the search starts at each trial's 2nd
+        # PTP peak. Sessions written before this still carry the key; it is
+        # ignored on load rather than restored to a control that is gone.
         self.csp_search_end_ms      = tk.IntVar(value=400)
         self.csp_min_silence_ms     = tk.IntVar(value=25)
         self.csp_min_return_ms      = tk.IntVar(value=40)
@@ -2586,10 +2589,19 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         csp_frame = tk.LabelFrame(self.main_frame,
             text="CSP (Cortical Silent Period) Detection Settings", padx=6, pady=8)
         csp_frame.pack(padx=6, pady=(8,0), fill='x')
-        label_with_help(csp_frame, "Search start (ms post-stim):", FIELD_HELP["csp_search_start"]).grid(row=0,column=0,sticky='e',padx=6)
-        tk.Entry(csp_frame, textvariable=self.csp_search_start_ms, width=5).grid(row=0,column=1,sticky='w')
-        label_with_help(csp_frame, "Search end (ms post-stim):", FIELD_HELP["csp_search_end"]).grid(row=0,column=2,sticky='e',padx=6)
-        tk.Entry(csp_frame, textvariable=self.csp_search_end_ms, width=5).grid(row=0,column=3,sticky='w')
+        # "Search start" stood here. The cSP search begins at each trial's own
+        # 2nd PTP peak -- the end of that trial's response -- in the analysis,
+        # the preview and the Data Inspector alike, so a fixed start time had
+        # nothing left to set. The pipeline never read it; only the preview
+        # did, and that was the preview disagreeing with the analysis.
+        #
+        # Removed rather than kept as a floor on the search start. A floor
+        # sounds harmless, but short-latency types reach their 2nd peak well
+        # before the old 40 ms default, so a floor would start the search
+        # after a genuine early silent period had already begun and shorten
+        # the duration -- the same truncation this release exists to fix.
+        label_with_help(csp_frame, "Search end (ms post-stim):", FIELD_HELP["csp_search_end"]).grid(row=0,column=0,sticky='e',padx=6)
+        tk.Entry(csp_frame, textvariable=self.csp_search_end_ms, width=5).grid(row=0,column=1,sticky='w')
         label_with_help(csp_frame, "Min silence (ms):", FIELD_HELP["csp_min_silence"]).grid(row=1,column=0,sticky='e',padx=6)
         tk.Entry(csp_frame, textvariable=self.csp_min_silence_ms, width=5).grid(row=1,column=1,sticky='w')
         label_with_help(csp_frame, "Min return (ms):", FIELD_HELP["csp_min_return"]).grid(row=1,column=2,sticky='e',padx=6)
@@ -2788,7 +2800,6 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
             "average_mode":          self.average_mode.get(),
             "generate_individual_plots": self.generate_individual_plots.get(),
             "enable_auc_global":     self.enable_auc_global.get(),
-            "csp_search_start_ms":   self.csp_search_start_ms.get(),
             "csp_search_end_ms":     self.csp_search_end_ms.get(),
             "csp_min_silence_ms":    self.csp_min_silence_ms.get(),
             "csp_criterion":         self.csp_criterion.get(),
@@ -3865,10 +3876,15 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
             #
             # A compiled build drew the 32 px mark in the header and nothing
             # here, with the 64 px file present in the bundle and structurally
-            # identical to the one that worked. The cause is not visible from
-            # outside the running executable, so this asks for what it wants
-            # and then for whatever else is there, rather than showing nothing
-            # because one size would not load.
+            # identical to the one that worked. The cause was the asset cache
+            # outliving the Tk interpreter that filled it: the splash screen
+            # loads the 64 px mark on its own root, that root is destroyed, and
+            # the application starts on a second one, so this window was handed
+            # an image belonging to an interpreter that no longer existed. That
+            # is fixed in mep_cmap.assets.load_photo, which now rebuilds a stale
+            # image rather than returning it. The size fallback below is kept
+            # regardless: it costs nothing and covers a file that genuinely
+            # will not load.
             _l = tmsmultilab_logo(64)
             if _l is None:
                 for _sz in (40, 32, 140, 22):
@@ -3892,8 +3908,17 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                               cursor="hand2", font=("TkDefaultFont", 9))
                 _t.pack(pady=(0, 2))
                 _t.bind("<Button-1>", lambda _e: _open_url(_TMSML_URL))
-        except Exception:
-            pass
+        except Exception as _e:
+            # Reported, not swallowed. A bare pass here is what hid the stale
+            # image described above: the mark was found, was not None, and
+            # raised only when a widget tried to draw it. The dialogue must
+            # still open without its decoration, so the failure is logged
+            # rather than raised -- but it is no longer silent.
+            try:
+                self.log("   \u2139\ufe0f  About: the TMSMultiLab mark could not "
+                         f"be drawn ({type(_e).__name__}: {_e})")
+            except Exception:
+                pass
         tk.Label(win, text=AUTHORS_LINE,
                  justify="center", fg="grey").pack(pady=(6,4))
         tk.Label(win,
