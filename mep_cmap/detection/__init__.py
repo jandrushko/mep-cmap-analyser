@@ -95,7 +95,11 @@ from .offset_detection import (                                       # noqa: F4
     resolve_mep_offset,
 )
 
-from .csp_detection import detect_csp_bootstrap                      # noqa: F401
+from .csp_detection import (                                          # noqa: F401
+    CspSettings,
+    detect_csp_bootstrap,
+    detect_csp_for_trial,
+)
 
 from .quantification import (                                         # noqa: F401
     compute_ptp,
@@ -109,7 +113,18 @@ from .quantification import (                                         # noqa: F4
 # Bumped whenever detection behaviour changes, so an output file records which
 # implementation produced it. v4 adds the envelope, CUSUM, consensus and offset
 # detectors; no existing detector was modified, so v3 results reproduce exactly.
-DETECTION_VERSION = "2026-modular-v4"
+#
+# v5 changes cortical silent period detection ONLY. Onset and MEP offset
+# detection are untouched and reproduce v4 exactly. cSP durations WILL differ
+# from v4 and the v4 values were wrong, in three ways:
+#   * min_return_ms is now applied, so breakthrough EMG no longer truncates a
+#     silent period at the first burst. Affected durations get LONGER.
+#   * the envelope is reflection-padded rather than zero-padded, so the
+#     baseline SD is no longer deflated by the segment edge.
+#   * the run-length bootstrap resamples in blocks, so the stated significance
+#     level is the one applied.
+# Re-run any analysis whose cSP values are being reported.
+DETECTION_VERSION = "2026-modular-v5"
 
 # ── Method registry ───────────────────────────────────────────────────────────
 # Maps preference key → callable

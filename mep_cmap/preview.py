@@ -590,6 +590,24 @@ class PreviewDetectionMixin:
                 gap_ms_map=_own("gap_ms_map", {}) or {},
                 csp_types=set(_own("csp_types", None) or
                               getattr(self, "csp_types", None) or set()),
+                # Every NUMERIC silent-period setting. csp_types was passed and
+                # none of these were, so the preview read them off a freshly
+                # constructed PipelineConfig and got its defaults -- Min return
+                # 40 ms, Min silence 25 ms, criterion 1.96, Search end 400 ms,
+                # 1000 iterations -- whatever the interface had been set to.
+                # Changing Min return from 40 to 2 produced a byte-identical
+                # preview, because the detector was handed 40 both times.
+                #
+                # Read through _own so a per-channel setup value wins over the
+                # file-wide one, matching every other setting here.
+                csp_min_silence_ms=float(_own("csp_min_silence_ms", 25.0)),
+                csp_min_return_ms=float(_own("csp_min_return_ms", 40.0)),
+                csp_criterion=float(_own("csp_criterion", 1.96)),
+                csp_significance=float(_own("csp_significance", 0.99)),
+                csp_n_boot=int(_own("csp_n_boot", 1000)),
+                csp_search_end_ms=float(_own("csp_search_end_ms", 400.0)),
+                csp_max_mep_offset_ms=float(_own("csp_max_mep_offset_ms", 100.0)),
+                csp_rms_window_ms=float(_own("csp_rms_window_ms", 10.0)),
                 # The ptp_anchor* settings are NOT passed here. They are not
                 # Tk-backed, so config_detection_kwargs returns them, and
                 # naming them as well raises "got multiple values for keyword
@@ -950,22 +968,17 @@ class PreviewDetectionMixin:
         Seeded into INSPECTOR index space, like the onsets, so the trial view
         draws the same landmarks the overlay counts.
         """
-        from .detection.csp_detection import detect_csp_bootstrap
+        from .detection.csp_detection import CspSettings, detect_csp_for_trial
         from .detection.offset_detection import resolve_mep_offset
         from .pipeline import resolve_window
 
         fs = float(payload["fs"])
         n_off = n_csp = 0
         csp_reasons = {}
-        # NOT a PipelineConfig field. Every other cSP setting is one, so
-        # reading this from cfg looked right and raised AttributeError, which
-        # the guard below swallowed -- so cSP detection here did nothing at
-        # all, whatever had been configured. It is an app-level setting the
-        # Inspector is handed directly, and is read the same way here.
-        try:
-            _csp_start_search = float(self.csp_search_start_ms.get())
-        except Exception:
-            _csp_start_search = 40.0
+        # csp_search_start_ms is deliberately NOT read here any more. The cSP
+        # search now starts at each trial's 2nd PTP peak, which is what the
+        # pipeline and the Inspector both do; a fixed start time was a third
+        # answer to a question that already had one.
         for st, segs in (payload.get("segments") or {}).items():
             if not len(segs):
                 continue
@@ -987,16 +1000,29 @@ class PreviewDetectionMixin:
                     # a baseline too short to bootstrap, or a raised exception.
                     _why = []
                     try:
-                        _res = detect_csp_bootstrap(
+                        # Anchored on the trial's 2nd PTP peak, exactly as the
+                        # pipeline does, so the detector cannot place a cSP
+                        # onset inside the MEP. This used to start from a fixed
+                        # csp_search_start_ms, which is a different question
+                        # from "where did this response finish" and gave the
+                        # preview a different answer from the analysis on any
+                        # trial whose MEP ran past that fixed time.
+                        _ptp_s = sb_seed + int(cfg.ptp_start * fs / 1000)
+                        _ptp_e = sb_seed + int(cfg.ptp_end   * fs / 1000)
+                        _ptp_s = max(0, _ptp_s)
+                        _ptp_e = min(len(seg), _ptp_e)
+                        if _ptp_e <= _ptp_s:
+                            raise ValueError(
+                                "amplitude window falls outside the segment")
+                        _seg_ptp = seg[_ptp_s:_ptp_e]
+                        _peak2 = _ptp_s + int(max(int(np.argmin(_seg_ptp)),
+                                                  int(np.argmax(_seg_ptp))))
+                        _peak2ms = (_peak2 - sb_seed) * 1000.0 / fs
+                        _res = detect_csp_for_trial(
                             seg, fs, t_ms,
+                            CspSettings.from_source(cfg),
+                            second_peak_ms=_peak2ms,
                             pre_ms=disp_pre_ms,
-                            search_start_ms=_csp_start_search,
-                            search_end_ms=cfg.csp_search_end_ms,
-                            min_silence_ms=cfg.csp_min_silence_ms,
-                            min_return_ms=cfg.csp_min_return_ms,
-                            criterion=cfg.csp_criterion,
-                            significance=cfg.csp_significance,
-                            n_boot=cfg.csp_n_boot,
                             reason_out=_why)
                     except Exception as _cexc:
                         _res = None
@@ -1047,9 +1073,12 @@ class PreviewDetectionMixin:
                          "here, so no silent period was looked for. Assign it "
                          "on tab 1a.")
         elif not n_csp:
+            # The search now starts at each trial's own 2nd PTP peak, so there
+            # is no single start time to quote here; the per-type reason lines
+            # below carry the detail.
             self.log("   No silent period was found for "
                      + ", ".join(_csp_types)
-                     + f" (searched {_csp_start_search:g}-"
+                     + " (searched from each trial's 2nd MEP peak to "
                      + f"{float(cfg.csp_search_end_ms):g} ms).")
             for _st, _r in sorted(csp_reasons.items()):
                 self.log(f"      {_st}: {_r}")

@@ -17,7 +17,8 @@ from tkinter import ttk, scrolledtext
 
 from .compat import _np_trapz, _np_ptp
 from .detection import (dispatch_onset,
-                        detect_csp_bootstrap,
+                        CspSettings,
+                        detect_csp_for_trial,
                         detect_mep_offset,
                         offset_marker_field)
 from .detection.defaults import DETECTION_DEFAULTS
@@ -253,11 +254,15 @@ class DataInspectorWindow:
                  onset_bigoni_walkback_sd=1.0,
                  detection_params=None,
                  enable_auc=True,
-                 csp_search_start_ms=40, csp_search_end_ms=400,
+                 csp_search_end_ms=400,
                  csp_min_silence_ms=25, csp_min_return_ms=40,
                  csp_criterion=1.96, csp_significance=0.99,
                  csp_n_boot=1000, csp_rms_window_ms=10,
-                 csp_max_mep_offset_ms=40,
+                 # 100 to match the interface default and PipelineConfig. It
+                 # stood at 40 here, so anything constructing the Inspector
+                 # without passing it explicitly reviewed trials under a
+                 # stricter onset limit than the analysis used.
+                 csp_max_mep_offset_ms=100,
                  latency_map=None,
                  csp_types=None, analysis_pre_ms=None,
                  extra_segs=None, wide_window_s=3.0, underlays=None,
@@ -363,7 +368,6 @@ class DataInspectorWindow:
             "onset_bigoni_walkback_sd": onset_bigoni_walkback_sd,
         })
         self._enable_auc_global        = enable_auc
-        self.csp_search_start_ms  = csp_search_start_ms
         self.csp_search_end_ms    = csp_search_end_ms
         self.csp_min_silence_ms   = csp_min_silence_ms
         self.csp_min_return_ms    = csp_min_return_ms
@@ -593,6 +597,28 @@ class DataInspectorWindow:
         self.cur_type, self.cur_idx = self.dd_event.get(), 0
         self._select_axis()
         self._plot()
+
+    def _csp_settings(self):
+        """
+        The cSP settings this review is running under, as the same value the
+        pipeline builds.
+
+        Assembled from the attributes the constructor was given, which come
+        from the interface, so changing a field in Settings changes review and
+        analysis together. Built here rather than stored so that a settings
+        change between draws is picked up without the Inspector caching a
+        stale copy of it.
+        """
+        return CspSettings.from_source({
+            "csp_min_silence_ms":    self.csp_min_silence_ms,
+            "csp_min_return_ms":     self.csp_min_return_ms,
+            "csp_criterion":         self.csp_criterion,
+            "csp_significance":      self.csp_significance,
+            "csp_n_boot":            self.csp_n_boot,
+            "csp_search_end_ms":     self.csp_search_end_ms,
+            "csp_max_mep_offset_ms": self.csp_max_mep_offset_ms,
+            "csp_rms_window_ms":     self.csp_rms_window_ms,
+        })
 
     def _next(self):
         if self._closed():
@@ -1154,45 +1180,39 @@ class DataInspectorWindow:
         if _should_detect:
             _csp_reason = []
 
-            # ── MEP-anchored search cap ───────────────────────────────────
-            # Search starts immediately after the 2nd PTP landmark.
-            # Search end is capped at second_peak_ms + csp_max_mep_offset_ms
-            # to prevent unrealistically late cSP placements.
-            # Search starts immediately after the 2nd PTP landmark so the
-            # detector never places cSP onset before the MEP has finished.
-            # The end remains the full csp_search_end_ms — the max-offset cap
-            # caused the window to collapse to ~40 ms which is too narrow for
-            # reliable bootstrap suppression detection.
-            # The csp_max_mep_offset_ms GUI field is retained for the pipeline
-            # but is not applied here in the inspector search window.
+            # ── cSP search anchor ─────────────────────────────────────────
+            # The search starts at the 2nd PTP landmark, so the detector can
+            # never place cSP onset inside the MEP. Everything else about the
+            # window, including how csp_max_mep_offset_ms is applied, lives in
+            # detect_csp_for_trial and is shared with the pipeline.
+            #
+            # This block used to compute the window itself and capped the
+            # search END at second_peak + csp_max_mep_offset_ms. That field
+            # means "the cSP must START within this many ms of the 2nd MEP
+            # peak" (see its declaration in app.py), so capping the window
+            # truncated the very quantity being measured: with the field at
+            # its default of 100 ms, no silent period longer than ~100 ms
+            # could be found here at all, while the pipeline -- which never
+            # applied the cap -- reported the true duration for the same
+            # trial. A comment here asserted the cap was not applied.
             _second_peak_idx = max(m['ptp_min_idx'], m['ptp_max_idx'])
             _second_peak_ms  = float(self.t[_second_peak_idx])
-            _effective_start = _second_peak_ms
-            _cap_ms          = _second_peak_ms + self.csp_max_mep_offset_ms
-            _effective_end   = min(self.csp_search_end_ms,
-                                   float(self.t[-1]),
-                                   _cap_ms)
 
-            if _effective_start >= _effective_end:
+            if _second_peak_ms >= float(self.t[-1]):
                 m['csp_detection_failed'] = True
                 m['csp_reason'] = (
                     f"Search window collapsed: 2nd MEP peak at "
-                    f"{_second_peak_ms:.0f} ms exceeds search end")
+                    f"{_second_peak_ms:.0f} ms is at or past the end of the "
+                    f"segment")
                 self.enable_silent.set(False)
             else:
-                csp = detect_csp_bootstrap(
+                csp = detect_csp_for_trial(
                     emg, fs, self.t,
+                    self._csp_settings(),
+                    second_peak_ms=_second_peak_ms,
                     pre_ms=(self._analysis_pre_ms
                             if self._analysis_pre_ms is not None
                             else abs(int(self.t[0]))),
-                    search_start_ms=_effective_start,
-                    search_end_ms=_effective_end,
-                    min_silence_ms=self.csp_min_silence_ms,
-                    min_return_ms=self.csp_min_return_ms,
-                    criterion=self.csp_criterion,
-                    significance=self.csp_significance,
-                    n_boot=self.csp_n_boot,
-                    rms_window_ms=self.csp_rms_window_ms,
                     reason_out=_csp_reason)
                 m['csp_reason'] = _csp_reason[0] if _csp_reason else ''
                 if csp is not None:
@@ -1233,25 +1253,14 @@ class DataInspectorWindow:
                 try:
                     _second_peak_idx = max(m['ptp_min_idx'], m['ptp_max_idx'])
                     _second_peak_ms  = float(self.t[_second_peak_idx])
-                    _eff_start = _second_peak_ms
-                    _cap_ms    = _second_peak_ms + self.csp_max_mep_offset_ms
-                    _eff_end   = min(self.csp_search_end_ms,
-                                    float(self.t[-1]),
-                                    _cap_ms)
-                    if _eff_start < _eff_end:
-                        _bg_csp = detect_csp_bootstrap(
+                    if _second_peak_ms < float(self.t[-1]):
+                        _bg_csp = detect_csp_for_trial(
                             emg, fs, self.t,
+                            self._csp_settings(),
+                            second_peak_ms=_second_peak_ms,
                             pre_ms=(self._analysis_pre_ms
                                     if self._analysis_pre_ms is not None
-                                    else abs(int(self.t[0]))),
-                            search_start_ms=_eff_start,
-                            search_end_ms=_eff_end,
-                            min_silence_ms=self.csp_min_silence_ms,
-                            min_return_ms=self.csp_min_return_ms,
-                            criterion=self.csp_criterion,
-                            significance=self.csp_significance,
-                            n_boot=self.csp_n_boot,
-                            rms_window_ms=self.csp_rms_window_ms)
+                                    else abs(int(self.t[0]))))
                         if _bg_csp is not None:
                             _csp_end_for_auc = _bg_csp[0]  # start of silence = end of MEP
                             m['_auc_csp_end_idx'] = _csp_end_for_auc

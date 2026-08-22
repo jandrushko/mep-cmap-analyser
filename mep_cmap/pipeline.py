@@ -339,6 +339,12 @@ class PipelineConfig:
     csp_n_boot:            int   = 1000
     csp_search_end_ms:     float = 400.0
     csp_max_mep_offset_ms: float = 100.0
+    # The Data Inspector already accepted an RMS window and PipelineConfig had
+    # no such field, so the two could only agree by both happening to sit on
+    # the detector's own default. Nothing currently sets either, so behaviour
+    # is unchanged; the field exists so that CspSettings reads one value for
+    # both callers and wiring a control to it later cannot desynchronise them.
+    csp_rms_window_ms:     float = 10.0
     # Averaged-waveform analysis mode (analyse per-condition mean once)
     average_mode:          bool  = False
     # Column selection for the narrowed COPY of trials.csv. None means no
@@ -1418,8 +1424,7 @@ def pipeline_quantify_segments(stim_type, segs_all, prestim_all,
         elif mk not in segments_metadata and stim_type in cfg.csp_types:
             # Unreviewed segment with CSP enabled — try auto-detect onset+CSP
             # and compute AUC if both succeed
-            from .detection import detect_csp_bootstrap as _dcsp
-            _pre_samp = int(cfg.prestim_ms * fs / 1000)
+            from .detection import CspSettings, detect_csp_for_trial
             _ptp_s    = _segs_sb + int(cfg.ptp_start * fs / 1000)
             _ptp_e    = _segs_sb + int(cfg.ptp_end   * fs / 1000)
             if _ptp_e < len(seg) and _ptp_s < _ptp_e:
@@ -1427,17 +1432,13 @@ def pipeline_quantify_segments(stim_type, segs_all, prestim_all,
                 _peak2   = _ptp_s + int(max(np.argmin(_seg_ptp),
                                             np.argmax(_seg_ptp)))
                 _peak2ms = (_peak2 - _segs_sb) * 1000 / fs
-                _csp = _dcsp(seg, fs,
-                             np.linspace(-_pre_type_ms, _post_type_ms,
-                                         len(seg), endpoint=False),
-                             pre_ms=_pre_type_ms,
-                             search_start_ms=_peak2ms,
-                             search_end_ms=cfg.csp_search_end_ms,
-                             min_silence_ms=cfg.csp_min_silence_ms,
-                             min_return_ms=cfg.csp_min_return_ms,
-                             criterion=cfg.csp_criterion,
-                             significance=cfg.csp_significance,
-                             n_boot=cfg.csp_n_boot)
+                _csp = detect_csp_for_trial(
+                    seg, fs,
+                    np.linspace(-_pre_type_ms, _post_type_ms,
+                                len(seg), endpoint=False),
+                    CspSettings.from_source(cfg),
+                    second_peak_ms=_peak2ms,
+                    pre_ms=_pre_type_ms)
                 if _csp is not None and auto_lat is not None:
                     _onset_samp = _segs_sb + int(auto_lat * fs / 1000)
                     _csp_start  = _csp[0]

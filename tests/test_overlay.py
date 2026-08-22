@@ -259,7 +259,8 @@ def test_offsets_and_csp_use_the_analysis_detectors():
     the strip above it."""
     body = PREVIEW[PREVIEW.index("def _preview_detect_extras"):]
     body = body[:body.index("def _preview_prestim_window_ms")]
-    assert "from .detection.csp_detection import detect_csp_bootstrap" in body
+    assert ("from .detection.csp_detection import CspSettings, "
+            "detect_csp_for_trial") in body
     assert "from .detection.offset_detection import resolve_mep_offset" in body
 
 
@@ -269,7 +270,7 @@ def test_the_silent_period_is_found_before_the_offset():
     would report a baseline return instead."""
     body = PREVIEW[PREVIEW.index("def _preview_detect_extras"):]
     body = body[:body.index("def _preview_prestim_window_ms")]
-    assert body.index("detect_csp_bootstrap(") < body.index("resolve_mep_offset(")
+    assert body.index("detect_csp_for_trial(") < body.index("resolve_mep_offset(")
     assert "csp_start_ms=csp_start_ms" in body
 
 
@@ -459,25 +460,38 @@ def test_rectifying_matches_taking_the_absolute_value():
 
 
 def test_the_csp_detector_is_imported_by_its_real_name():
-    """It is detect_csp_bootstrap. Importing 'detect_csp' raised ImportError
-    inside the extras stage, which the guard reported but which meant no
-    silent period was ever seeded. Asserted by IMPORTING it rather than by
-    matching the source, so a rename fails here rather than at run time."""
-    from mep_cmap.detection.csp_detection import detect_csp_bootstrap
-    assert callable(detect_csp_bootstrap)
-    assert "detect_csp_bootstrap" in PREVIEW
+    """It is detect_csp_for_trial, the shared entry point the pipeline and the
+    Inspector also use. Importing a name that does not exist raised ImportError
+    inside the extras stage, which the guard reported but which meant no silent
+    period was ever seeded. Asserted by IMPORTING it rather than by matching
+    the source, so a rename fails here rather than at run time."""
+    from mep_cmap.detection.csp_detection import (CspSettings,
+                                                  detect_csp_for_trial)
+    assert callable(detect_csp_for_trial)
+    assert "detect_csp_for_trial" in PREVIEW
+    assert "CspSettings" in PREVIEW
 
 
 def test_every_csp_keyword_the_preview_passes_exists():
-    """The preview calls it with nine keywords. A renamed parameter would
-    raise inside a guard and read as 'no silent period found'."""
+    """A renamed parameter would raise inside a guard and read as 'no silent
+    period found'.
+
+    The preview used to name every detector parameter itself. It now passes a
+    CspSettings, so the settings are checked as FIELDS of that object; the
+    keywords left are the three per-trial values plus reason_out."""
     import inspect
-    from mep_cmap.detection.csp_detection import detect_csp_bootstrap
-    params = set(inspect.signature(detect_csp_bootstrap).parameters)
-    for kw in ("pre_ms", "search_start_ms", "search_end_ms", "min_silence_ms",
-               "min_return_ms", "criterion", "significance", "n_boot",
-               "reason_out"):
+    from mep_cmap.detection.csp_detection import (CspSettings,
+                                                  detect_csp_for_trial)
+    params = set(inspect.signature(detect_csp_for_trial).parameters)
+    for kw in ("emg_seg", "fs", "time_axis", "settings",
+               "second_peak_ms", "pre_ms", "reason_out"):
         assert kw in params, kw
+
+    fields = set(CspSettings.__dataclass_fields__)
+    for name in ("min_silence_ms", "min_return_ms", "criterion",
+                 "significance", "n_boot", "search_end_ms",
+                 "max_mep_offset_ms", "rms_window_ms"):
+        assert name in fields, name
 
 
 def test_every_offset_keyword_the_preview_passes_exists():

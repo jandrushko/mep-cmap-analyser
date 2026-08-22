@@ -62,8 +62,8 @@ def adaptive_mains_cancel(data: np.ndarray,
     return cleaned
 
 
-def design_notch_sos(fs: float, f0: float, q: float,
-                     include_harmonics: bool = False) -> list:
+def design_notch_filters(fs: float, f0: float, q: float,
+                         include_harmonics: bool = False) -> list:
     """
     Return a list of (b, a) pairs implementing a notch at *f0* Hz and,
     if requested, every integer multiple (harmonic) up to Nyquist.
@@ -78,14 +78,35 @@ def design_notch_sos(fs: float, f0: float, q: float,
     Returns
     -------
     list of (b, a) coefficient pairs, one per notch frequency
+
+    Notes
+    -----
+    These are TRANSFER-FUNCTION coefficients from ``iirnotch``, not
+    second-order sections. Apply them with ``filtfilt(b, a, x)`` in a loop;
+    passing them to ``sosfilt``/``sosfiltfilt`` will not work. The function
+    was previously named ``design_notch_sos``, which said otherwise; that
+    name is kept as an alias below so existing scripts keep running.
     """
-    nyq      = 0.5 * fs
-    sos_list = []
-    n        = 1
-    while True:
-        f = f0 * n
-        if f >= nyq:
-            break
-        sos_list.append(iirnotch(f / nyq, q))
-        n += 1 if include_harmonics else float('inf')
-    return sos_list
+    if not np.isfinite(f0) or f0 <= 0:
+        raise ValueError(f"Notch frequency must be finite and positive, got {f0!r}")
+    if not np.isfinite(fs) or fs <= 0:
+        raise ValueError(f"Sampling frequency must be finite and positive, got {fs!r}")
+
+    nyq = 0.5 * fs
+    # Largest harmonic index that could still fall below Nyquist. Bounding the
+    # range up front replaces a `while True` whose exit depended on adding
+    # float('inf') to an int counter -- that worked, but it turned `n` into a
+    # float and would have looped forever had f0 ever reached this function
+    # as 0 (f0 * inf -> nan, and nan >= nyq is False).
+    n_max = int(nyq // f0) if include_harmonics else 1
+
+    return [iirnotch(f0 * n / nyq, q)
+            for n in range(1, n_max + 1)
+            if f0 * n < nyq]
+
+
+#: Former name. ``iirnotch`` returns (b, a), never second-order sections, so
+#: the old name misdescribed the return value; kept so external analysis
+#: scripts written against v1.4.x and earlier continue to import cleanly.
+design_notch_sos = design_notch_filters
+
