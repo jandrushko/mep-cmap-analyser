@@ -12,7 +12,7 @@ import re
 import datetime
 from dataclasses import dataclass, field, asdict
 
-TOOL_VERSION = "1.4.5"
+TOOL_VERSION = "1.4.6"
 
 
 @dataclass

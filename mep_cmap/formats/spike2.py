@@ -190,3 +190,74 @@ def _extract_stim_times_py(file_path: str, marker_name: str) -> dict:
             stim_dict[match.group(2)].append(float(match.group(1)))
 
     return stim_dict
+
+
+# ── Event-channel discovery ───────────────────────────────────────────────────
+#
+# The scan-and-pick step in BIDS-ify used to be offered for .smr only, so a
+# Spike-2 TEXT export fell back to the shared stim marker label and reported a
+# single code -- typically just 'A' -- for a recording that in fact carried
+# several. Nothing said the list was a fallback rather than the file's
+# contents, so the missing codes were invisible: they simply never appeared to
+# be assignable.
+#
+# The information is in the file. A text export carries one or more "Marker"
+# blocks, each naming its channel and then listing `time "X???"` rows whose X
+# is the code. That is the same (channel -> code -> count) shape the .smr
+# reader returns, so the dialogue can treat both alike.
+
+
+def _marker_blocks(file_path: str):
+    """Yield (channel_name, [lines]) for every "Marker" block in the export."""
+    with open(file_path, "rb") as f:
+        raw = f.read()
+    text = (raw.decode("latin-1", errors="replace")
+               .replace("\r\n", "\n").replace("\r", "\n"))
+    lines = text.split("\n")
+
+    i = 0
+    while i < len(lines):
+        if lines[i].strip().startswith('"Marker"') and i + 2 < len(lines):
+            name = lines[i + 2].strip().strip('"')
+            body = []
+            j = i + 3
+            while j < len(lines):
+                s = lines[j].strip()
+                # A block ends at the next CHANNEL header or the next Marker
+                # block. Stopping only at "CHANNEL" merged a second marker
+                # channel's events into the first one's counts.
+                if s.startswith('"CHANNEL"') or s.startswith('"Marker"'):
+                    break
+                body.append(s)
+                j += 1
+            yield name, body
+            i = j
+            continue
+        i += 1
+
+
+def list_event_channels(file_path: str) -> list:
+    """Names of the marker channels in a Spike-2 text export."""
+    out = []
+    for name, _body in _marker_blocks(file_path):
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+def list_event_codes(file_path: str) -> dict:
+    """``{channel: {code: n_events}}`` for every marker channel in the export.
+
+    Mirrors the .smr reader's contract so one dialogue can drive both.
+    """
+    pattern = re.compile(r'^([\d.]+)\s+"(.{1})\?\?\?"')
+    out = {}
+    for name, body in _marker_blocks(file_path):
+        counts = out.setdefault(name, {})
+        for line in body:
+            m = pattern.match(line)
+            if m:
+                counts[m.group(2)] = counts.get(m.group(2), 0) + 1
+    # A channel with no parseable rows is not an event channel the analyst can
+    # assign anything to; offering it would be offering an empty list.
+    return {k: v for k, v in out.items() if v}

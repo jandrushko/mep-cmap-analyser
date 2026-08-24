@@ -1,0 +1,1788 @@
+{
+ "tool": "TMS-RAT",
+ "tool_version": "1.0",
+ "tool_date": "2025-06-02",
+ "tool_url": "https://tms-rat.org/",
+ "citation": "Székely, O., Holmes, N.P., et al. Development and Validation of the Transcranial Magnetic Stimulation Reporting Assessment Tool (TMS-RAT). bioRxiv 2026.02.18.706460",
+ "mapping_version": "1",
+ "_note": "Item ids, titles, descriptions and vocabularies are read from the official workbook and must not be edited here. Only 'source' and 'provider' are this tool's own classification.",
+ "sections": {
+  "A": "Participant bio",
+  "B": "Participant state",
+  "C": "Design",
+  "D": "Hardware",
+  "E": "Locations",
+  "F": "Intensity",
+  "G": "Single pulse",
+  "H": "Motor threshold",
+  "I": "Motor variables",
+  "J": "EMG and muscles",
+  "K": "Afferent stimulation",
+  "L": "Conditioning",
+  "M": "SEP",
+  "N": "Repetitive"
+ },
+ "protocols": [
+  "Single pulse TMS",
+  "Motor-evoked potentials",
+  "Motor",
+  "Afferent conditioning",
+  "Paired-associate conditioning",
+  "Paired-pulse TMS",
+  "Repetitive TMS"
+ ],
+ "section_relevance": {
+  "A": {
+   "Single pulse TMS": "✔",
+   "Motor-evoked potentials": "✔",
+   "Motor": "✔",
+   "Afferent conditioning": "✔",
+   "Paired-associate conditioning": "✔",
+   "Paired-pulse TMS": "✔",
+   "Repetitive TMS": "✔"
+  },
+  "B": {
+   "Single pulse TMS": "✔",
+   "Motor-evoked potentials": "✔",
+   "Motor": "✔",
+   "Afferent conditioning": "✔",
+   "Paired-associate conditioning": "✔",
+   "Paired-pulse TMS": "✔",
+   "Repetitive TMS": "✔"
+  },
+  "C": {
+   "Single pulse TMS": "✔",
+   "Motor-evoked potentials": "✔",
+   "Motor": "✔",
+   "Afferent conditioning": "✔",
+   "Paired-associate conditioning": "✔",
+   "Paired-pulse TMS": "✔",
+   "Repetitive TMS": "✔"
+  },
+  "D": {
+   "Single pulse TMS": "✔",
+   "Motor-evoked potentials": "✔",
+   "Motor": "✔",
+   "Afferent conditioning": "✔",
+   "Paired-associate conditioning": "✔",
+   "Paired-pulse TMS": "✔",
+   "Repetitive TMS": "✔"
+  },
+  "E": {
+   "Single pulse TMS": "✔",
+   "Motor-evoked potentials": "✔",
+   "Motor": "✔",
+   "Afferent conditioning": "✔",
+   "Paired-associate conditioning": "✔",
+   "Paired-pulse TMS": "✔",
+   "Repetitive TMS": "✔"
+  },
+  "F": {
+   "Single pulse TMS": "✔",
+   "Motor-evoked potentials": "✔",
+   "Motor": "✔",
+   "Afferent conditioning": "✔",
+   "Paired-associate conditioning": "✔",
+   "Paired-pulse TMS": "✔",
+   "Repetitive TMS": "✔"
+  },
+  "G": {
+   "Single pulse TMS": "✔",
+   "Motor-evoked potentials": "✔",
+   "Motor": "?",
+   "Afferent conditioning": "✔",
+   "Paired-associate conditioning": "✔",
+   "Paired-pulse TMS": "✔",
+   "Repetitive TMS": "✘"
+  },
+  "H": {
+   "Single pulse TMS": "?",
+   "Motor-evoked potentials": "✔",
+   "Motor": "?",
+   "Afferent conditioning": "✔",
+   "Paired-associate conditioning": "✔",
+   "Paired-pulse TMS": "✔",
+   "Repetitive TMS": "?"
+  },
+  "I": {
+   "Single pulse TMS": "?",
+   "Motor-evoked potentials": "✔",
+   "Motor": "✔",
+   "Afferent conditioning": "✔",
+   "Paired-associate conditioning": "✔",
+   "Paired-pulse TMS": "?",
+   "Repetitive TMS": "✘"
+  },
+  "J": {
+   "Single pulse TMS": "?",
+   "Motor-evoked potentials": "✔",
+   "Motor": "?",
+   "Afferent conditioning": "✔",
+   "Paired-associate conditioning": "✔",
+   "Paired-pulse TMS": "?",
+   "Repetitive TMS": "✘"
+  },
+  "K": {
+   "Single pulse TMS": "✘",
+   "Motor-evoked potentials": "✘",
+   "Motor": "✘",
+   "Afferent conditioning": "✔",
+   "Paired-associate conditioning": "✔",
+   "Paired-pulse TMS": "✘",
+   "Repetitive TMS": "✘"
+  },
+  "L": {
+   "Single pulse TMS": "✘",
+   "Motor-evoked potentials": "✘",
+   "Motor": "✘",
+   "Afferent conditioning": "✔",
+   "Paired-associate conditioning": "✔",
+   "Paired-pulse TMS": "✔",
+   "Repetitive TMS": "✘"
+  },
+  "M": {
+   "Single pulse TMS": "✘",
+   "Motor-evoked potentials": "✘",
+   "Motor": "✘",
+   "Afferent conditioning": "?",
+   "Paired-associate conditioning": "?",
+   "Paired-pulse TMS": "✘",
+   "Repetitive TMS": "✘"
+  },
+  "N": {
+   "Single pulse TMS": "✘",
+   "Motor-evoked potentials": "✘",
+   "Motor": "✘",
+   "Afferent conditioning": "✘",
+   "Paired-associate conditioning": "✘",
+   "Paired-pulse TMS": "✘",
+   "Repetitive TMS": "✔"
+  }
+ },
+ "relevance_legend": {
+  "✔": "required",
+  "?": "sometimes",
+  "✘": "not required"
+ },
+ "items": [
+  {
+   "id": "A1",
+   "section": "A",
+   "title": "Age",
+   "description": "What age were the human and/or animal participants in the study?",
+   "quantitative": true,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 9,
+   "source": "participants",
+   "provider": "age",
+   "full_requires": [
+    "central tendency",
+    "dispersion"
+   ],
+   "aggregate": "mean_sd"
+  },
+  {
+   "id": "A2",
+   "section": "A",
+   "title": "Sex",
+   "description": "What was the distribution of participant sex?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 10,
+   "source": "participants",
+   "provider": "sex",
+   "full_requires": [
+    "count per category",
+    "categories sum to N"
+   ],
+   "aggregate": "list"
+  },
+  {
+   "id": "A3",
+   "section": "A",
+   "title": "Handedness",
+   "description": "What was the distribution of participant handedness?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 11,
+   "source": "participants",
+   "provider": "handedness",
+   "full_requires": [
+    "count per category",
+    "categories sum to N"
+   ],
+   "aggregate": "list"
+  },
+  {
+   "id": "A4",
+   "section": "A",
+   "title": "Height",
+   "description": "What were participants’ heights in cm or inches?",
+   "quantitative": true,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 12,
+   "source": "participants",
+   "provider": "height",
+   "full_requires": [
+    "central tendency",
+    "dispersion"
+   ],
+   "aggregate": "mean_sd"
+  },
+  {
+   "id": "A5",
+   "section": "A",
+   "title": "Weight",
+   "description": "What were participants’ weights in kg or pounds?",
+   "quantitative": true,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 13,
+   "source": "participants",
+   "provider": "weight",
+   "full_requires": [
+    "central tendency",
+    "dispersion"
+   ],
+   "aggregate": "mean_sd"
+  },
+  {
+   "id": "B1",
+   "section": "B",
+   "title": "Medication",
+   "description": "Were participants screened for prescribed or unprescribed medications? (either specific medications, or more generally) If a medication is part of the study design (as an IV), were participants screened for other medications?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part - some participants/groups only",
+    "Missing"
+   ],
+   "input_row": 15,
+   "source": "out_of_scope",
+   "provider": null,
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "B2",
+   "section": "B",
+   "title": "CNS-active substances",
+   "description": "Were participants screened for CNS-active substances such as caffeine, alcohol, or nicotine? (either specific CNS-active substances, or more generally) If a CNS-active substance is part of the study design (as an IV), were participants screened for other substances?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part - some participants/groups only",
+    "Missing"
+   ],
+   "input_row": 16,
+   "source": "out_of_scope",
+   "provider": null,
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "B3",
+   "section": "B",
+   "title": "Neurological, psychiatric or behavioural",
+   "description": "Were participants screened for neurological, psychiatric, behavioural or developmental conditions? (either specific conditions, or more generally) If a condition is part of the study design (as an IV), were participants screened for other conditions?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part - some participants/groups only",
+    "Missing"
+   ],
+   "input_row": 17,
+   "source": "out_of_scope",
+   "provider": null,
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "B4",
+   "section": "B",
+   "title": "Medical",
+   "description": "Were participants screened for medical or systemic conditions? (either specific conditions, or more generally) If a condition is part of the study design (as an IV), were participants screened for other conditions?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part - some participants/groups only",
+    "Missing"
+   ],
+   "input_row": 18,
+   "source": "out_of_scope",
+   "provider": null,
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "B5",
+   "section": "B",
+   "title": "Cognitive state",
+   "description": "How was participants' current cognitive state assessed?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part - some participants/groups only",
+    "Missing"
+   ],
+   "input_row": 19,
+   "source": "out_of_scope",
+   "provider": null,
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "B6",
+   "section": "B",
+   "title": "Sleep",
+   "description": "How was participants' current alertness or recent sleep assessed?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 20,
+   "source": "out_of_scope",
+   "provider": null,
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "B7",
+   "section": "B",
+   "title": "Posture",
+   "description": "What was the general body posture during the testing session? (e.g., standing, seated, lying?)",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 21,
+   "source": "out_of_scope",
+   "provider": null,
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "C1",
+   "section": "C",
+   "title": "Studies",
+   "description": "How many studies, experiments, or components are included in the article? How are participants divided between them?",
+   "quantitative": false,
+   "vocabulary": [
+    "Single",
+    "Multiple",
+    "Repeated",
+    "Multiple",
+    "Independent",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 23,
+   "source": "out_of_scope",
+   "provider": null,
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "C2",
+   "section": "C",
+   "title": "Population",
+   "description": "What population(s) of participants are studied?",
+   "quantitative": false,
+   "vocabulary": [
+    "Healthy",
+    "Clinical",
+    "Mixed",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 24,
+   "source": "participants",
+   "provider": "population",
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "C3",
+   "section": "C",
+   "title": "Groups",
+   "description": "How many independent groups were studied?",
+   "quantitative": false,
+   "vocabulary": [
+    "Single",
+    "Intermediate",
+    "Multiple",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 25,
+   "source": "participants",
+   "provider": "groups",
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "C4",
+   "section": "C",
+   "title": "Protocol",
+   "description": "What general TMS protocol was used?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 26,
+   "source": "derived",
+   "provider": "protocol_description",
+   "full_requires": [],
+   "aggregate": "unique"
+  },
+  {
+   "id": "C5",
+   "section": "C",
+   "title": "Time of day",
+   "description": "What time of day were the TMS sessions done?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 27,
+   "source": "derived",
+   "provider": "time_of_day",
+   "full_requires": [],
+   "aggregate": "list"
+  },
+  {
+   "id": "C6",
+   "section": "C",
+   "title": "Session duration and interval",
+   "description": "For experimental sessions, what was the session duration? If the same participants completed multiple sessions, how were they scheduled?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 28,
+   "source": "derived",
+   "provider": "session_duration",
+   "full_requires": [
+    "session duration",
+    "between-session interval"
+   ],
+   "aggregate": "list"
+  },
+  {
+   "id": "C7",
+   "section": "C",
+   "title": "Attention",
+   "description": "How was participants’ attention maintained during the study, specifically during the TMS? (e.g., by task, breaks, monitoring by experimenter, or attention checks)",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 29,
+   "source": "out_of_scope",
+   "provider": null,
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "C8",
+   "section": "C",
+   "title": "Control condition",
+   "description": "Which procedures were used to control for non-specific, non-targeted or unwanted effects of TMS? Which control conditions, sham, placebo, or baseline comparisons were used?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 30,
+   "source": "derived",
+   "provider": "control_condition",
+   "full_requires": [],
+   "aggregate": "unique"
+  },
+  {
+   "id": "C9",
+   "section": "C",
+   "title": "Sensory attenuation",
+   "description": "Which procedures were used to minimise side-effects of stimulation? (e.g., was there any anaesthesia, ear plugs, or other sensory attenuation?)",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 31,
+   "source": "out_of_scope",
+   "provider": null,
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "D1",
+   "section": "D",
+   "title": "Stimulator",
+   "description": "What make and model magnetic stimulator was used?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 33,
+   "source": "nibs_bids",
+   "provider": "Manufacturer+ManufacturersModelName",
+   "full_requires": [
+    "manufacturer",
+    "model"
+   ],
+   "aggregate": "unique"
+  },
+  {
+   "id": "D2",
+   "section": "D",
+   "title": "Coil shape and model",
+   "description": "What was the shape of the TMS coil used and what was the model number?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 34,
+   "source": "nibs_bids",
+   "provider": "CoilType+CoilModel",
+   "full_requires": [
+    "coil geometry",
+    "coil model or 'custom'"
+   ],
+   "aggregate": "unique"
+  },
+  {
+   "id": "D3",
+   "section": "D",
+   "title": "Coil diameter",
+   "description": "What was the diameter of the coil, or its wing(s), and what dimension does this diameter refer to?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 35,
+   "source": "nibs_gap",
+   "provider": "CoilDiameter",
+   "full_requires": [
+    "diameter value",
+    "which dimension it refers to"
+   ],
+   "aggregate": "unique"
+  },
+  {
+   "id": "D4",
+   "section": "D",
+   "title": "Pulse waveform",
+   "description": "What shape was the TMS pulse waveform?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Missing"
+   ],
+   "input_row": 36,
+   "source": "nibs_bids",
+   "provider": "PulseShape",
+   "full_requires": [],
+   "aggregate": "unique"
+  },
+  {
+   "id": "E1",
+   "section": "E",
+   "title": "Head and brain neuronavigation",
+   "description": "Which method of head and/or brain neuronavigation was used, with details? With MRI-based methods, which scan type(s) were used and were they subject-specific or templates?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 38,
+   "source": "nibs_bids",
+   "provider": "TargetingMethod+NeuronavigationSystem+StructuralMRI",
+   "full_requires": [
+    "navigation method",
+    "scan type or template"
+   ],
+   "aggregate": "unique"
+  },
+  {
+   "id": "E2",
+   "section": "E",
+   "title": "Coil location on skin",
+   "description": "Where was the coil placed on the surface of the skin? What anatomical landmarks on the skin or bones were used, and what measurements were taken?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 39,
+   "source": "nibs_gap",
+   "provider": "CoilLocationOnScalp",
+   "full_requires": [],
+   "aggregate": "list"
+  },
+  {
+   "id": "E3",
+   "section": "E",
+   "title": "Target location in CNS",
+   "description": "What was the anatomical (structural) or functional target within the nervous system? (within a few cm precision)",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 40,
+   "source": "nibs_bids",
+   "provider": "TargetRegion+TargetCoordinates+TargetCoordinateSystem",
+   "full_requires": [],
+   "aggregate": "list"
+  },
+  {
+   "id": "E4",
+   "section": "E",
+   "title": "Coil orientation",
+   "description": "How was the coil oriented relative to the head? Requires both the angle and what the angle is relative to - a reference point or plane",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing",
+    "n/a"
+   ],
+   "input_row": 41,
+   "source": "nibs_bids",
+   "provider": "CoilOrientation",
+   "full_requires": [
+    "angle",
+    "reference plane or point"
+   ],
+   "aggregate": "unique"
+  },
+  {
+   "id": "E5",
+   "section": "E",
+   "title": "Coil current direction",
+   "description": "What was the orientation of the current in the coil, relative to the target, and/or to the head or body?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 42,
+   "source": "nibs_bids",
+   "provider": "InducedCurrentDirection",
+   "full_requires": [],
+   "aggregate": "unique"
+  },
+  {
+   "id": "E6",
+   "section": "E",
+   "title": "Coil stability",
+   "description": "How was the stability of the coil maintained (eg, by eye, mechanically, or with software)? Must be quantified using mm, cm, degrees, or another numerical measure",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 43,
+   "source": "nibs_gap",
+   "provider": "CoilStabilityMethod+CoilStabilityTolerance",
+   "full_requires": [
+    "stability method",
+    "numerical tolerance"
+   ],
+   "aggregate": null
+  },
+  {
+   "id": "F1",
+   "section": "F",
+   "title": "Intensity method",
+   "description": "How was the TMS intensity decided?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Missing"
+   ],
+   "input_row": 45,
+   "source": "nibs_bids",
+   "provider": "IntensityReference+IntensityScaling",
+   "full_requires": [],
+   "aggregate": "unique"
+  },
+  {
+   "id": "F2",
+   "section": "F",
+   "title": "Machine intensity",
+   "description": "What was the intensity of the TMS used, in % of the maximum stimulator output (%MSO) or dI/dT?",
+   "quantitative": true,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 46,
+   "source": "derived",
+   "provider": "machine_intensity",
+   "full_requires": [
+    "central tendency",
+    "dispersion",
+    "per condition"
+   ],
+   "aggregate": "mean_sd"
+  },
+  {
+   "id": "F3",
+   "section": "F",
+   "title": "Participant intensity",
+   "description": "What was the participant-specific intensity of the TMS used, relative to a threshold? The threshold could be (e.g.) an MEP measure like RMT, AMT, 1mV, or 50% of the maximum MEP; an estimated induced current like V/m; or an estimated effect, eg 50% inhibition",
+   "quantitative": true,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing",
+    "n/a"
+   ],
+   "input_row": 47,
+   "source": "derived",
+   "provider": "participant_intensity",
+   "full_requires": [
+    "central tendency",
+    "dispersion",
+    "per condition"
+   ],
+   "aggregate": "mean_sd"
+  },
+  {
+   "id": "G0",
+   "section": "G",
+   "title": "Criteria relevant?",
+   "description": "",
+   "quantitative": false,
+   "vocabulary": [
+    "Yes",
+    "No"
+   ],
+   "input_row": 49,
+   "source": "gate",
+   "provider": "single_pulse_relevant",
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "G1",
+   "section": "G",
+   "title": "Trial-to-trial interval",
+   "description": "What was the duration between each successive test (unconditioned) pulse of TMS? Alternatively, what was the TMS frequency?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 50,
+   "source": "derived",
+   "provider": "trial_to_trial_interval",
+   "full_requires": [
+    "central tendency",
+    "dispersion"
+   ],
+   "aggregate": "mean_sd"
+  },
+  {
+   "id": "G2",
+   "section": "G",
+   "title": "Number of pulses",
+   "description": "How many single pulses of test (unconditioned) TMS were presented?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 51,
+   "source": "derived",
+   "provider": "number_of_pulses",
+   "full_requires": [],
+   "aggregate": "sum"
+  },
+  {
+   "id": "G3",
+   "section": "G",
+   "title": "Evoked response raw",
+   "description": "What are the values of responses evoked by test (unconditioned) pulses of TMS, in raw units? Most commonly: MEP amplitudes in mV or µV; could also be EMG area under curve or silent period duration; EEG responses; in conditioning protocols, the 'unconditioned' response",
+   "quantitative": true,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing",
+    "n/a"
+   ],
+   "input_row": 52,
+   "source": "derived",
+   "provider": "evoked_response_raw",
+   "full_requires": [
+    "central tendency",
+    "dispersion"
+   ],
+   "aggregate": "mean_sd"
+  },
+  {
+   "id": "H0",
+   "section": "H",
+   "title": "Criteria relevant?",
+   "description": "",
+   "quantitative": false,
+   "vocabulary": [
+    "Yes",
+    "No"
+   ],
+   "input_row": 54,
+   "source": "gate",
+   "provider": "threshold_relevant",
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "H1",
+   "section": "H",
+   "title": "Threshold location",
+   "description": "How was the scalp location used for the threshold located? Requires: a) distances relative to one or more scalp landmarks (vertex, inion, 10:20 electrode) OR b) Search strategy, which may involve a grid on the scalp or neuronavigation",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 55,
+   "source": "nibs_gap",
+   "provider": "ThresholdLocationMethod",
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "H2",
+   "section": "H",
+   "title": "Threshold type",
+   "description": "What type of threshold was measured to determine stimulation intensity? Many motor thresholds will not involve EMG recording",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 56,
+   "source": "nibs_bids",
+   "provider": "RestingMotorThreshold|ActiveMotorThreshold",
+   "full_requires": [],
+   "aggregate": "unique"
+  },
+  {
+   "id": "H3",
+   "section": "H",
+   "title": "Threshold criterion",
+   "description": "What response was used to define the threshold?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 57,
+   "source": "nibs_gap",
+   "provider": "ThresholdCriterion",
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "H4",
+   "section": "H",
+   "title": "Threshold algorithm",
+   "description": "How was the TMS intensity adjusted to find the motor threshold?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 58,
+   "source": "nibs_bids",
+   "provider": "MotorThresholdMethod",
+   "full_requires": [
+    "hits required",
+    "pulses delivered"
+   ],
+   "aggregate": "unique"
+  },
+  {
+   "id": "H5",
+   "section": "H",
+   "title": "Threshold values",
+   "description": "What was the overall value of motor thresholds (e.g., RMT, AMT), in each participant group, expressed in %MSO or dI/dT?",
+   "quantitative": true,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 59,
+   "source": "nibs_bids",
+   "provider": "RestingMotorThreshold|ActiveMotorThreshold",
+   "full_requires": [
+    "central tendency",
+    "dispersion"
+   ],
+   "aggregate": "mean_sd"
+  },
+  {
+   "id": "I0",
+   "section": "I",
+   "title": "Criteria relevant?",
+   "description": "",
+   "quantitative": false,
+   "vocabulary": [
+    "Yes",
+    "No"
+   ],
+   "input_row": 61,
+   "source": "gate",
+   "provider": "motor_relevant",
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "I1",
+   "section": "I",
+   "title": "Motor skills",
+   "description": "Were participants screened for history of repetitive movements, skills, or expertise? (either specific skill/expertise, or more generally) If the skill/expertise is part of the study design (as an IV), were participants screened for other skills?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Missing"
+   ],
+   "input_row": 62,
+   "source": "out_of_scope",
+   "provider": null,
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "I2",
+   "section": "I",
+   "title": "Prior motor activity",
+   "description": "What were participants instructed to do, or reported doing, before the testing session?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 63,
+   "source": "out_of_scope",
+   "provider": null,
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "I3",
+   "section": "I",
+   "title": "Target muscle or body part activity",
+   "description": "What was the level of activity in the targeted muscles or body parts during TMS? This refers to the principle time(s) or task(s) when the main dependent variable(s) were measured",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 64,
+   "source": "nibs_gap",
+   "provider": "TargetMuscleActivity",
+   "full_requires": [
+    "activity level",
+    "how it was monitored"
+   ],
+   "aggregate": null
+  },
+  {
+   "id": "J0",
+   "section": "J",
+   "title": "Criteria relevant?",
+   "description": "",
+   "quantitative": false,
+   "vocabulary": [
+    "Yes",
+    "No"
+   ],
+   "input_row": 66,
+   "source": "gate",
+   "provider": "emg_relevant",
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "J1",
+   "section": "J",
+   "title": "EMG hardware",
+   "description": "What make and model hardware was used to collect EMG data?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 67,
+   "source": "derived",
+   "provider": "emg_hardware",
+   "full_requires": [
+    "manufacturer",
+    "model"
+   ],
+   "aggregate": "unique"
+  },
+  {
+   "id": "J2",
+   "section": "J",
+   "title": "EMG software",
+   "description": "What software and version were used to collect EMG data?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 68,
+   "source": "derived",
+   "provider": "emg_software",
+   "full_requires": [
+    "software",
+    "version"
+   ],
+   "aggregate": "unique"
+  },
+  {
+   "id": "J3",
+   "section": "J",
+   "title": "Skin preparation",
+   "description": "How was the skin prepared?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 69,
+   "source": "out_of_scope",
+   "provider": null,
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "J4",
+   "section": "J",
+   "title": "Electrode type, material and size",
+   "description": "What electrodes were used? (type, material and size)",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 70,
+   "source": "nibs_bids",
+   "provider": "ElectrodeType+ElectrodeSize",
+   "full_requires": [
+    "electrode type",
+    "material",
+    "size"
+   ],
+   "aggregate": "unique"
+  },
+  {
+   "id": "J5",
+   "section": "J",
+   "title": "Electrode location",
+   "description": "Where were the electrodes placed? (targeted muscle and side of the body)",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 71,
+   "source": "derived",
+   "provider": "electrode_location",
+   "full_requires": [
+    "muscle",
+    "side of body"
+   ],
+   "aggregate": "list"
+  },
+  {
+   "id": "J6",
+   "section": "J",
+   "title": "Electrode montage",
+   "description": "What electrode placement was used? States the montage, and either the distance between electrodes or sufficient anatomical detail",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 72,
+   "source": "nibs_gap",
+   "provider": "ElectrodeMontage+InterElectrodeDistance",
+   "full_requires": [
+    "montage",
+    "inter-electrode distance or anatomical detail"
+   ],
+   "aggregate": "unique"
+  },
+  {
+   "id": "J7",
+   "section": "J",
+   "title": "Sampling and filtering",
+   "description": "What sampling rate was used and what filtering was applied to the data at data acquisition? (sampling rate, filter type and cut-off frequencies)",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 73,
+   "source": "derived",
+   "provider": "sampling_and_filtering",
+   "full_requires": [
+    "sampling rate",
+    "filter type",
+    "cut-off frequencies",
+    "analysis filtering if any"
+   ],
+   "aggregate": "unique"
+  },
+  {
+   "id": "J8",
+   "section": "J",
+   "title": "EMG measure",
+   "description": "What feature of the EMG data was measured, and within which specific time interval?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing",
+    "n/a"
+   ],
+   "input_row": 74,
+   "source": "derived",
+   "provider": "emg_measure",
+   "full_requires": [
+    "feature measured",
+    "time interval",
+    "extraction algorithm"
+   ],
+   "aggregate": "unique"
+  },
+  {
+   "id": "J9",
+   "section": "J",
+   "title": "EMG amplitude normalization",
+   "description": "For each participant, (target) muscle and session, how were the EMG responses normalised? (various approaches are possible: e.g., maximum voluntary contraction, MVC, maximal M-wave, MEP maximum, or not normalised: https://doi.org/10.1016/j.jelekin.2020.102438)",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing",
+    "n/a"
+   ],
+   "input_row": 75,
+   "source": "derived",
+   "provider": "amplitude_normalisation",
+   "full_requires": [],
+   "aggregate": "unique"
+  },
+  {
+   "id": "K0",
+   "section": "K",
+   "title": "Criteria relevant?",
+   "description": "",
+   "quantitative": false,
+   "vocabulary": [
+    "Yes",
+    "No"
+   ],
+   "input_row": 77,
+   "source": "gate",
+   "provider": "afferent_relevant",
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "K1",
+   "section": "K",
+   "title": "Afferent stimulation hardware",
+   "description": "What make and model peripheral nerve stimulator was used for afferent conditioning?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 78,
+   "source": "nibs_gap",
+   "provider": "PeripheralStimulatorManufacturer+Model",
+   "full_requires": [],
+   "aggregate": "unique"
+  },
+  {
+   "id": "K2",
+   "section": "K",
+   "title": "Electrodes or stimulators",
+   "description": "What electrodes or other stimulators were used for afferent / peripheral skin or nerve stimulation, and how were they oriented on the body?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 79,
+   "source": "nibs_gap",
+   "provider": "AfferentElectrodeType+Orientation",
+   "full_requires": [
+    "electrode or stimulator type",
+    "orientation on the body"
+   ],
+   "aggregate": "list"
+  },
+  {
+   "id": "K3",
+   "section": "K",
+   "title": "Afferent stimulus location",
+   "description": "Where was the stimulator placed on the surface of the skin? What anatomical landmarks on the skin or bones were used?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 80,
+   "source": "nibs_gap",
+   "provider": "AfferentStimulusLocation",
+   "full_requires": [
+    "side of body",
+    "location on body"
+   ],
+   "aggregate": "list"
+  },
+  {
+   "id": "K4",
+   "section": "K",
+   "title": "Afferent stimulus target",
+   "description": "What nerve was targeted?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 81,
+   "source": "nibs_gap",
+   "provider": "AfferentStimulusTargetNerve",
+   "full_requires": [],
+   "aggregate": "unique"
+  },
+  {
+   "id": "K5",
+   "section": "K",
+   "title": "Duration and waveform",
+   "description": "How long was each nerve stimulus and what was the waveform?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 82,
+   "source": "nibs_gap",
+   "provider": "AfferentPulseDuration+Waveform",
+   "full_requires": [
+    "pulse duration",
+    "waveform"
+   ],
+   "aggregate": "unique"
+  },
+  {
+   "id": "K6",
+   "section": "K",
+   "title": "Threshold type",
+   "description": "What type of threshold was used to calibrate afferent stimulus intensity?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Missing",
+    "n/a"
+   ],
+   "input_row": 83,
+   "source": "nibs_gap",
+   "provider": "AfferentThresholdType",
+   "full_requires": [],
+   "aggregate": "unique"
+  },
+  {
+   "id": "K7",
+   "section": "K",
+   "title": "Threshold values",
+   "description": "What was the threshold, in mA or V units?",
+   "quantitative": true,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing",
+    "n/a"
+   ],
+   "input_row": 84,
+   "source": "nibs_gap",
+   "provider": "AfferentThresholdValue",
+   "full_requires": [
+    "central tendency",
+    "dispersion"
+   ],
+   "aggregate": "mean_sd"
+  },
+  {
+   "id": "L0",
+   "section": "L",
+   "title": "Criteria relevant?",
+   "description": "",
+   "quantitative": false,
+   "vocabulary": [
+    "Yes",
+    "No"
+   ],
+   "input_row": 86,
+   "source": "gate",
+   "provider": "conditioning_relevant",
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "L1",
+   "section": "L",
+   "title": "Conditioning intensity (machine)",
+   "description": "What was the intensity of the conditioning stimulus in raw units? For afferent conditioning this is in milliamps (mA) or volts (V) For TMS conditioning, this is in %MSO of dI/dT",
+   "quantitative": true,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 87,
+   "source": "nibs_bids",
+   "provider": "ConditioningStimulusIntensity",
+   "full_requires": [
+    "central tendency",
+    "dispersion"
+   ],
+   "aggregate": "mean_sd"
+  },
+  {
+   "id": "L2",
+   "section": "L",
+   "title": "Conditioning intensity (participant)",
+   "description": "What was the participant-specific intensity of the conditioning stimulus, relative to a threshold? For afferent conditioning, the threshold could be a sensory/perceptual or motor measure such as visible twitch, M-wave, CMAP, or MMAX. For TMS conditioning, the threshold could be (e.g.) an MEP measure like RMT, AMT, 1mV, or 50% of maximum MEP; an estimated induced current like V/m; or estimated effect like 50% inhibition",
+   "quantitative": true,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing",
+    "n/a"
+   ],
+   "input_row": 88,
+   "source": "nibs_bids",
+   "provider": "ConditioningStimulusIntensity+IntensityReference",
+   "full_requires": [
+    "central tendency",
+    "dispersion"
+   ],
+   "aggregate": "mean_sd"
+  },
+  {
+   "id": "L3",
+   "section": "L",
+   "title": "Condition-Test interval(s)",
+   "description": "When was the conditioning stimulus presented relative to the TMS pulse?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 89,
+   "source": "nibs_bids",
+   "provider": "InterStimulusInterval|InterPulseInterval",
+   "full_requires": [
+    "interval",
+    "dispersion if variable"
+   ],
+   "aggregate": "unique"
+  },
+  {
+   "id": "L4",
+   "section": "L",
+   "title": "Conditioned and unconditioned order",
+   "description": "Is the temporal order or arrangement of conditioned and unconditioned pulses clearly reported?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 90,
+   "source": "derived",
+   "provider": "conditioned_order",
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "L5",
+   "section": "L",
+   "title": "Number of conditioned TMS pulses",
+   "description": "How many conditioned TMS pulses were given?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 91,
+   "source": "derived",
+   "provider": "number_of_conditioned_pulses",
+   "full_requires": [],
+   "aggregate": "sum"
+  },
+  {
+   "id": "L6",
+   "section": "L",
+   "title": "Conditioned response raw",
+   "description": "What were the values of the conditioned responses, in raw units?",
+   "quantitative": true,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 92,
+   "source": "derived",
+   "provider": "conditioned_response_raw",
+   "full_requires": [
+    "central tendency",
+    "dispersion"
+   ],
+   "aggregate": "mean_sd"
+  },
+  {
+   "id": "L7",
+   "section": "L",
+   "title": "Conditioned response relative",
+   "description": "What were the values of the conditioned responses, relative to the unconditioned responses?",
+   "quantitative": true,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 93,
+   "source": "derived",
+   "provider": "conditioned_response_relative",
+   "full_requires": [
+    "central tendency",
+    "dispersion"
+   ],
+   "aggregate": "mean_sd"
+  },
+  {
+   "id": "M0",
+   "section": "M",
+   "title": "Criteria relevant?",
+   "description": "",
+   "quantitative": false,
+   "vocabulary": [
+    "Yes",
+    "No"
+   ],
+   "input_row": 95,
+   "source": "gate",
+   "provider": "sep_relevant",
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "M1",
+   "section": "M",
+   "title": "Frequency and repetitions",
+   "description": "What was the afferent stimulation frequency (or inter-pulse interval), and how many repetitions were done (or how long did the stimulation last)?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 96,
+   "source": "out_of_scope",
+   "provider": null,
+   "full_requires": [
+    "frequency or inter-pulse interval",
+    "repetitions or duration"
+   ],
+   "aggregate": null
+  },
+  {
+   "id": "M2",
+   "section": "M",
+   "title": "EEG montage",
+   "description": "What arrangement of active and reference electrodes on the head and/or body was used to measure the SEPs?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 97,
+   "source": "out_of_scope",
+   "provider": null,
+   "full_requires": [
+    "active electrode",
+    "reference electrode"
+   ],
+   "aggregate": null
+  },
+  {
+   "id": "M3",
+   "section": "M",
+   "title": "SEP feature",
+   "description": "Which SEP potential, component, or feature was targeted? Must refer to the component name and whether it's an amplitude of timing feature",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 98,
+   "source": "out_of_scope",
+   "provider": null,
+   "full_requires": [
+    "component name",
+    "amplitude or timing feature"
+   ],
+   "aggregate": null
+  },
+  {
+   "id": "M4",
+   "section": "M",
+   "title": "SEP values",
+   "description": "What were the values of the SEP measure?",
+   "quantitative": true,
+   "vocabulary": [
+    "Full",
+    "Part",
+    "Missing"
+   ],
+   "input_row": 99,
+   "source": "out_of_scope",
+   "provider": null,
+   "full_requires": [
+    "central tendency",
+    "dispersion"
+   ],
+   "aggregate": "mean_sd"
+  },
+  {
+   "id": "N0",
+   "section": "N",
+   "title": "Criteria relevant?",
+   "description": "",
+   "quantitative": false,
+   "vocabulary": [
+    "Yes",
+    "No"
+   ],
+   "input_row": 101,
+   "source": "gate",
+   "provider": "repetitive_relevant",
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "N1",
+   "section": "N",
+   "title": "Burst frequency",
+   "description": "What was the frequency (or inter-pulse interval) within a single burst of rTMS?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Missing"
+   ],
+   "input_row": 102,
+   "source": "out_of_scope",
+   "provider": null,
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "N2",
+   "section": "N",
+   "title": "Number of within-burst pulses",
+   "description": "How many consecutive pulses were within each burst of rTMS (or how long did the rTMS last)?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Missing"
+   ],
+   "input_row": 103,
+   "source": "out_of_scope",
+   "provider": null,
+   "full_requires": [
+    "pulses per burst or total duration"
+   ],
+   "aggregate": null
+  },
+  {
+   "id": "N3",
+   "section": "N",
+   "title": "Between-burst interval",
+   "description": "What was the interval (or frequency) between consecutive bursts of rTMS?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Missing",
+    "n/a"
+   ],
+   "input_row": 104,
+   "source": "out_of_scope",
+   "provider": null,
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "N4",
+   "section": "N",
+   "title": "Number of bursts",
+   "description": "How many bursts of rTMS were presented (or how long did the rTMS last)?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Missing"
+   ],
+   "input_row": 105,
+   "source": "out_of_scope",
+   "provider": null,
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "N5",
+   "section": "N",
+   "title": "Between-train interval",
+   "description": "What was the between-train interval (or frequency)?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Missing",
+    "n/a"
+   ],
+   "input_row": 106,
+   "source": "out_of_scope",
+   "provider": null,
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "N6",
+   "section": "N",
+   "title": "Number of trains",
+   "description": "How many trains of rTMS were given?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Missing"
+   ],
+   "input_row": 107,
+   "source": "out_of_scope",
+   "provider": null,
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "N7",
+   "section": "N",
+   "title": "Interval between TMS and task or measure",
+   "description": "What was the duration between the end of TMS and the start of the task or measurement?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Missing"
+   ],
+   "input_row": 108,
+   "source": "out_of_scope",
+   "provider": null,
+   "full_requires": [],
+   "aggregate": null
+  },
+  {
+   "id": "N8",
+   "section": "N",
+   "title": "Number of repeats",
+   "description": "How many times was the rTMS protocol described in sections M1:M7 repeated?",
+   "quantitative": false,
+   "vocabulary": [
+    "Full",
+    "Missing"
+   ],
+   "input_row": 109,
+   "source": "out_of_scope",
+   "provider": null,
+   "full_requires": [],
+   "aggregate": null
+  }
+ ]
+}

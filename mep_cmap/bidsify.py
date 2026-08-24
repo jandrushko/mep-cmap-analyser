@@ -72,6 +72,44 @@ def classify_channel(name: str) -> tuple:
 
 
 # ── Layout ────────────────────────────────────────────────────────────────────
+
+#: The folder name that marks the "sibling" study layout.
+#:
+#: BIDS allows two arrangements. In the CANONICAL one the raw dataset is the
+#: study root and sourcedata/ and derivatives/ sit inside it. In the SIBLING
+#: one -- which is what this tool builds -- rawdata/, sourcedata/ and
+#: derivatives/ are three folders side by side.
+#:
+#: Both are valid; MIXING them is not. Putting sourcedata/ inside rawdata/
+#: while derivatives/ is a sibling leaves native files inside the dataset a
+#: validator walks, and inside every recursive glob of rawdata/**, which is
+#: why the file queue needs a rule to skip them at all.
+_SIBLING_RAWDATA_DIRNAME = "rawdata"
+
+
+def default_sourcedata_root(rawdata_root: str) -> str:
+    """Where native copies belong for this study's layout.
+
+    Beside rawdata/ in the sibling layout, inside the dataset root in the
+    canonical one, so sourcedata/ always ends up at the same level as
+    derivatives/ rather than one level in from it.
+
+    An EXISTING <rawdata_root>/sourcedata always wins, whatever the layout
+    says. A study half-converted under the old default and half under the new
+    one is worse than a study consistently in the old place: the native copy of
+    a recording would sit in whichever folder happened to exist the day it was
+    BIDS-ified, and nothing would say which. Moving those files is a decision
+    for whoever owns the study, not a side effect of upgrading the tool.
+    """
+    legacy = os.path.join(rawdata_root, "sourcedata")
+    if os.path.isdir(legacy):
+        return legacy
+    root = os.path.normpath(rawdata_root)
+    if os.path.basename(root).lower() == _SIBLING_RAWDATA_DIRNAME:
+        return os.path.join(os.path.dirname(root), "sourcedata")
+    return legacy
+
+
 @dataclass
 class DatasetLayout:
     """
@@ -80,8 +118,8 @@ class DatasetLayout:
     rawdata_root    : the BIDS raw-dataset root (holds dataset_description.json,
                       participants.tsv, and the sub-XX/ tree). In this project that
                       is normally <study>/rawdata.
-    sourcedata_root : where untouched native copies go. Defaults to
-                      <rawdata_root>/sourcedata (a BIDS-reserved location).
+    sourcedata_root : where untouched native copies go. Resolved by
+                      ``default_sourcedata_root`` when not given.
     dataset_name    : value for dataset_description.json "Name".
     """
     rawdata_root:    str
@@ -90,7 +128,7 @@ class DatasetLayout:
 
     def __post_init__(self):
         if not self.sourcedata_root:
-            self.sourcedata_root = os.path.join(self.rawdata_root, "sourcedata")
+            self.sourcedata_root = default_sourcedata_root(self.rawdata_root)
 
 
 # ── Inputs / plan structures ──────────────────────────────────────────────────
@@ -146,11 +184,25 @@ class Plan:
     container:     str = "EDF"      # 'EDF' or 'BDF'
     powerline_hz:  int = 50
     warnings:      list = field(default_factory=list)
+    #: Delete each native original once its archival copy is in sourcedata/
+    #: AND the converted EDF has passed read-back verification.
+    #:
+    #: Off by default, and deliberately not a mere efficiency: copying leaves
+    #: the study recoverable if anything downstream is wrong, and a native
+    #: recording is the one artefact that cannot be regenerated. Opting in is
+    #: a statement that the sourcedata copy is now the archive.
+    move_sources:  bool = False
 
     def preview_text(self) -> str:
         lines = [f"BIDS-ify plan  —  {len(self.files)} file(s)  ->  "
                  f"{self.container}+  in  {self.layout.rawdata_root}",
-                 f"native copies -> {self.layout.sourcedata_root}", ""]
+                 f"native copies -> {self.layout.sourcedata_root}"]
+        # Stated in the preview, because the preview is the last thing shown
+        # before anything is written and this is the only irreversible part
+        # of the run.
+        if self.move_sources:
+            lines.append("originals    -> DELETED after each file verifies")
+        lines.append("")
         for pf in self.files:
             lines.append(f"• {os.path.basename(pf.item.source_path)}")
             lines.append(f"    rawdata : {pf.rel_dir}/{os.path.basename(pf.edf_path)}")
@@ -173,6 +225,11 @@ class FileResult:
     edf_path:      str = ""
     discrepancies: list = field(default_factory=list)
     error:         str = ""
+    #: Where the native original now lives, when it was moved rather than
+    #: copied. The caller needs this to re-point its file queue: an entry left
+    #: pointing at a deleted path is the stale-path failure, and it would look
+    #: exactly like the tool having lost the recording.
+    moved_to:      str = ""
 
 
 # ── Planning (pure; cheap) ────────────────────────────────────────────────────
@@ -200,6 +257,7 @@ def plan_bidsify(items: list,
                  layout: DatasetLayout,
                  container: str = "EDF",
                  powerline_hz: int = 50,
+                 move_sources: bool = False,
                  io_module: Any = None) -> Plan:
     """
     Build a Plan without touching disk. Reads only channel *names* (cheap header
@@ -212,7 +270,8 @@ def plan_bidsify(items: list,
     if container not in ("EDF", "BDF"):
         raise ValueError("container must be 'EDF' or 'BDF'")
 
-    plan = Plan(layout=layout, container=container, powerline_hz=powerline_hz)
+    plan = Plan(layout=layout, container=container, powerline_hz=powerline_hz,
+                move_sources=move_sources)
     ext = ".edf" if container == "EDF" else ".bdf"
 
     seen_prefixes = {}
@@ -1152,14 +1211,49 @@ def _read_tsv(path: str) -> tuple:
     return header, rows
 
 
+#: The optional participants.tsv columns BIDS gives a defined meaning to.
+#:
+#: Emitted as n/a rather than omitted. A file carrying only participant_id is
+#: valid BIDS and useless: nothing downstream can tell "this study did not
+#: record age" from "nobody thought to add the column", and the analyst has no
+#: prompt to add it. Present-but-n/a is an invitation to fill it in, and it is
+#: what makes the reporting-checklist participant items answerable at all.
+#:
+#: Restricted to the columns BIDS DEFINES. A guessed column name is worse than
+#: no column: a reader that expects `sex` gains nothing from `gender`, and the
+#: study is left describing itself in private vocabulary.
+PARTICIPANT_TEMPLATE_COLUMNS = ("age", "sex", "handedness")
+
+#: What each standard column means, for participants.json. Levels are the
+#: values BIDS itself lists, so a study that fills them in is machine-readable
+#: rather than merely populated.
+PARTICIPANT_COLUMN_DESCRIPTIONS = {
+    "age": {"Description": "Age of the participant at the time of scanning",
+            "Units": "years"},
+    "sex": {"Description": "Sex of the participant as reported",
+            "Levels": {"M": "male", "F": "female", "O": "other"}},
+    "handedness": {"Description": "Handedness of the participant as reported",
+                   "Levels": {"L": "left", "R": "right",
+                              "A": "ambidextrous"}},
+}
+
+
 def upsert_participant(layout: DatasetLayout, participant_id: str,
                        extra: dict = None) -> None:
-    """Add (or merge) a participants.tsv row, de-duplicated by participant_id."""
+    """Add (or merge) a participants.tsv row, de-duplicated by participant_id.
+
+    The standard optional columns are always present, as n/a when unknown, so
+    the file is a form to complete rather than a bare list of identifiers.
+    Existing values are never overwritten by the template.
+    """
     extra = extra or {}
     path = os.path.join(layout.rawdata_root, "participants.tsv")
     header, rows = _read_tsv(path)
 
     cols = ["participant_id"] + [k for k in extra if k != "participant_id"]
+    for c in PARTICIPANT_TEMPLATE_COLUMNS:
+        if c not in cols:
+            cols.append(c)
     for c in header:
         if c not in cols:
             cols.append(c)
@@ -1172,10 +1266,24 @@ def upsert_participant(layout: DatasetLayout, participant_id: str,
     ordered = sorted(by_id.values(), key=lambda r: r.get("participant_id", ""))
     _write_tsv(path, cols, ordered)
 
+    # Written whenever there are columns to describe, not only when a caller
+    # supplied extras. Gated on `extra` it never appeared at all, because the
+    # BIDS-ify path calls this with the participant id alone -- so the standard
+    # columns went out undocumented and any custom column stayed that way.
     json_path = os.path.join(layout.rawdata_root, "participants.json")
-    if not os.path.isfile(json_path) and extra:
-        _write_json(json_path,
-                    {k: {"Description": k} for k in extra})
+    if not os.path.isfile(json_path):
+        described = {}
+        for c in cols:
+            if c == "participant_id":
+                continue        # BIDS defines it; describing it adds nothing
+            described[c] = dict(
+                PARTICIPANT_COLUMN_DESCRIPTIONS.get(c)
+                # A custom column the tool cannot describe gets a placeholder
+                # naming itself, so the gap is visible in the file rather than
+                # absent from it.
+                or {"Description": f"TODO: describe the {c!r} column"})
+        if described:
+            _write_json(json_path, described)
 
 
 def append_scan(layout: DatasetLayout, meta: StudyMetadata,
@@ -1196,6 +1304,53 @@ def append_scan(layout: DatasetLayout, meta: StudyMetadata,
     by_file = {r.get("filename"): r for r in rows}
     by_file[scan_relpath] = {"filename": scan_relpath, "acq_time": acq_time}
     _write_tsv(path, header, list(by_file.values()))
+
+
+def _remove_verified_source(pf, log=print) -> str:
+    """Delete the native original, but only once its copy is provably safe.
+
+    Returns the archival path on success, "" if the original was left alone.
+
+    Every check here answers "could this delete the only copy?". A move is the
+    one step in BIDS-ify that cannot be undone by re-running it, so it refuses
+    on any doubt rather than reporting a problem afterwards -- by which time
+    the recording is gone.
+    """
+    src, dst = pf.item.source_path, pf.sourcedata_path
+    try:
+        if os.path.abspath(src) == os.path.abspath(dst):
+            return ""                       # already the archive; nothing to move
+        if not os.path.isfile(dst):
+            log("  ! original kept: the sourcedata copy is not there")
+            return ""
+        # Size, not mere existence. A copy interrupted by a full disk or a
+        # sync client leaves a short file that exists and is not the recording.
+        if os.path.getsize(src) != os.path.getsize(dst):
+            log(f"  ! original kept: the sourcedata copy is "
+                f"{os.path.getsize(dst)} bytes against the original's "
+                f"{os.path.getsize(src)}")
+            return ""
+
+        # Siblings first. A .vhdr removed while its .eeg stays behind leaves
+        # a BrainVision recording that is neither in sourcedata nor readable
+        # where it was.
+        for member in _brainvision_members(src):
+            if os.path.abspath(member) == os.path.abspath(src):
+                continue
+            mirror = os.path.join(os.path.dirname(dst),
+                                  os.path.basename(member))
+            if os.path.isfile(mirror) and os.path.isfile(member):
+                os.remove(member)
+                log(f"  − removed sibling: {os.path.basename(member)}")
+
+        os.remove(src)
+        log(f"  → original moved to {dst}")
+        return dst
+    except Exception as exc:                # noqa: BLE001
+        # Never fatal. The conversion succeeded; failing the file now would
+        # report a good recording as bad because a delete was refused.
+        log(f"  ! original kept ({type(exc).__name__}: {exc})")
+        return ""
 
 
 # ── Execution ─────────────────────────────────────────────────────────────────
@@ -1267,12 +1422,22 @@ def execute_plan(plan: Plan,
             scan_rel = f"{pf.rel_dir}/{os.path.basename(pf.edf_path)}"
             append_scan(plan.layout, pf.item.metadata, scan_rel)
 
+            moved_to = ""
             if ok:
                 log(f"  ✓ verified ({rec.n_channels} ch, {len(rec.events)} events)")
+                # Only here. The original is deleted after the copy is in
+                # place AND the EDF has been read back and matched -- a
+                # mismatch means the conversion is not trustworthy, and that
+                # is exactly when the native file must still exist.
+                if plan.move_sources:
+                    moved_to = _remove_verified_source(pf, log)
             else:
                 log("  ! read-back mismatch: " + "; ".join(disc))
+                if plan.move_sources:
+                    log("  ! original kept: this file did not verify")
             results.append(FileResult(pf.item.source_path, ok,
-                                      edf_path=pf.edf_path, discrepancies=disc))
+                                      edf_path=pf.edf_path, discrepancies=disc,
+                                      moved_to=moved_to))
         except Exception as exc:
             log(f"  ✗ failed: {type(exc).__name__}: {exc}")
             results.append(FileResult(pf.item.source_path, False, error=str(exc)))

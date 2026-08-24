@@ -76,7 +76,10 @@ from .dataset_session import (DatasetSession, FileEntry,
 from .io import (list_waveform_channels, extract_emg_waveform_and_fs,
                  extract_stim_times, detect_format, needs_wizard,
                  list_event_channels, probe_fs_and_unit,
-                 SUPPORTED_EXTENSIONS, UNREADABLE_FORMATS)
+                 SUPPORTED_EXTENSIONS, UNREADABLE_FORMATS,
+                 SUPPORTED_GLOBS, SUPPORTED_EXT_TEXT,
+                 supported_filetypes, unsupported_reason)
+from .pipeline import crop_for_channel
 from .format_wizard import FormatWizard
 from .filters import adaptive_mains_cancel
 from .detection import detect_mep_onset_peak_fraction
@@ -94,6 +97,52 @@ from .filter_preview import FilterPreviewMixin
 _COLSEL_INHERIT = "Use Preferences setting"
 _COLSEL_ON      = "Write for this recording"
 _COLSEL_OFF     = "Skip for this recording"
+
+#: The "no filter" entry in the queue filter dropdowns. A word rather than a
+#: blank, so an unfiltered queue is visibly unfiltered.
+QUEUE_FILTER_ALL = "All"
+
+#: Statuses offered in the filter, in workflow order rather than alphabetical:
+#: the first question is what is left to do.
+_QUEUE_STATUS_ORDER = (STATUS_NOT_STARTED, STATUS_IN_PROGRESS,
+                       STATUS_NEEDS_REVIEW, STATUS_COMPLETE, STATUS_STALE)
+
+#: Extension -> the short label shown in the Type column and offered in the
+#: Type filter. One mapping, used by both: a dropdown listing types the column
+#: never shows would offer filters that match nothing.
+_QUEUE_TYPE_LABELS = {".txt": "TXT", ".smr": "SMR", ".adibin": "ADIBIN",
+                      ".edf": "EDF", ".bdf": "BDF", ".vhdr": "BrainVision",
+                      ".acq": "ACQ", ".mat": "MAT", ".csv": "CSV"}
+
+
+def _queue_type_label(path: str) -> str:
+    ext = os.path.splitext(path)[1].lower()
+    return _QUEUE_TYPE_LABELS.get(ext, ext.lstrip(".").upper() or "—")
+
+
+def queue_row_matches(fe, *, status=QUEUE_FILTER_ALL, ftype=QUEUE_FILTER_ALL,
+                      term="") -> bool:
+    """Whether a queue entry passes the filter. Pure, so it can be tested.
+
+    The text term is matched against the label, the file name and the whole
+    path together, so a subject, a limb or a date all work without the analyst
+    having to know which column holds them.
+    """
+    if status != QUEUE_FILTER_ALL:
+        if STATUS_LABELS.get(fe.status, fe.status) != status:
+            return False
+    if ftype != QUEUE_FILTER_ALL:
+        if _queue_type_label(fe.path) != ftype:
+            return False
+    term = (term or "").strip().lower()
+    if term:
+        hay = " ".join((getattr(fe, "label", "") or "",
+                        getattr(fe, "basename", "") or "",
+                        fe.path or "")).lower()
+        if term not in hay:
+            return False
+    return True
+
 
 def _under_sourcedata(file_path: str, scan_root: str) -> bool:
     """True if *file_path* sits under a ``sourcedata`` folder BELOW *scan_root*.
@@ -1448,6 +1497,13 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
             input_path        = self.file_path.get(),
             marker_choice     = self.marker_choice.get(),
 
+            # The NIBS-BIDS description of this recording, as the BIDS-ify
+            # worklist holds it now. Snapshotted with everything else so the
+            # analysis record describes the metadata the run started from --
+            # reading it in the worker would let an edit made during a long
+            # run appear in a record of results produced before it.
+            nibs_record       = self._bidsify_nibs_record(self.file_path.get()),
+
             # time windows & analysis settings
             pre_ms            = self.pre_time.get(),
             post_ms           = self.post_time.get(),
@@ -1946,6 +2002,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
 
                 run_pipeline(
                     input_path           = params["input_path"],
+                    nibs_record          = params.get("nibs_record"),
                     marker_name          = marker,
                     event_sources        = _own_sources,
                     channel_names        = _chan_names,
@@ -2027,7 +2084,13 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                     condition_map        = params.get("condition_map") or {},
                     crop_start           = params["crop_start"],
                     crop_end             = params["crop_end"],
-                    crop_ranges          = params["crop_ranges"],
+                    # Through the shared resolver, so the worker, the
+                    # Conditions tab and the preview all cut this channel the
+                    # same way. A channel cut differently by any two of them
+                    # numbers its trials differently, and conditions are
+                    # assigned by trial index.
+                    crop_ranges          = crop_for_channel(
+                                               _chan_setups, _ch, params)[0],
                     gap_ms_map           = _own("gap_ms_map", {}),
                     delay_ms_map         = _own("delay_ms_map", {}),
                     # BIDS
@@ -3405,7 +3468,8 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
             self.log(f"   ⚠️  Could not rebuild the setup table: {exc}")
 
 
-    def _configured_events(self, file_path, fallback_marker=None):
+    def _configured_events(self, file_path, fallback_marker=None,
+                           channel_idx=None):
         """This file's stimulus events, honouring the configured sources.
 
         Anything that SHOWS events to the analyst must come through here.
@@ -3431,7 +3495,11 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
             _mk = (self.marker_choice.get() or "").strip()
             fallback_marker = "" if _mk.upper() == ALL_MARKERS.upper() else _mk
 
-        sources = (self.event_sources or {}).get(self.channel_idx) or []
+        # Sources are per channel. None given means the channel on screen,
+        # which is every caller that existed before the range picker began
+        # showing one channel at a time.
+        _ch = self.channel_idx if channel_idx is None else channel_idx
+        sources = (self.event_sources or {}).get(_ch) or []
         if not sources:
             return dict(_est(file_path, fallback_marker or "") or {}), []
         try:
@@ -3444,17 +3512,62 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
 
     def _crop_selector(self, txt_file) -> bool:
         """
-        Let the user pick **one or more** time‑ranges to analyse.
-        Returns True if at least one range is confirmed.
-        """
+        Let the user pick **one or more** time-ranges to analyse, per channel.
 
-        # ── Load the data (unchanged) ───────────────────────────────────────────
+        A range is a choice about one channel's trace. A block that is clean on
+        the contralateral recording can be unusable on the ipsilateral one, and
+        one list imposed on every channel made that impossible to say. Ranges
+        are therefore held per channel; a channel with none is analysed whole,
+        which is what every recording did before this existed.
+
+        Returns True if at least one channel has a range.
+        """
+        # Which channels the analysis will run over, in the order it runs them.
         try:
-            emg, fs, self.emg_unit = extract_emg_waveform_and_fs(
-                txt_file, channel_idx=self.channel_idx)
+            _idxs = list(self._analysis_channel_indices())
+        except Exception:                       # noqa: BLE001
+            _idxs = []
+        if not _idxs:
+            _idxs = [self.channel_idx]
+        try:
+            _names = list(self.channel_dd["values"])
+        except Exception:                       # noqa: BLE001
+            _names = []
+
+        def _name_of(i):
+            return _names[i] if i < len(_names) else f"channel {i}"
+
+        # Per-channel working copies. Seeded from whatever each channel already
+        # carries, falling back to the file-wide list so that reopening this
+        # window shows the ranges already in force rather than an empty plot.
+        by_chan: dict = {}
+        for _i in _idxs:
+            _own_r = (self._chan_settings.get(_i, {}) or {}).get("crop_ranges")
+            by_chan[_i] = [tuple(r) for r in
+                           (_own_r if _own_r is not None
+                            else (self.crop_ranges or []))]
+
+        cur = {"idx": self.channel_idx if self.channel_idx in by_chan
+               else _idxs[0]}
+
+        # ── Load one channel's data ─────────────────────────────────────────
+        def _load(idx):
+            emg, fs, unit = extract_emg_waveform_and_fs(
+                txt_file, channel_idx=idx)
             t = np.arange(emg.size) / fs
-            stim_dict, _src_warnings = self._configured_events(
-                txt_file, self.marker_choice.get() or "Keyboard")
+            # This channel's OWN events. Sources are held per channel because a
+            # trigger clean on one electrode can sit near the noise floor on
+            # another; showing the first channel's ticks against a second
+            # channel's trace would have the analyst judge one recording by
+            # another's trials.
+            stim, warns = self._configured_events(
+                txt_file, self.marker_choice.get() or "Keyboard",
+                channel_idx=idx)
+            return emg, fs, unit, t, dict(stim or {}), list(warns or [])
+
+        try:
+            emg, fs, self.emg_unit, t, stim_dict, _src_warnings = _load(
+                cur["idx"])
             for _w in _src_warnings:
                 self.log(f"   ⚠️  {_w}")
         except Exception as e:
@@ -3483,6 +3596,22 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         info = tk.Label(footer, textvariable=list_lbl, anchor="w",
                         justify="left")
         info.pack(fill="x", padx=10, pady=(4, 2))
+        # Channel picker. Only where there is a choice: a single-channel run
+        # gains nothing from a dropdown with one entry, and the window is
+        # identical to what it has always been.
+        chan_var = tk.StringVar(value=_name_of(cur["idx"]))
+        if len(_idxs) > 1:
+            chan_row = tk.Frame(footer)
+            chan_row.pack(pady=(0, 2))
+            tk.Label(chan_row, text="Channel:").pack(side="left")
+            _dd = ttk.Combobox(chan_row, textvariable=chan_var,
+                               values=[_name_of(i) for i in _idxs],
+                               state="readonly", width=22)
+            _dd.pack(side="left", padx=(4, 8))
+            _dd.bind("<<ComboboxSelected>>", lambda e: _switch_channel())
+            tk.Label(chan_row, fg="#666",
+                     text="ranges are kept separately for each channel"
+                     ).pack(side="left")
         btn_frm = tk.Frame(footer)
         btn_frm.pack(pady=(0, 8))
 
@@ -3503,60 +3632,81 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         canvas.get_tk_widget().pack(fill="both", expand=False)
 
         # ── Plot the full trace + stim ticks ──────────────────────────────────────
-        # Min-max envelope downsampling — preserves amplitude envelope of all
-        # events while keeping point count low for fast blit interaction.
-        _max_pts = 4000
-        if len(t) > _max_pts:
-            _chunk = len(t) // (_max_pts // 2)
-            _n_chunks = len(t) // _chunk
-            _t_ds, _emg_ds = [], []
-            for _i in range(_n_chunks):
-                _s = _i * _chunk
-                _e = _s + _chunk
-                _chunk_emg = emg[_s:_e]
-                _chunk_t   = t[_s:_e]
-                _imin = int(np.argmin(_chunk_emg))
-                _imax = int(np.argmax(_chunk_emg))
-                if _imin <= _imax:
-                    _t_ds.extend([_chunk_t[_imin], _chunk_t[_imax]])
-                    _emg_ds.extend([_chunk_emg[_imin], _chunk_emg[_imax]])
-                else:
-                    _t_ds.extend([_chunk_t[_imax], _chunk_t[_imin]])
-                    _emg_ds.extend([_chunk_emg[_imax], _chunk_emg[_imin]])
-            t_plot   = np.array(_t_ds)
-            emg_plot = np.array(_emg_ds)
-        else:
-            t_plot, emg_plot = t, emg
-        ax.plot(t_plot, emg_plot, lw=0.4, color="0.3")
+        # Redrawable, because the channel dropdown changes every part of it:
+        # the trace, the events, and the shaded ranges are all properties of
+        # the channel being shown.
+        state = {"t": t, "emg": emg, "stim": stim_dict, "patches": []}
 
-        palette = plt.get_cmap("tab10").colors
-        col_for = {k: palette[i % len(palette)]
-                for i, k in enumerate(sorted(stim_dict))}
+        def _draw_trace():
+            ax.clear()
+            state["patches"] = []
+            t, emg, stim_dict = state["t"], state["emg"], state["stim"]
+            # Min-max envelope downsampling — preserves amplitude envelope of all
+            # events while keeping point count low for fast blit interaction.
+            _max_pts = 4000
+            if len(t) > _max_pts:
+                _chunk = len(t) // (_max_pts // 2)
+                _n_chunks = len(t) // _chunk
+                _t_ds, _emg_ds = [], []
+                for _i in range(_n_chunks):
+                    _s = _i * _chunk
+                    _e = _s + _chunk
+                    _chunk_emg = emg[_s:_e]
+                    _chunk_t   = t[_s:_e]
+                    _imin = int(np.argmin(_chunk_emg))
+                    _imax = int(np.argmax(_chunk_emg))
+                    if _imin <= _imax:
+                        _t_ds.extend([_chunk_t[_imin], _chunk_t[_imax]])
+                        _emg_ds.extend([_chunk_emg[_imin], _chunk_emg[_imax]])
+                    else:
+                        _t_ds.extend([_chunk_t[_imax], _chunk_t[_imin]])
+                        _emg_ds.extend([_chunk_emg[_imax], _chunk_emg[_imin]])
+                t_plot   = np.array(_t_ds)
+                emg_plot = np.array(_emg_ds)
+            else:
+                t_plot, emg_plot = t, emg
+            ax.plot(t_plot, emg_plot, lw=0.4, color="0.3")
 
-        y_min, y_max = emg.min(), emg.max()
-        pad = 0.05 * (y_max - y_min) or 1
-        ax.set_ylim(y_min, y_max + 3 * pad)
+            palette = plt.get_cmap("tab10").colors
+            col_for = {k: palette[i % len(palette)]
+                    for i, k in enumerate(sorted(stim_dict))}
 
-        for s_type, times in stim_dict.items():
-            col = col_for[s_type]
-            for x in times:
-                ax.vlines(x, y_max + 0.2 * pad, y_max + 1.0 * pad,
-                        color=col, lw=1.2, zorder=4)
-                ax.text(x, y_max + 1.2 * pad, s_type,
-                        ha="center", va="bottom",
-                        fontsize=12, weight="bold",
-                        color=col, zorder=5)
+            y_min, y_max = emg.min(), emg.max()
+            pad = 0.05 * (y_max - y_min) or 1
+            ax.set_ylim(y_min, y_max + 3 * pad)
 
-        ax.set_xlabel("Time (s)")
-        ax.set_ylabel(self._ylab())
-        canvas.draw_idle()
+            for s_type, times in stim_dict.items():
+                col = col_for[s_type]
+                for x in times:
+                    ax.vlines(x, y_max + 0.2 * pad, y_max + 1.0 * pad,
+                            color=col, lw=1.2, zorder=4)
+                    ax.text(x, y_max + 1.2 * pad, s_type,
+                            ha="center", va="bottom",
+                            fontsize=12, weight="bold",
+                            color=col, zorder=5)
+
+            ax.set_xlabel("Time (s)")
+            ax.set_ylabel(self._ylab())
+            ax.set_title(_name_of(cur["idx"]), fontsize=11)
+            # This channel's own ranges, redrawn from the store rather than
+            # kept as live artists: switching channel discards the artists but
+            # must not discard the choices.
+            for a, b in by_chan.get(cur["idx"], []):
+                state["patches"].append(
+                    ax.axvspan(a, b, alpha=.25, color="tab:blue"))
+            canvas.draw_idle()
+
+        _draw_trace()
 
         # ── State holders ──────────────────────────────────────────────────────────
-        spans: list[tuple[float, float]] = []
-        patches = []
+        def _spans():
+            """The channel on screen. One accessor, so nothing edits a list
+            belonging to a channel the analyst is no longer looking at."""
+            return by_chan.setdefault(cur["idx"], [])
 
         def _update_list_label():
-            # Two lines: the ranges in seconds, and what they CONTAIN.
+            # Three lines: the ranges in seconds, what they CONTAIN, and where
+            # every OTHER channel stands.
             #
             # Times alone do not answer the question an analyst is actually
             # asking. A recruitment curve, a block of 120% aMT trials and an
@@ -3564,26 +3714,39 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
             # the choice being made is a set of trials, not an interval. So the
             # second line counts events per stimulus type and gives their
             # position in the file's own numbering.
+            #
+            # The third line exists because a channel never opened here has no
+            # ranges and is therefore analysed whole. That is a legitimate
+            # choice and an easy accident, and the two are indistinguishable
+            # unless the window says so without being asked.
             from .selection_summary import format_selection
 
+            spans = _spans()
             if spans:
                 txt = "Selected ranges (s):  " + ",  ".join(
                     f"[{s[0]:.2f} \u2013 {s[1]:.2f}]" for s in spans)
             else:
                 txt = "No ranges yet \u2013 drag on the plot."
             try:
-                summary = format_selection(stim_dict, spans)
+                summary = format_selection(state["stim"], spans)
             except Exception:
                 summary = ""      # never let the summary break the dialogue
-            list_lbl.set(txt + ("\n" + summary if summary else ""))
+            per_chan = "   ·   ".join(
+                f"{_name_of(i)}: "
+                + (f"{len(by_chan.get(i) or [])} range"
+                   f"{'s' if len(by_chan.get(i) or []) != 1 else ''}"
+                   if by_chan.get(i) else "whole recording")
+                for i in _idxs)
+            list_lbl.set(txt + ("\n" + summary if summary else "")
+                         + "\n" + per_chan)
         _update_list_label()
 
         # ── SpanSelector ───────────────────────────────────────────────────────────
         def _on_span(x0, x1):
             xmin, xmax = sorted((x0, x1))
-            spans.append((xmin, xmax))
+            _spans().append((xmin, xmax))
             p = ax.axvspan(xmin, xmax, alpha=.25, color="tab:blue")
-            patches.append(p)
+            state["patches"].append(p)
             _update_list_label()
             canvas.draw_idle()
 
@@ -3594,48 +3757,119 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
             interactive=False)
 
         def _undo():
-            if spans:
-                spans.pop()
-                p = patches.pop()
-                p.remove()
+            if _spans():
+                _spans().pop()
+                if state["patches"]:
+                    state["patches"].pop().remove()
                 _update_list_label()
                 canvas.draw_idle()
 
         def _clear():
-            spans.clear()
-            for p in patches:
+            _spans().clear()
+            for p in state["patches"]:
                 p.remove()
-            patches[:] = []
+            state["patches"] = []
             _update_list_label()
             canvas.draw_idle()
+
+        def _switch_channel(_evt=None):
+            """Show another channel, keeping every channel's own choices."""
+            want = chan_var.get()
+            idx = next((i for i in _idxs if _name_of(i) == want), None)
+            if idx is None or idx == cur["idx"]:
+                return
+            try:
+                _e, _fs, _u, _t, _st, _warns = _load(idx)
+            except Exception as exc:            # noqa: BLE001
+                messagebox.showerror(
+                    "Could not read that channel",
+                    f"{_name_of(idx)} could not be read: {exc}", parent=top)
+                # Put the dropdown back, or it names a channel not on screen.
+                chan_var.set(_name_of(cur["idx"]))
+                return
+            for _w in _warns:
+                self.log(f"   ⚠️  {_w}")
+            cur["idx"] = idx
+            state["t"], state["emg"], state["stim"] = _t, _e, _st
+            _draw_trace()
+            _update_list_label()
+
+        def _apply_all():
+            """Give every channel the ranges on screen.
+
+            The common case: one protocol recorded on several electrodes, where
+            the usable block is the same because it is the same block.
+            """
+            src = [tuple(s) for s in _spans()]
+            if not src:
+                messagebox.showwarning(
+                    "Nothing to apply",
+                    "Drag at least one range first.", parent=top)
+                return
+            others = [i for i in _idxs if i != cur["idx"]]
+            if others and not messagebox.askyesno(
+                    "Apply to all channels?",
+                    f"Replace the ranges on {len(others)} other channel(s) "
+                    f"with the {len(src)} shown here?\n\n"
+                    + ", ".join(_name_of(i) for i in others),
+                    parent=top):
+                return
+            for i in _idxs:
+                by_chan[i] = [tuple(s) for s in src]
+            _update_list_label()
+            self.log(f"   Ranges applied to {len(_idxs)} channel(s).")
 
         tk.Button(btn_frm, text="Undo last",   width=10, command=_undo)\
             .pack(side="left", padx=4)
         tk.Button(btn_frm, text="Clear all",   width=10, command=_clear)\
             .pack(side="left", padx=4)
+        tk.Button(btn_frm, text="Apply to all channels", width=20,
+                  command=_apply_all)\
+            .pack(side="left", padx=4)
 
         def _accept():
-            if not spans:
+            if not any(by_chan.get(i) for i in _idxs):
                 messagebox.showwarning("Nothing selected",
                                     "Please drag one or more ranges first.",
                                     parent=top)
                 return
-            # save both the legacy single‑span vars *and* the new list
-            self.crop_ranges = spans.copy()
-            # for backward compatibility keep the 1st span in the old vars
-            self.crop_start, self.crop_end = self.crop_ranges[0]
+            # Per channel, through the same store every other per-channel
+            # setting uses, so the worker reads it with _own like the rest.
+            for i in _idxs:
+                self._chan_settings.setdefault(i, {})["crop_ranges"] = \
+                    [tuple(s) for s in (by_chan.get(i) or [])]
+            # The file-wide list stays the channel on screen, which is what a
+            # single-channel run has always used and what an older session
+            # restores as.
+            self.crop_ranges = [tuple(s) for s in (by_chan.get(cur["idx"])
+                                                   or [])]
+            if self.crop_ranges:
+                self.crop_start, self.crop_end = self.crop_ranges[0]
+            _differ = len({tuple(by_chan.get(i) or ()) for i in _idxs}) > 1
+            if _differ:
+                # Said once, here, because from this point the difference is
+                # invisible: two channels of one recording will report
+                # different trial counts and nothing else will explain why.
+                self.log("   Ranges differ between channels: "
+                         + ";  ".join(
+                             f"{_name_of(i)} "
+                             + (f"{len(by_chan.get(i) or [])}"
+                                if by_chan.get(i) else "whole recording")
+                             for i in _idxs))
             top.destroy()
 
         tk.Button(btn_frm, text="Use these ranges", width=16,
                 command=_accept)\
             .pack(side="left", padx=12)
         tk.Button(btn_frm, text="Cancel", width=10,
-                command=lambda: (spans.clear(), top.destroy()))\
+                command=lambda: (by_chan.clear(), top.destroy()))\
             .pack(side="left", padx=4)
 
         # ── Wait until the window closes ────────────────────────────────────────
         self.root.wait_window(top)
-        return bool(spans)
+        # True when ANY channel carries a range. Cancel empties the store, so
+        # the two cases stay distinguishable.
+        return any(by_chan.get(i) for i in _idxs)
 
     def _reset_state_for_new_file(self):
         """
@@ -4921,6 +5155,49 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         tk.Button(q_toolbar, text="▶  Run selected",
                   command=self._queue_run_selected).pack(side='right', padx=(0, 4))
 
+        # ── Filter row ────────────────────────────────────────────────────
+        # Status first: at 7 of 48 complete, "show only what is left" is the
+        # question being asked every session. The text box covers subject,
+        # limb and date without a dropdown each -- sorting already handles
+        # those, and a control per column would crowd out the two that matter.
+        q_filter = tk.Frame(queue_frame)
+        q_filter.pack(fill='x', pady=(0, 4))
+        tk.Label(q_filter, text="Filter:", fg="#555").pack(side='left')
+
+        self._qf_status = tk.StringVar(value=QUEUE_FILTER_ALL)
+        self._qf_type   = tk.StringVar(value=QUEUE_FILTER_ALL)
+        self._qf_text   = tk.StringVar(value="")
+
+        tk.Label(q_filter, text="Status", fg="#555").pack(side='left', padx=(8, 2))
+        self._qf_status_dd = ttk.Combobox(
+            q_filter, textvariable=self._qf_status, state="readonly", width=14,
+            values=[QUEUE_FILTER_ALL] + [STATUS_LABELS.get(s, s)
+                                         for s in _QUEUE_STATUS_ORDER])
+        self._qf_status_dd.pack(side='left')
+
+        tk.Label(q_filter, text="Type", fg="#555").pack(side='left', padx=(8, 2))
+        self._qf_type_dd = ttk.Combobox(
+            q_filter, textvariable=self._qf_type, state="readonly", width=12,
+            values=[QUEUE_FILTER_ALL])
+        self._qf_type_dd.pack(side='left')
+
+        tk.Label(q_filter, text="Find", fg="#555").pack(side='left', padx=(8, 2))
+        _qf_entry = tk.Entry(q_filter, textvariable=self._qf_text, width=22)
+        _qf_entry.pack(side='left')
+        Tooltip(_qf_entry, "Matches file name, subject, or any part of the "
+                           "path. Case-insensitive.")
+
+        tk.Button(q_filter, text="Clear", command=self._queue_filter_clear,
+                  width=6).pack(side='left', padx=(6, 0))
+
+        self._qf_count_var = tk.StringVar(value="")
+        tk.Label(q_filter, textvariable=self._qf_count_var,
+                 fg="#555").pack(side='left', padx=(10, 0))
+
+        # Redrawing on every change keeps the count honest as you type.
+        for _var in (self._qf_status, self._qf_type, self._qf_text):
+            _var.trace_add("write", lambda *_a: self._queue_refresh())
+
         # ── File-load progress bar (hidden until a file is loading) ─────────
         _pb_style = ttk.Style()
         _pb_style.configure("FileLoad.Horizontal.TProgressbar",
@@ -5112,6 +5389,25 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         except Exception:
             pass
 
+    def _queue_filter_clear(self):
+        """Reset every filter control. One button, because clearing three
+        separately leaves rows hidden by whichever one was forgotten."""
+        self._qf_status.set(QUEUE_FILTER_ALL)
+        self._qf_type.set(QUEUE_FILTER_ALL)
+        self._qf_text.set("")
+
+    def _queue_filter_active(self) -> bool:
+        return (self._qf_status.get() != QUEUE_FILTER_ALL
+                or self._qf_type.get() != QUEUE_FILTER_ALL
+                or bool(self._qf_text.get().strip()))
+
+    def _queue_row_matches(self, fe) -> bool:
+        """Bind the filter controls to the pure predicate."""
+        return queue_row_matches(fe,
+                                 status=self._qf_status.get(),
+                                 ftype=self._qf_type.get(),
+                                 term=self._qf_text.get())
+
     def _queue_refresh(self):
         """Redraw the queue treeview from current dataset state."""
         if not hasattr(self, '_queue_tree'):
@@ -5122,9 +5418,26 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         ds = self._dataset
         if ds is None or not ds.files:
             self._queue_progress_var.set("No files loaded")
+            if hasattr(self, "_qf_count_var"):
+                self._qf_count_var.set("")
             return
 
+        # The Type dropdown offers only the types actually in this queue, so
+        # it can never present a filter that matches nothing. Rebuilt on every
+        # redraw because adding a folder can introduce a new one.
+        if hasattr(self, "_qf_type_dd"):
+            present = sorted({_queue_type_label(f.path) for f in ds.files})
+            self._qf_type_dd["values"] = [QUEUE_FILTER_ALL] + present
+            if self._qf_type.get() not in ([QUEUE_FILTER_ALL] + present):
+                # The last file of that type has gone. Silently leaving the
+                # filter set would show an empty queue with no explanation.
+                self._qf_type.set(QUEUE_FILTER_ALL)
+
+        shown = 0
         for fe in ds.files:
+            if hasattr(self, "_qf_status") and not self._queue_row_matches(fe):
+                continue
+            shown += 1
             status_label = STATUS_LABELS.get(fe.status, fe.status)
             stim_str     = ", ".join(
                 f"{v}({k})" for k, v in fe.stim_label_map.items()
@@ -5157,11 +5470,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                 _size  = "—"
                 _date  = "—"
 
-            _ext = os.path.splitext(fe.path)[1].lower()
-            _ftype = {".txt": "TXT", ".smr": "SMR", ".adibin": "ADIBIN",
-                      ".edf": "EDF", ".bdf": "BDF", ".vhdr": "BrainVision",
-                      ".acq": "ACQ", ".mat": "MAT", ".csv": "CSV"}.get(
-                          _ext, _ext.lstrip(".").upper() or "—")
+            _ftype = _queue_type_label(fe.path)
 
             # Tags: (status_tag, raw_bytes_str) — raw bytes used for numeric size sort
             tree.insert("", "end", iid=fe.id,
@@ -5172,6 +5481,13 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                         tags=(fe.status, str(_bytes)))
 
         self._fit_path_column()
+
+        # Always stated, even unfiltered, so "48 of 48" is the resting state
+        # and a smaller first number is visibly a filter rather than a queue
+        # that has lost files.
+        if hasattr(self, "_qf_count_var"):
+            self._qf_count_var.set(f"showing {shown} of {len(ds.files)}"
+                                   + ("" if shown else " — nothing matches"))
 
         n_done  = ds.n_complete
         n_total = ds.n_total
@@ -5979,12 +6295,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         EXCLUDE = ("metric_definitions", "metrics_definitions",
                    "channel_info", "_readme")
         import glob as _glob
-        # Only the BrainVision .vhdr header is globbed — never .eeg/.vmrk —
-        # so each recording enters the queue once, not three times.
-        _EXTS = ("*.txt", "*.smr", "*.adibin", "*.edf", "*.bdf",
-                 "*.vhdr", "*.acq", "*.mat", "*.csv")
+        # Derived from the readers (io.SUPPORTED_GLOBS), not restated here.
         all_files = []
-        for _pat in _EXTS:
+        for _pat in SUPPORTED_GLOBS:
             all_files.extend(_glob.glob(os.path.join(raw, "**", _pat), recursive=True))
         files = sorted(
             f for f in all_files
@@ -5993,8 +6306,8 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         )
         if not files:
             messagebox.showinfo("No files found",
-                "No data files (.txt, .smr, .adibin, .edf, .bdf, .vhdr, .acq, "
-                ".mat, .csv) found in the raw data folder.",
+                f"No data files ({SUPPORTED_EXT_TEXT}) found in the "
+                f"raw data folder.",
                 parent=self.root)
             return
         ds = self._get_or_create_dataset()
@@ -6017,6 +6330,23 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
             msg += f", {skipped_excluded} previously excluded skipped"
         self.log(msg)
 
+    def _log_skipped_files(self, skipped, limit=12):
+        """Say which files were passed over and why.
+
+        Grouped by reason rather than listed one per line: a folder of forty
+        PNGs would otherwise bury the one .adicht that the analyst can
+        actually do something about.
+        """
+        by_reason = {}
+        for path, why in skipped:
+            by_reason.setdefault(why, []).append(os.path.basename(path))
+        self.log(f"⏭️  {len(skipped)} file(s) not added to the queue:")
+        for why, names in sorted(by_reason.items(), key=lambda kv: -len(kv[1])):
+            shown = ", ".join(sorted(names)[:limit])
+            more = f" (+{len(names) - limit} more)" if len(names) > limit else ""
+            self.log(f"     {len(names)}× {why}")
+            self.log(f"        {shown}{more}")
+
     def browse_folder(self):
         """Add all valid data files from a selected folder (recursive)."""
         folder = filedialog.askdirectory(
@@ -6032,12 +6362,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
             "_readme",
         )
         import glob as _glob
-        # Only the BrainVision .vhdr header is globbed — never .eeg/.vmrk —
-        # so each recording enters the queue once, not three times.
-        _EXTS = ("*.txt", "*.smr", "*.adibin", "*.edf", "*.bdf",
-                 "*.vhdr", "*.acq", "*.mat", "*.csv")
+        # Derived from the readers (io.SUPPORTED_GLOBS), not restated here.
         all_files = []
-        for _pat in _EXTS:
+        for _pat in SUPPORTED_GLOBS:
             all_files.extend(_glob.glob(os.path.join(folder, "**", _pat), recursive=True))
         files = sorted(
             f for f in all_files
@@ -6045,13 +6372,37 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
             and not _under_sourcedata(f, folder)
         )
 
+        # What was passed over, and why. Reported rather than dropped: a file
+        # missing from the queue with no explanation is far harder to notice
+        # than one that fails when analysed, and the commonest cause is a
+        # native format with a known export route the analyst can be told
+        # about (a LabChart .adicht sitting beside the .txt, say).
+        skipped = []
+        for _pat in ("*.*",):
+            for f in _glob.glob(os.path.join(folder, "**", _pat), recursive=True):
+                if f in all_files or not os.path.isfile(f):
+                    continue
+                if _under_sourcedata(f, folder):
+                    continue
+                why = unsupported_reason(f)
+                if why:
+                    skipped.append((f, why))
+
         if not files:
+            extra = ""
+            if skipped:
+                extra = (f"\n\n{len(skipped)} other file(s) were passed over; "
+                         f"see the log for why.")
+                self._log_skipped_files(skipped)
             messagebox.showinfo("No files found",
-                "No data files (.txt, .smr, .adibin, .edf, .bdf, .vhdr, .acq, "
-                ".mat, .csv) found in that folder or its subfolders.\n\n"
-                "If your files are in a different format, use '+ Add file(s)' instead.",
+                f"No data files ({SUPPORTED_EXT_TEXT}) found in that folder "
+                f"or its subfolders.{extra}\n\n"
+                "If your files are in a different format, use '+ Add file(s)' "
+                "instead.",
                 parent=self.root)
             return
+        if skipped:
+            self._log_skipped_files(skipped)
 
         ds = self._get_or_create_dataset()
         added = 0
@@ -6070,9 +6421,12 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         """Add one or more files to the queue and load the first one."""
         fpaths = filedialog.askopenfilenames(
             title="Select data file(s)",
+            # The combined entry is derived so it cannot fall behind the
+            # readers; the per-format entries below are the type filter, and
+            # each names the format rather than just its extension so the
+            # analyst can find their own export without knowing the suffix.
             filetypes=[
-                ("All supported formats",
-                 "*.txt *.smr *.adibin *.edf *.bdf *.vhdr *.acq *.mat *.csv"),
+                supported_filetypes(include_all=False)[0],
                 ("Spike2 / LabChart text export", "*.txt"),
                 ("Spike2 native", "*.smr"),
                 ("ADInstruments binary", "*.adibin"),
@@ -6084,6 +6438,23 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                 ("All files", "*.*"),
             ]
         )
+        if not fpaths:
+            return
+
+        # "All files" lets anything be picked, so the check happens here too.
+        # Refused with the reason rather than queued to fail later, but NOT
+        # silently: a file the analyst explicitly chose must never just vanish.
+        rejected = [(p, why) for p in fpaths
+                    if (why := unsupported_reason(p)) is not None]
+        if rejected:
+            self._log_skipped_files(rejected)
+            messagebox.showwarning(
+                "Some files were not added",
+                f"{len(rejected)} of {len(fpaths)} selected file(s) are not in "
+                f"a format this tool reads. See the log for the reason for "
+                f"each.\n\nSupported: {SUPPORTED_EXT_TEXT}",
+                parent=self.root)
+        fpaths = [p for p in fpaths if unsupported_reason(p) is None]
         if not fpaths:
             return
 
@@ -7879,6 +8250,17 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
             val = getattr(self, key, None)
             snap[key] = (set(val) if isinstance(val, set)
                          else dict(val) if isinstance(val, dict) else val)
+        # Anything stored against this channel by something OTHER than tab 1a
+        # survives. This assignment REPLACES the entry, and it is rebuilt only
+        # from the keys tab 1a writes, so a per-channel setting owned by
+        # another part of the application was silently discarded every time a
+        # channel was confirmed. The data ranges were: chosen in the range
+        # picker, wiped on the next Confirm Setup, and the run then fell back
+        # to the file-wide list -- which is one channel's selection applied to
+        # all of them.
+        _keep = {k: v for k, v in (self._chan_settings.get(ch) or {}).items()
+                 if k not in self._chan_settings_keys}
+        snap.update(_keep)
         self._chan_settings[ch] = snap
 
     def _reset_chan_settings_to_defaults(self):

@@ -347,6 +347,34 @@ class PipelineConfig:
     # is unchanged; the field exists so that CspSettings reads one value for
     # both callers and wiring a control to it later cannot desynchronise them.
     csp_rms_window_ms:     float = 10.0
+    # ── For the per-recording analysis record (mep_cmap.reporting) ───────
+    # Carried on the config so the record describes the run rather than
+    # whatever the interface holds by the time it is written. None means the
+    # caller has not supplied it, and the record says so rather than omitting
+    # the key -- an absent fact and an unrecorded one are different, and only
+    # the second is a wiring gap.
+    #
+    # nibs_record is the NIBS-BIDS description of the recording AS FILLED IN,
+    # in the shape documented at reporting.NIBS_RECORD_KEYS: a modality, the
+    # session- and file-scope fields, and the stimulation parameter sets this
+    # recording's codes reference. Structured rather than flat because v6.3 is
+    # -- most stimulation parameters live on a named set, and a flat mapping
+    # cannot hold a test pulse and a conditioning pulse at once.
+    #
+    # Resolved on the GUI thread when the run is snapshotted, not re-read here:
+    # the record must describe what the run used, not what the BIDS-ify tab
+    # holds by the time the analysis finishes.
+    emg_unit:              str  = None
+    source_format:         str  = None
+    # Which part of the recording this run was restricted to. Applied in
+    # pipeline_load_file before the config exists, so it was nowhere in cfg
+    # and the analysis record could not state what had been analysed --
+    # which matters now that ranges are chosen per channel and two channels
+    # of one file can legitimately carry different trial counts.
+    crop_ranges:           list = None
+    crop_start:            float = None
+    crop_end:              float = None
+    nibs_record:           dict = None
     # Averaged-waveform analysis mode (analyse per-condition mean once)
     average_mode:          bool  = False
     # Column selection for the narrowed COPY of trials.csv. None means no
@@ -383,7 +411,7 @@ def _make_bids_prefix(meta_prefix, file_stem):
 def pipeline_load_file(file_path, channel_idx, marker_name,
                        crop_ranges=None, crop_start=None, crop_end=None,
                        sources=None, channel_names=None, warn=None,
-                       event_rows=None):
+                       event_rows=None, epoch_pad_s=0.0):
     """Load raw EMG, extract stim times, apply crop.
 
     ``sources`` is a list of EventSource. When given, the stimuli come from
@@ -433,14 +461,27 @@ def pipeline_load_file(file_path, channel_idx, marker_name,
     else:
         stim_times = extract_stim_times(file_path, marker_name)
 
+    # Selecting a range means "analyse these trials", not "throw the rest of
+    # the recording away". The two differ at the edges: an epoch needs signal
+    # before the stimulus and after it, so a range dragged to end just after
+    # the last pulse -- the natural way to draw it -- left that pulse with
+    # nowhere near enough data and the trial was dropped. Every channel lost
+    # its last trial, and its first too where the range began at a stimulus,
+    # with nothing said: the picker counted twenty events and the run measured
+    # nineteen.
+    #
+    # So the KEPT SIGNAL is padded by the epoch requirement while the STIMULI
+    # are chosen from the range exactly as drawn. The padding is never
+    # analysed as a trial; it exists only so the edge trials can be cut whole.
+    _pad = max(0.0, float(epoch_pad_s or 0.0))
     if crop_ranges:
         keep = np.zeros_like(time, dtype=bool)
         for a, b in crop_ranges:
-            keep |= (time >= a) & (time <= b)
+            keep |= (time >= a - _pad) & (time <= b + _pad)
         emg  = emg[keep]
         time = time[keep]
     elif crop_start is not None and crop_end is not None:
-        keep = (time >= crop_start) & (time <= crop_end)
+        keep = ((time >= crop_start - _pad) & (time <= crop_end + _pad))
         emg  = emg[keep]
         time = time[keep]
 
@@ -448,6 +489,61 @@ def pipeline_load_file(file_path, channel_idx, marker_name,
     stim_times = crop_stim_times(stim_times, crop_ranges, crop_start, crop_end)
 
     return emg, time, fs, unit, stim_times
+
+
+def epoch_pad_seconds(pre_ms=None, post_ms=None, window_map=None,
+                      prestim_ms=None):
+    """How much signal an edge trial needs beyond the range it sits in.
+
+    The widest window any stimulus type could ask for, so that a trial at
+    either edge of a selected range can be cut whole. Computed in one place
+    because the analysis, the preview and the Conditions review pane must pad
+    identically: a pane padding less than the run would show fewer trials than
+    the run measures, which is the disagreement this whole area keeps
+    producing.
+
+    Deliberately generous. Padding too much costs a few samples that are never
+    analysed; padding too little silently drops a trial the analyst selected.
+    """
+    widest_pre = float(pre_ms or 0.0)
+    widest_post = float(post_ms or 0.0)
+    for pair in (window_map or {}).values():
+        try:
+            p, q = pair
+        except (TypeError, ValueError):
+            continue
+        if p not in (None, ""):
+            widest_pre = max(widest_pre, float(p))
+        if q not in (None, ""):
+            widest_post = max(widest_post, float(q))
+    # The review lead-in is wider than the analysis window by design, and the
+    # Inspector cuts with it.
+    widest_pre = max(widest_pre, float(prestim_ms or 0.0))
+    return (widest_pre + widest_post) / 1000.0
+
+
+def crop_for_channel(chan_settings, channel_idx, params):
+    """The data ranges in force for one channel: (ranges, start, end).
+
+    THE one rule, because there are now four readers of it -- the analysis
+    worker, the Conditions tab, the preview and the range picker itself -- and
+    a channel cut differently by any two of them is a table numbering its
+    trials from one selection while the analysis numbers them from another.
+    Conditions are assigned by trial INDEX, so that lands assignments on the
+    wrong trial rather than merely drawing the wrong picture.
+
+    A channel with no ranges of its own falls back to the file-wide pair,
+    which is what a single-channel study and every session written before
+    ranges were per channel carries. An explicit empty list means the channel
+    was left whole and must NOT inherit another channel's selection.
+    """
+    own = ((chan_settings or {}).get(channel_idx)
+           or (chan_settings or {}).get(str(channel_idx))
+           or {}).get("crop_ranges")
+    if own is not None:
+        return (list(own) or None, None, None)
+    p = params or {}
+    return (p.get("crop_ranges"), p.get("crop_start"), p.get("crop_end"))
 
 
 #: The cfg fields ``pipeline_apply_filters`` reads, named rather than derived.
@@ -1951,7 +2047,9 @@ def _trials_frame(rows):
 
 def pipeline_write_outputs(latency_manual, results_out, bids_prefix,
                            channel_label=None, column_selection=None,
-                           log_callback=None):
+                           log_callback=None,
+                           cfg=None, fs=None, emg_unit=None,
+                           source_format=None, nibs_record=None):
     """Write all result CSVs to results_out directory.
 
     Outputs
@@ -2077,6 +2175,64 @@ def pipeline_write_outputs(latency_manual, results_out, bids_prefix,
             _log(f"   ↳ Selected-column copy: {len(_cols)} of "
                  f"{len(df_all.columns)} columns → "
                  f"{os.path.basename(_p('trials_selected.csv'))}")
+
+        # ── The record of HOW this recording was analysed ────────────────
+        # Written on every run, unconditionally, because its value is that it
+        # exists for every recording in a study. A record present for some
+        # files and absent for others cannot answer the question a group-level
+        # assessment asks -- were these analysed the same way -- since the
+        # files without one are indistinguishable from files that agreed.
+        #
+        # Guarded, because this is a report and a report must never cost an
+        # analyst their results.
+        if cfg is not None:
+            try:
+                from . import reporting as _rep
+                from .bids import TOOL_VERSION as _tv
+                from .detection import DETECTION_VERSION as _dv
+                _rec = _rep.build_record(
+                    cfg, name=bids_prefix, channel=channel_label,
+                    fs=fs, emg_unit=emg_unit, source_format=source_format,
+                    rows=df_all.to_dict("records"),
+                    nibs_record=nibs_record,
+                    tool_version=_tv, detection_version=_dv)
+                _sp = _rep.write_sidecar(_rec, os.path.dirname(
+                    _p(_rep.SIDECAR_SUFFIX)), bids_prefix)
+                _log2 = log_callback or (lambda _m: None)
+                if _sp:
+                    _log2(f"   ↳ Analysis record: "
+                          f"{os.path.basename(_sp)}")
+                    # Level 1 names what it KNOWS is absent -- a blank field in
+                    # a schema it can read. It does not report reporting
+                    # coverage: coverage is a property of a STUDY, and a
+                    # per-file percentage would change meaning as files were
+                    # added to it.
+                    # An absent description and an incomplete one are
+                    # different problems with different fixes, and the field
+                    # list is misleading for the first: with no modality known
+                    # only the common fields can be judged, so naming a
+                    # handful would imply the rest were fine.
+                    _nr = nibs_record or {}
+                    if not (_nr.get("fields") or _nr.get("parameter_sets")):
+                        _log2("   ℹ️  No NIBS-BIDS metadata for this "
+                              "recording, so the analysis record cannot "
+                              "describe the stimulation. Review the file on "
+                              "the BIDS-ify tab to supply it.")
+                        _miss = []
+                    else:
+                        _miss = _rep.missing_nibs_fields(nibs_record)
+                    if _miss:
+                        _shown = ", ".join(_miss[:6])
+                        _more = (f" (+{len(_miss) - 6} more)"
+                                 if len(_miss) > 6 else "")
+                        _log2(f"   ℹ️  {len(_miss)} NIBS-BIDS field(s) not set: "
+                              f"{_shown}{_more}. These are needed to report "
+                              f"the stimulation methods; set them on the "
+                              f"BIDS-ify tab.")
+            except Exception as _rexc:      # noqa: BLE001 — never fail a run
+                (log_callback or (lambda _m: None))(
+                    f"   ⚠️  Analysis record not written "
+                    f"({type(_rexc).__name__}: {_rexc})")
 
     # ── Summary files — build from trial-level data for consistency ───────────
     # This ensures summary and trial files always report the same variables.
@@ -2723,6 +2879,13 @@ def run_pipeline(input_path,
                  csp_max_mep_offset_ms=100.0,
                  average_mode=False,
                  column_selection=None,
+                 # The NIBS-BIDS description of this recording, resolved from
+                 # the BIDS-ify worklist before the run starts (see
+                 # reporting.NIBS_RECORD_KEYS for the shape). Passed in rather
+                 # than read here: locating and loading bidsify_state.json is
+                 # the application's job, and the worker thread must not
+                 # re-read state the analyst may be editing while it runs.
+                 nibs_record=None,
                  existing_segments_metadata=None):
     """
     Orchestrate the full per-file MEP/CMAP analysis pipeline.
@@ -2786,6 +2949,12 @@ def run_pipeline(input_path,
         # only) and must stay distinguishable from None, which means no
         # narrowed file at all.
         column_selection=column_selection,
+        nibs_record=nibs_record,
+        # Recorded on the config so the analysis record can state which part
+        # of the recording it describes.
+        crop_ranges=list(crop_ranges) if crop_ranges else None,
+        crop_start=crop_start,
+        crop_end=crop_end,
     )
 
     # ── BIDS output paths ─────────────────────────────────────────────────────
@@ -2870,6 +3039,21 @@ def run_pipeline(input_path,
         log_callback("❌ No valid .txt files found.")
         return
 
+    # A NIBS-BIDS description describes ONE recording. This run writes ONE
+    # analysis record, and a run over a folder pools every file in it into
+    # that record -- so attaching a description here would state one
+    # stimulation protocol for recordings that were never checked to share
+    # one. Dropped rather than carried, and said out loud: a record with no
+    # description reads as "not stated", which is true, whereas one carrying
+    # the wrong protocol is a false statement about what was delivered.
+    if cfg.nibs_record is not None and len(txt_files) > 1:
+        log_callback(
+            f"   ⚠️  {len(txt_files)} recordings are pooled into one analysis "
+            f"record, so its NIBS-BIDS description has been left out: one "
+            f"description cannot be shown to describe them all. Analyse the "
+            f"files individually if the record needs the stimulation details.")
+        cfg.nibs_record = None
+
     # ── Accumulators (across files) ───────────────────────────────────────────
     summary_rows, with_out_rows = [], []
     latency_auto, latency_manual = [], []
@@ -2895,8 +3079,23 @@ def run_pipeline(input_path,
                 crop_start=crop_start, crop_end=crop_end,
                 sources=event_sources, channel_names=channel_names,
                 event_rows=event_rows,
+                # So a trial at either edge of a selected range can be cut
+                # whole. Without it the last stimulus in every range was
+                # dropped, and the first too where the range began at one.
+                epoch_pad_s=epoch_pad_seconds(
+                    pre_ms=cfg.pre_ms, post_ms=cfg.post_ms,
+                    window_map=cfg.window_map, prestim_ms=prestim_ms),
                 warn=lambda m: log_callback(f"   ⚠️  {m}"))
             stim_types = sorted(stim_times)
+
+            # Facts the analysis DISCOVERS rather than is told. Recorded on
+            # the config as soon as they are known, so the analysis record
+            # written at the end describes this recording rather than
+            # whatever the interface happened to hold. Assigned here rather
+            # than passed as arguments because neither exists until the file
+            # has been opened.
+            cfg.emg_unit = unit
+            cfg.source_format = os.path.splitext(raw_file)[1].lstrip(".").lower()
 
             log_callback(f"📂 Processing {name}  (fs={fs} Hz, {len(stim_types)} stim type(s))")
             if event_rows is not None:
@@ -3452,7 +3651,12 @@ def run_pipeline(input_path,
         results_out, _bids_prefix,
         channel_label=channel_label,
         column_selection=cfg.column_selection,
-        log_callback=log_callback)
+        log_callback=log_callback,
+        # For the per-recording analysis record. Passed rather than re-read,
+        # so the record describes the configuration this run actually used.
+        cfg=cfg, fs=fs, emg_unit=getattr(cfg, "emg_unit", None),
+        source_format=getattr(cfg, "source_format", None),
+        nibs_record=getattr(cfg, "nibs_record", None))
 
     # ── Write _trials.json sidecar ────────────────────────────────────────────
     # This is the file Stage 2 scans for. It must be written alongside

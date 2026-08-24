@@ -417,8 +417,8 @@ class ConditionsTabMixin:
         from .pipeline import crop_stim_times
         try:
             _p = self._snapshot_analysis_params()
-            events = crop_stim_times(events, _p.get("crop_ranges"),
-                                     _p.get("crop_start"), _p.get("crop_end"))
+            _cr, _cs, _ce = self._cond_crop_for(_p)
+            events = crop_stim_times(events, _cr, _cs, _ce)
         except Exception:
             pass
         if not events:
@@ -468,8 +468,14 @@ class ConditionsTabMixin:
         _cropped = ""
         try:
             _p = self._snapshot_analysis_params()
-            if _p.get("crop_ranges") or _p.get("crop_start") is not None:
-                _cropped = "  (within the selected data range)"
+            _cr, _cs, _ce = self._cond_crop_for(_p)
+            if _cr or _cs is not None:
+                # Named, because with per-channel ranges "the selected data
+                # range" is ambiguous: two channels of one recording can be
+                # cut differently and the table would look simply wrong on
+                # the second unless it says which channel it is describing.
+                _cropped = ("  (within the range selected for "
+                            f"{self._cond_chan.get() or 'this channel'})")
         except Exception:
             pass
         self._cond_status.config(
@@ -478,6 +484,80 @@ class ConditionsTabMixin:
                              for k, v in sorted(events.items())) + _cropped,
             fg="#555")
         self._cond_refresh_table()
+
+    def _cond_event_rows_for_recording(self, rows_for_shown_channel):
+        """Events-file rows covering EVERY event, not only the shown channel's.
+
+        The table shows one channel's selected data, which is what the analyst
+        asked for. The events FILE cannot be that narrow.
+        ``pipeline_load_file`` uses these rows exclusively when they exist, so
+        an event with no row is not an unconditioned trial -- it is not a trial
+        at all. With per-channel ranges that silently emptied every channel
+        whose range differed from the one last displayed: conditions assigned
+        while viewing Sol-CL gave TA six onsets from a range it does not cover,
+        and TA measured nothing.
+
+        So each event in the recording gets a row. Conditions already assigned
+        are kept, including for events outside the range on screen, because a
+        condition is a property of the trial rather than of the channel that
+        happened to be displayed when it was assigned. An event nobody has
+        conditioned carries its stimulus type and no condition, which is what
+        an unassigned recording has always looked like.
+        """
+        def _key(onset):
+            # A tenth of a millisecond: finer than any jitter between the
+            # readers, coarser than float error on a re-read.
+            return round(float(onset), 4)
+
+        merged = {}
+        # Whatever earlier channels established, so switching channel and
+        # applying again accumulates rather than replaces.
+        for row in (getattr(self, "condition_event_rows", None) or []):
+            try:
+                merged[_key(row["onset"])] = dict(row)
+            except (KeyError, TypeError, ValueError):
+                continue
+        for row in (rows_for_shown_channel or []):
+            try:
+                merged[_key(row["onset"])] = dict(row)
+            except (KeyError, TypeError, ValueError):
+                continue
+
+        # Every event in the recording, uncropped, so no channel's range can
+        # leave its own trials without a row.
+        try:
+            events, _warn = self._configured_events(
+                self.file_path.get(),
+                channel_idx=self._cond_selected_channel_idx())
+        except Exception:                             # noqa: BLE001
+            events = {}
+        for stim, times in (events or {}).items():
+            for t in (times or []):
+                merged.setdefault(_key(t), {
+                    "onset": float(t), "duration": 0.0,
+                    "trial_type": stim, "condition": C.NA,
+                })
+        return sorted(merged.values(), key=lambda r: r["onset"])
+
+    def _cond_crop_for(self, params, channel_idx=None):
+        """The ranges in force for the channel this tab is showing.
+
+        Ranges are chosen per channel, so reading the snapshot's file-wide
+        list here showed one channel's selection against another channel's
+        trace. Conditions are assigned by trial INDEX, so that is not a
+        cosmetic difference: the table would number its trials from one
+        channel's selection while the analysis numbered them from another's,
+        and every assignment would land on the wrong trial.
+
+        Returns (crop_ranges, crop_start, crop_end) ready to pass on. A
+        channel with no ranges of its own falls back to the file-wide pair,
+        which is what a single-channel study and every older session carry.
+        """
+        _ch = (self._cond_selected_channel_idx() if channel_idx is None
+               else channel_idx)
+        from .pipeline import crop_for_channel
+        return crop_for_channel(getattr(self, "_chan_settings", {}), _ch,
+                                params)
 
     def _cond_load_segments(self):
         """Read and cut the recording once, for the review pane only.
@@ -500,12 +580,27 @@ class ConditionsTabMixin:
             params = self._snapshot_analysis_params()
             _ch = self._cond_selected_channel_idx()
             self._cond_chan_idx = _ch
+            _cr, _cs, _ce = self._cond_crop_for(params, _ch)
+            from .pipeline import epoch_pad_seconds as _epoch_pad
+            # Absent from this channel's setup means fall back; an EMPTY map
+            # means this channel has no per-type windows and must not borrow
+            # another channel's.
+            _cond_setup = (getattr(self, "_chan_settings", {}).get(_ch) or {})
+            _cond_wm = _cond_setup.get("window_map",
+                                       params.get("window_map")) or {}
             emg, time, fs, _unit, _stim = pipeline_load_file(
                 params["input_path"], _ch,
                 params["marker_choice"],
-                crop_ranges=params.get("crop_ranges"),
-                crop_start=params.get("crop_start"),
-                crop_end=params.get("crop_end"),
+                crop_ranges=_cr,
+                crop_start=_cs,
+                crop_end=_ce,
+                # Padded as the run pads, so the review pane shows every trial
+                # the analysis will measure. Without it the last trial of each
+                # range was missing from the pane but present in the results.
+                epoch_pad_s=_epoch_pad(pre_ms=params.get("pre_ms"),
+                                       post_ms=params.get("post_ms"),
+                                       window_map=_cond_wm,
+                                       prestim_ms=params.get("prestim_ms")),
                 sources=None, event_rows=None)
 
             # Filtered as the analysis filters. Raw epochs carry whatever DC
@@ -715,13 +810,76 @@ class ConditionsTabMixin:
         reused: keeping it would draw the previous channel's waveforms under
         the new channel's name, which is the failure this control exists to
         fix rather than a new one to introduce.
+
+        The TRIAL LIST is rebuilt too, not only the waveforms. Data ranges are
+        per channel, and the list is cropped to them, so leaving it alone
+        showed the previous channel's trials beside the new channel's traces.
+        Conditions are assigned by trial index, so that is not a display
+        problem: an assignment made against the wrong list lands on the wrong
+        trial.
         """
         idx = self._cond_selected_channel_idx()
         if idx == self._cond_chan_idx:
             return
         self._cond_segments = {}
+        if self._cond_ranges_differ_by_channel():
+            # Only when they actually differ. Rebuilding otherwise would
+            # discard hand-made condition assignments to reach an identical
+            # list, which is a far worse trade than a redundant redraw.
+            self._cond_reload_events_for_channel()
         self._cond_refresh_table()
         self._cond_draw()
+
+    def _cond_ranges_differ_by_channel(self) -> bool:
+        """Whether any two analysed channels carry different data ranges."""
+        seen = set()
+        for i, _nm in self._cond_channel_names():
+            _own = (getattr(self, "_chan_settings", {}).get(i, {}) or {}).get(
+                "crop_ranges")
+            seen.add(None if _own is None else tuple(tuple(r) for r in _own))
+        return len(seen) > 1
+
+    def _cond_reload_events_for_channel(self):
+        """Re-cut the trial list to the channel now on screen.
+
+        Assignments are kept where the trial still exists: a condition is a
+        property of the trial, and re-cutting must not throw away work the
+        analyst has done on trials both channels share.
+        """
+        path = getattr(self, "_cond_source_path", None) or (
+            self.file_path.get() if hasattr(self, "file_path") else "")
+        if not path:
+            return
+        from .pipeline import crop_stim_times
+        try:
+            events, _warn = self._configured_events(
+                path, channel_idx=self._cond_selected_channel_idx())
+            _p = self._snapshot_analysis_params()
+            _cr, _cs, _ce = self._cond_crop_for(_p)
+            events = crop_stim_times(dict(events or {}), _cr, _cs, _ce)
+        except Exception as exc:                      # noqa: BLE001 — reported
+            self._cond_status.config(
+                text=f"Could not re-read events for this channel: {exc}",
+                fg="#B03A2E")
+            return
+        if not events:
+            self._cond_status.config(
+                text="No stimulus events fall inside the range selected for "
+                     f"{self._cond_chan.get()}.", fg="#B03A2E")
+            self._cond_stim_times, self._cond_rows = {}, []
+            return
+        self._cond_stim_times = {k: list(v) for k, v in events.items()}
+        self._cond_rows = C.rows_from_events(self._cond_stim_times)
+        # Undo history belongs to the previous list; a trial index in it may
+        # not exist in this one.
+        self._cond_undo_stack.clear()
+        self._cond_redo_stack.clear()
+        self._cond_status.config(
+            text=f"{os.path.basename(path)} — "
+                 + ", ".join(f"{k} ({len(v)})"
+                             for k, v in sorted(events.items()))
+                 + f"  (within the range selected for {self._cond_chan.get()})",
+            fg="#555")
 
     def _cond_window_changed(self):
         """Redraw with the typed viewing window.
@@ -1092,7 +1250,8 @@ class ConditionsTabMixin:
                          f"still to review.")
                 return
 
-        event_rows = C.to_event_rows(rows, self._cond_stim_times)
+        event_rows = self._cond_event_rows_for_recording(
+            C.to_event_rows(rows, self._cond_stim_times))
         groups, decoded = C.group_events(event_rows)
 
         path = self.file_path.get()

@@ -153,6 +153,50 @@ UNREADABLE_FORMATS = {
 SUPPORTED_EXTENSIONS = (".txt", ".smr", ".adibin", ".edf", ".bdf",
                         ".vhdr", ".acq", ".mat", ".csv")
 
+#: Glob patterns for the same set, for folder walks.
+#:
+#: DERIVED, never restated. The dataset queue kept two hand-written copies of
+#: this tuple and the "no files found" message a third; all three had to be
+#: edited together whenever a reader was added, and nothing failed loudly when
+#: they were not. Only the .vhdr member of a BrainVision triple appears here,
+#: as it is the header that resolves the other two -- globbing .eeg and .vmrk
+#: would enter one recording into the queue three times.
+SUPPORTED_GLOBS = tuple(f"*{e}" for e in SUPPORTED_EXTENSIONS)
+
+#: The same set as a human-readable list, for dialogue text.
+SUPPORTED_EXT_TEXT = ", ".join(SUPPORTED_EXTENSIONS)
+
+
+def supported_filetypes(include_all: bool = True) -> list:
+    """``filetypes=`` for a tkinter open dialogue, derived from the readers."""
+    combined = " ".join(SUPPORTED_GLOBS)
+    out = [("All supported formats", combined)]
+    if include_all:
+        out.append(("All files", "*.*"))
+    return out
+
+
+def unsupported_reason(file_path: str):
+    """Why this file cannot be queued, or None if it can.
+
+    Name-based only: no header is read, so this is cheap enough to run over
+    every file in a folder walk. A file that passes here may still fail to
+    open -- ``detect_format`` is what settles that -- so the queue treats this
+    as a filter, not a guarantee.
+
+    Returning a REASON rather than a boolean is the point. Silently dropping a
+    file is the worse failure: the analyst gets a study missing a participant
+    and no indication why, which is far harder to notice than a file that
+    fails loudly when it is analysed.
+    """
+    ext = _os.path.splitext(file_path)[1].lower()
+    if ext in UNREADABLE_FORMATS:
+        return UNREADABLE_FORMATS[ext]
+    if ext not in SUPPORTED_EXTENSIONS:
+        return (f"{ext or 'no extension'} is not a format any reader in this "
+                f"tool opens. Supported: {SUPPORTED_EXT_TEXT}.")
+    return None
+
 
 def detect_format(file_path: str) -> str:
     """
@@ -288,6 +332,18 @@ def detect_format(file_path: str) -> str:
     # export has numbers within the first few dozen lines by definition.
     if not _has_numeric_rows(file_path):
         return 'unsupported_text'
+    # ...but the catch-all is for Spike2 TEXT exports, which are .txt. A .csv
+    # reaching here is a table of numbers from something else -- a force trace,
+    # a log -- and calling it a Spike2 export is a claim about the file that is
+    # simply false. It also made those files offer a "Scan file" button that
+    # could never find anything, because there are no Marker blocks to find.
+    #
+    # Extension rather than content, deliberately: the comment above is right
+    # that the positive checks cannot be made exhaustive, so narrowing them
+    # would risk rejecting real exports. Narrowing by suffix rejects only
+    # files that were never Spike2 exports to begin with.
+    if _os.path.splitext(file_path)[1].lower() == '.csv':
+        return 'generic_tsv'
     return 'spike2'
 
 
@@ -444,6 +500,12 @@ def list_event_channels(file_path: str) -> list:
     fmt = detect_format(file_path)
     if fmt == 'spike2_smr':
         return _spike2_smr.list_event_channels(file_path)
+    # Spike-2 TEXT exports carry the same marker blocks. Answering [] here
+    # left the BIDS-ify scan with nothing to offer for a .txt export, so its
+    # codes came from the shared marker label instead -- one code for a
+    # recording that had several, with nothing saying so.
+    if fmt == 'spike2':
+        return _spike2.list_event_channels(file_path)
     return []
 
 

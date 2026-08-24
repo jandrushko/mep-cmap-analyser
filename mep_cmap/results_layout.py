@@ -51,6 +51,12 @@ FAMILIES = {
     "onset_method_summary.csv": "onset-methods",
     "segments.npz": "segments",
     "report.csv": "report",
+    # The per-recording record of HOW the analysis was configured. Filed with
+    # the report family because it is written FOR a report rather than being
+    # one, and because the report family is already excluded from the search
+    # for analysis input -- which this must be, since a stacked JSON beside
+    # the trial files is exactly the kind of thing a loose glob picks up.
+    "reporting.json": "report",
 }
 
 #: Anything an add-on writes that is not named above. Add-ons are the reason

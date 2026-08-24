@@ -285,6 +285,70 @@ class TrialSelectDialog:
 class PreviewDetectionMixin:
     """First Level ▸ Preview detection."""
 
+    def _preview_pick_channel(self, params):
+        """Which channel to preview. Returns an index, or None if cancelled.
+
+        The preview followed the Channel dropdown in the header, which chooses
+        the channel being CONFIGURED. On a study analysing four channels of
+        thirteen that is not the same question, and previewing a second channel
+        meant leaving the preview, changing a control that also re-points the
+        setup table, and coming back. Asked here instead, so that checking a
+        detection setting on each analysed channel does not disturb the setup.
+
+        Not asked at all when only one channel is being analysed: there is no
+        question to put.
+        """
+        try:
+            idxs = list(self._analysis_channel_indices() or [])
+        except Exception:                       # noqa: BLE001
+            idxs = []
+        cur = params.get("channel_idx", getattr(self, "channel_idx", 0))
+        if len(idxs) <= 1:
+            return cur
+        try:
+            names = list(self.channel_dd["values"])
+        except Exception:                       # noqa: BLE001
+            names = []
+
+        def _nm(i):
+            return names[i] if i < len(names) else f"Channel {i + 1}"
+
+        # Open on the channel previewed last, falling back to the header's.
+        # Tuning one setting across several channels is the common case, and
+        # re-picking the same channel each time is the friction this removes.
+        _last = getattr(self, "_preview_last_channel", None)
+        start = _last if _last in idxs else (cur if cur in idxs else idxs[0])
+
+        top = tk.Toplevel(self.root)
+        top.title("Preview detection — choose channel")
+        top.transient(self.root)
+        top.grab_set()
+        tk.Label(top, justify="left", wraplength=420,
+                 text=("Which channel do you want to preview?\n\n"
+                       "Each analysed channel has its own detection settings, "
+                       "event sources and data range, so a preview describes "
+                       "one channel only.")
+                 ).pack(anchor="w", padx=14, pady=(12, 8))
+        var = tk.StringVar(value=_nm(start))
+        ttk.Combobox(top, textvariable=var, state="readonly", width=28,
+                     values=[_nm(i) for i in idxs]).pack(padx=14, anchor="w")
+        out = {"idx": None}
+
+        def _ok():
+            want = var.get()
+            out["idx"] = next((i for i in idxs if _nm(i) == want), start)
+            top.destroy()
+
+        row = tk.Frame(top)
+        row.pack(fill="x", padx=14, pady=12)
+        tk.Button(row, text="Cancel", width=10,
+                  command=top.destroy).pack(side="right")
+        tk.Button(row, text="Preview", width=10,
+                  command=_ok).pack(side="right", padx=(0, 8))
+        top.bind("<Return>", lambda _e: _ok())
+        self.root.wait_window(top)
+        return out["idx"]
+
     def preview_detection_start(self):
         """Called by the *Preview detection* button (GUI thread)."""
         # The preview writes nothing, so an output folder is not a
@@ -303,8 +367,26 @@ class PreviewDetectionMixin:
                 parent=self.root)
             return
 
+        # Asked BEFORE the read, because the read is per channel: loading one
+        # channel and then offering to change it would mean reading twice.
+        _ch = self._preview_pick_channel(params)
+        if _ch is None:
+            self.log("   Preview cancelled")
+            return
+        if _ch != params.get("channel_idx"):
+            # A copy, not an edit: the snapshot describes the run the analyst
+            # has set up, and previewing another channel must not rewrite it.
+            params = dict(params)
+            params["channel_idx"] = _ch
+        self._preview_last_channel = _ch
+        try:
+            _nm = list(self.channel_dd["values"])[_ch]
+        except Exception:                       # noqa: BLE001
+            _nm = f"channel {_ch}"
+
         self._preview_running = True
-        self.log(f"🔎 Preview detection — reading {os.path.basename(path)}…")
+        self.log(f"🔎 Preview detection — reading {os.path.basename(path)} "
+                 f"on {_nm}…")
 
         # Only the read and filter are threaded; they take seconds and would
         # freeze Tk. Choosing trials and cutting them are cheap and belong on
@@ -332,12 +414,39 @@ class PreviewDetectionMixin:
             params["channel_idx"]) or []
         _sources = [EventSource.from_dict(_d) for _d in _src_raw]
 
+        # This channel's own data ranges, by the same rule the analysis and
+        # the Conditions tab use. Reading the file-wide list here cropped one
+        # channel's trace to another channel's selection, and on a stale
+        # file-wide range that can exclude every stimulus in the recording.
+        from .pipeline import crop_for_channel as _crop_for
+        from .pipeline import epoch_pad_seconds as _epoch_pad
+        _cr, _cs, _ce = _crop_for(params.get("chan_settings"),
+                                  params["channel_idx"], params)
+        # Padded exactly as the run pads, or the preview would offer fewer
+        # trials than the analysis measures -- the disagreement this feature
+        # exists to prevent.
+        #
+        # Resolved per channel by the same rule _preview_cut uses: absent from
+        # this channel's setup means fall back, an EMPTY map means this channel
+        # has no per-type windows and must not borrow another channel's.
+        _ld_setup = (params.get("chan_settings") or {}).get(
+            params["channel_idx"]) or {}
+
+        def _ld_own(key, default=None):
+            return _ld_setup.get(key, params.get(key, default))
+
+        _pad_s = _epoch_pad(pre_ms=params.get("pre_ms"),
+                            post_ms=params.get("post_ms"),
+                            window_map=_ld_own("window_map", {}) or {},
+                            prestim_ms=params.get("prestim_ms"))
+
         emg, time, fs, unit, stim_times = pipeline_load_file(
             params["input_path"], params["channel_idx"],
             params["marker_choice"],
-            crop_ranges=params.get("crop_ranges"),
-            crop_start=params.get("crop_start"),
-            crop_end=params.get("crop_end"),
+            crop_ranges=_cr,
+            crop_start=_cs,
+            crop_end=_ce,
+            epoch_pad_s=_pad_s,
             sources=_sources,
             channel_names=params.get("channel_names"),
             # Assigned conditions, when there are any. Passed through the same
@@ -359,7 +468,19 @@ class PreviewDetectionMixin:
             if keep:
                 usable[stim_type] = keep
 
+        # Said every time, not only on failure. "No stimuli" is the same
+        # sentence whether the marker is wrong, the range excludes everything,
+        # or the file has no events at all, and telling those apart afterwards
+        # has meant reconstructing the run by hand more than once.
+        self.log(f"   Preview: {sum(len(v) for v in stim_times.values())} "
+                 f"stimulus event(s) inside the selected range, "
+                 f"{sum(len(v) for v in usable.values())} within the loaded "
+                 f"signal [{time.min():.2f}\u2013{time.max():.2f}] s "
+                 f"(pad {_pad_s:.2f} s)")
+
         return dict(emg=emg, time=time, fs=fs, unit=unit, usable=usable,
+                    cropped_to=_cr or ([(_cs, _ce)]
+                                       if _cs is not None else None),
                     params=params)
 
     # ── GUI thread ───────────────────────────────────────────────────────────
@@ -376,6 +497,27 @@ class PreviewDetectionMixin:
         self._preview_running = False
         usable = loaded["usable"]
         if not usable:
+            # Name the data range when there is one. "Check the selected
+            # marker" sends the analyst to the one thing that is probably
+            # right: a recording whose markers were fine a moment ago in the
+            # Conditions tab has almost certainly been cropped to a window
+            # with no stimuli in it, and the marker is a red herring.
+            _cr = loaded.get("cropped_to")
+            if _cr:
+                _shown = ",  ".join(f"[{a:.2f} \u2013 {b:.2f}]"
+                                    for a, b in _cr[:4])
+                _more = f" (+{len(_cr) - 4} more)" if len(_cr) > 4 else ""
+                self.log("   ⚠️  No stimuli inside the selected data range "
+                         f"for this channel: {_shown}{_more}")
+                messagebox.showinfo(
+                    "Preview detection",
+                    "No stimulus events fall inside the data range selected "
+                    "for this channel, so there is nothing to preview.\n\n"
+                    f"Range: {_shown}{_more}\n\n"
+                    "Reopen the range picker to change it, or clear it to "
+                    "analyse the whole recording.",
+                    parent=self.root)
+                return
             self.log("   ⚠️  No stimuli found inside the recording")
             messagebox.showinfo(
                 "Preview detection",

@@ -114,7 +114,33 @@ def test_the_crop_dialogue_shows_the_summary():
     a = APP.index("def _update_list_label")
     b = APP.index("_update_list_label()", a + 10)
     body = APP[a:b]
-    assert "format_selection(stim_dict, spans)" in body
+    # Summarised against the events of the channel ON SCREEN. Ranges are
+    # chosen per channel, and each channel has its own event sources, so a
+    # summary built from a variable captured when the window opened would
+    # count the first channel's trials under the second channel's ranges.
+    assert 'format_selection(state["stim"]' in body
+
+
+def test_the_summary_counts_the_ranges_of_the_channel_on_screen():
+    a = APP.index("def _update_list_label")
+    b = APP.index("_update_list_label()", a + 10)
+    body = APP[a:b]
+    assert "spans = _spans()" in body, (
+        "the summary must read the on-screen channel's ranges, not a "
+        "list captured when the window opened")
+
+
+def test_the_dialogue_states_where_every_channel_stands():
+    """
+    A channel never opened here has no ranges and is analysed whole. That is a
+    legitimate choice and an easy accident, and they are indistinguishable
+    unless the window says so without being asked.
+    """
+    a = APP.index("def _update_list_label")
+    b = APP.index("_update_list_label()", a + 10)
+    body = APP[a:b]
+    assert "whole recording" in body
+    assert "per_chan" in body
 
 
 def test_a_summary_failure_cannot_break_the_dialogue():

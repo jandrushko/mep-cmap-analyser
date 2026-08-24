@@ -74,6 +74,28 @@ class FileBidsRecord:
     #: because a stim code is.
     code_sets:     dict = field(default_factory=dict)
 
+    #: parameter set NAME -> {schema field: value}, overriding that set FOR
+    #: THIS RECORDING ONLY.
+    #:
+    #: Exists so that a one-off deviation stays legible as a deviation. A
+    #: recording delivered at 1.3 rMT when the protocol says 1.2 can only be
+    #: recorded, without this, by inventing a second set -- and then the study
+    #: reads as two protocols deliberately run rather than one protocol and
+    #: one drift. Which of those is true is exactly what a reporting checklist
+    #: exists to establish.
+    #:
+    #: Keyed by SET NAME, not by stim code, though the assignment is by code.
+    #: Two codes in one recording can share a set, and *_nibs.tsv carries one
+    #: row per set: keying by code would let one code override and the other
+    #: not, producing two rows with the same nibs_event_id and an *_events.tsv
+    #: reference that resolves to both. A code that genuinely differs from
+    #: another code is a different set, not an override.
+    #:
+    #: The name is not overridden either: it names the protocol role (test
+    #: pulse, conditioning pulse), unchanged by the intensity used. Nor are
+    #: nibs_type or position -- a set whose type differs is a different set.
+    set_overrides: dict = field(default_factory=dict)
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -102,6 +124,12 @@ class FileBidsRecord:
             # its codes are unassigned, and it reports as incomplete rather
             # than silently claiming a protocol nobody stated.
             code_sets=dict(d.get("code_sets", {}) or {}),
+            # Absent before overrides existed. Empty means "this recording
+            # matched the protocol", which is the right reading of a file
+            # converted before a deviation could be recorded at all.
+            set_overrides={
+                str(k): dict(v) for k, v in
+                (d.get("set_overrides") or {}).items() if isinstance(v, dict)},
         )
 
 
@@ -120,6 +148,27 @@ class BidsifyState:
         #: threshold is a property of the session, not of a recording.
         self.param_sets: list = []
         self._files: dict = {}          # rel_path -> FileBidsRecord
+
+        #: Delete each native original once it is safely in sourcedata/ and
+        #: its EDF has verified. Off unless the analyst turns it on, per study.
+        self.move_sources: bool = False
+
+    def repoint(self, old_path: str, new_path: str) -> None:
+        """Follow a file that has moved, keeping everything recorded about it.
+
+        Records are keyed by path, so a moved original would otherwise orphan
+        its record: the reviewed flag, the marker names and the stimulation
+        set assignment would all silently revert to unset, and the recording
+        would present itself as never having been touched.
+        """
+        old_key, new_key = self.key_for(old_path), self.key_for(new_path)
+        if old_key == new_key:
+            return
+        rec = self._files.pop(old_key, None)
+        if rec is None:
+            return
+        rec.rel_path = new_key
+        self._files[new_key] = rec
 
     # ---- path keying ----------------------------------------------------------
     def key_for(self, path: str) -> str:
@@ -153,6 +202,10 @@ class BidsifyState:
                 st.powerline_hz = int(d.get("powerline_hz", 50))
                 st.marker_name  = d.get("marker_name", "A")
                 st.rawdata_root = d.get("rawdata_root", "")
+                # Defaults to False on a state file written before the option
+                # existed. A destructive setting must never be inherited from
+                # a study that was never asked the question.
+                st.move_sources = bool(d.get("move_sources", False))
                 # Absent before state version 2. from_dicts tolerates anything
                 # a hand edit could do and skips what it cannot read, because
                 # this runs at startup and an unreadable set must not stop the
@@ -175,6 +228,7 @@ class BidsifyState:
             "powerline_hz": self.powerline_hz,
             "marker_name": self.marker_name,
             "rawdata_root": self.rawdata_root,
+            "move_sources": self.move_sources,
             "param_sets": _stim_params.to_dicts(self.param_sets),
             "files": [r.to_dict() for r in self._files.values()],
         }
@@ -230,6 +284,88 @@ class BidsifyState:
             vals.update(rec.overrides)
         vals["StimulationModality"] = self.modality
         return vals
+
+    def effective_sets(self, path: str) -> list:
+        """This recording's parameter sets, with its own deviations applied.
+
+        THE one place an override is resolved. Everything that describes a
+        recording -- the *_nibs.tsv rows, the analysis record, the preview --
+        reads through here, so a deviation cannot be applied to the published
+        sidecar and missed by the record that is supposed to describe it.
+
+        Only sets this file's codes reference are returned, and only fields
+        the session set already defines or the override supplies; a blank
+        override value clears the field rather than writing an empty string.
+        """
+        rec = self.record_for(path, create=False)
+        code_sets = dict(rec.code_sets) if rec else {}
+        overrides = dict(rec.set_overrides) if rec else {}
+        out = []
+        for s in _stim_params.sets_in_use(code_sets, self.param_sets):
+            for key, value in (overrides.get(s.name) or {}).items():
+                s = s.with_value(key, value)
+            out.append(s)
+        return out
+
+    def deviations(self, path: str) -> dict:
+        """{set name: {field: (protocol value, this recording's value)}}.
+
+        For showing the analyst what differs, and for the preview. Computed
+        against the session set rather than read from the override, so an
+        override that merely restates the protocol value is not reported as a
+        deviation -- it is not one.
+        """
+        rec = self.record_for(path, create=False)
+        if not rec or not rec.set_overrides:
+            return {}
+        by_name = {s.name: s for s in self.param_sets}
+        out = {}
+        for name, fields in rec.set_overrides.items():
+            base = by_name.get(name)
+            if base is None:
+                continue
+            diff = {k: (base.values.get(k), v) for k, v in (fields or {}).items()
+                    if str(base.values.get(k) or "") != str(v or "")}
+            if diff:
+                out[name] = diff
+        return out
+
+    def nibs_record(self, path: str) -> dict:
+        """This recording's NIBS-BIDS description, for the analysis record.
+
+        Structured rather than flat, because v6.3 is. Thirteen of the
+        twenty-five required/recommended fields are parameter-set scope, and
+        flattening them gives one slot to a fact a paired-pulse protocol has
+        two of: a test pulse at 120% rMT and a conditioning pulse at 80% would
+        become one intensity, and which one it became would depend on
+        iteration order.
+
+        Reported AS FILLED, not as required. Nothing here is defaulted or
+        invented -- a blank field stays blank, so that a reader can tell an
+        undescribed protocol from a described one.
+
+        Only the sets this file's codes reference are included: a session-level
+        set no code here uses belongs to a different recording, and carrying it
+        would describe stimulation that was never delivered.
+        """
+        rec = self.record_for(path, create=False)
+        code_sets = dict(rec.code_sets) if rec else {}
+        # Through effective_sets, so a recording that deviated reports the
+        # value it was delivered at. Reading the session sets here would put
+        # the protocol's number in the record while the published sidecar
+        # carried the real one -- and the record is what the reporting
+        # assessment believes.
+        in_use = self.effective_sets(path)
+        return {
+            "modality": self.modality,
+            "fields": self.effective_values(path),
+            "parameter_sets": {
+                s.name: {"nibs_type": s.nibs_type,
+                         "position": s.position,
+                         "values": dict(s.values)}
+                for s in in_use},
+            "code_sets": code_sets,
+        }
 
     def unassigned_codes(self, path: str, splits=()) -> list:
         """Ticked stim codes with no parameter set, for this file.

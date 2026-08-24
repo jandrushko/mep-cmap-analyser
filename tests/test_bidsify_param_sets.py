@@ -141,3 +141,63 @@ def test_a_record_round_trips_through_its_own_dict():
     rec = FileBidsRecord(rel_path="a.smr", marker_names=["A"],
                          code_sets={"A": "Mmax"})
     assert FileBidsRecord.from_dict(rec.to_dict()).code_sets == {"A": "Mmax"}
+
+
+# ── the description handed to the analysis record ────────────────────────────
+
+def _two_set_state(tmp_path):
+    st = BidsifyState.load_or_create(str(tmp_path))
+    st.defaults = {"CoilType": "figure-of-8"}
+    st.param_sets = [
+        sp.StimParamSet("Mmax", nibs_type="PNS",
+                        values={"StimulationIntensity": 45},
+                        position="tibial_nerve"),
+        sp.StimParamSet("MEP_120", nibs_type="TMS",
+                        values={"StimulationIntensity": 60}),
+        sp.StimParamSet("other_file", nibs_type="TMS",
+                        values={"StimulationIntensity": 99}),
+    ]
+    path = os.path.join(str(tmp_path), "a.smr")
+    rec = st.record_for(path)
+    rec.reviewed = True
+    rec.marker_names = ["A", "G"]
+    rec.code_sets = {"A": "Mmax", "G": "MEP_120"}
+    return st, path
+
+
+def test_the_description_carries_the_parameter_sets_not_just_the_fields(tmp_path):
+    """
+    v6.3 puts most stimulation parameters on a named set. A flat mapping has
+    one slot for a fact this recording has two of, and which of the two
+    survived would depend on iteration order.
+    """
+    st, path = _two_set_state(tmp_path)
+    nr = st.nibs_record(path)
+    assert nr["modality"] == "TMS"
+    assert nr["fields"]["CoilType"] == "figure-of-8"
+    assert nr["code_sets"] == {"A": "Mmax", "G": "MEP_120"}
+    assert nr["parameter_sets"]["Mmax"]["values"]["StimulationIntensity"] == 45
+    assert nr["parameter_sets"]["MEP_120"]["values"]["StimulationIntensity"] == 60
+    assert nr["parameter_sets"]["Mmax"]["nibs_type"] == "PNS"
+    assert nr["parameter_sets"]["Mmax"]["position"] == "tibial_nerve"
+
+
+def test_a_set_no_code_here_uses_is_left_out(tmp_path):
+    """It belongs to another recording. Carrying it would describe
+    stimulation that was never delivered in this one."""
+    st, path = _two_set_state(tmp_path)
+    assert "other_file" not in st.nibs_record(path)["parameter_sets"]
+
+
+def test_the_description_of_an_unreviewed_file_is_empty_not_invented(tmp_path):
+    st, _ = _two_set_state(tmp_path)
+    nr = st.nibs_record(os.path.join(str(tmp_path), "never_touched.smr"))
+    assert nr["code_sets"] == {}
+    assert nr["parameter_sets"] == {}
+
+
+def test_the_description_is_json_serialisable(tmp_path):
+    """It is written into the reporting sidecar verbatim."""
+    st, path = _two_set_state(tmp_path)
+    nr = st.nibs_record(path)
+    assert json.loads(json.dumps(nr)) == nr
