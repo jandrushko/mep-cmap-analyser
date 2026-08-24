@@ -109,10 +109,25 @@ def test_it_writes_the_three_outputs(tmp_path):
     paths, _logs = _run(deriv, tms_rat_study="MyStudy", tms_rat_rater="JA",
                         tms_rat_protocol="Motor-evoked potentials")
     names = sorted(os.path.basename(p) for p in paths)
-    assert names == ["MyStudy_methods.md", "MyStudy_tms-rat.csv",
-                     "MyStudy_tms-rat.xlsx"]
+    # The CSV and the methods draft are unconditional. The workbook needs
+    # openpyxl and the shipped checklist file, and the add-on is written to
+    # degrade without either -- so asserting it here made the suite depend on
+    # an optional capability, and it failed in CI, which installs
+    # requirements.txt and nothing else.
+    assert "MyStudy_tms-rat.csv" in names
+    assert "MyStudy_methods.md" in names
+    if _has_openpyxl():
+        assert "MyStudy_tms-rat.xlsx" in names
     for p in paths:
         assert os.path.getsize(p) > 0
+
+
+def _has_openpyxl():
+    try:
+        import openpyxl                     # noqa: F401
+    except ImportError:
+        return False
+    return True
 
 
 def test_the_csv_is_in_the_output_sheet_format(tmp_path):
