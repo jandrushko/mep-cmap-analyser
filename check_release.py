@@ -63,6 +63,22 @@ STRIP_NOISE = re.compile(
     r"|v\d[\d.]* and earlier"
     r"|[Ff]rom [Vv]ersions? \d[\d.]*"
     r"|[Ff]rom v\d[\d.]*"
+    # Statements about when a feature BEGAN. "Sessions written before 1.4.5
+    # carry no provenance" names the release that introduced landmark
+    # provenance; bumping it would assert something false and strand every
+    # session written under 1.4.5. Like the licence history above, this is a
+    # permanent fact about the past, and it will still have to say 1.4.5 at
+    # 1.4.7 and at 2.0 -- so without this the gate fails at EVERY future
+    # release on a line that is correct, and a gate that has to be overridden
+    # routinely is one nobody reads.
+    #
+    # "before" is what makes it safe to strip: a sentence about versions
+    # before some number is describing what used to be true, never what this
+    # release is. Both the bare and the v-prefixed spellings, since the README
+    # uses one and the changelog the other.
+    r"|before [Vv]ersions? \d[\d.]*"
+    r"|before v\d[\d.]*"
+    r"|before \d+\.\d+\.\d+"
 )
 
 # Matches 1.2.7 and v1.2.7 alike — \b fails after 'v', since both are word
