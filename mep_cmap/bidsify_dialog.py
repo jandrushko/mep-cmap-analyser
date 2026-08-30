@@ -95,7 +95,7 @@ def assemble_result(modality: str, raw_values: dict, container: str,
     return BidsifyDialogResult(
         modality=modality,
         sidecar_values=vals,
-        container=container if container in ("EDF", "BDF") else "EDF",
+        container=container if container in ("EDF", "BDF") else "BDF",
         powerline_hz=pl,
         marker_name=(marker_name or "A"),
     )
@@ -119,7 +119,7 @@ class BidsifyDialog:
         self._field_vars: dict = {}
 
         self.modality_var  = tk.StringVar(value=self.defaults.get("modality", "TMS"))
-        self.container_var  = tk.StringVar(value=self.defaults.get("container", "EDF"))
+        self.container_var  = tk.StringVar(value=self.defaults.get("container", "BDF"))
         self.powerline_var  = tk.StringVar(value=str(self.defaults.get("powerline_hz", 50)))
         self.marker_var     = tk.StringVar(value=self.defaults.get("marker_name", "A"))
         self.show_adv_var   = tk.BooleanVar(value=False)
@@ -214,7 +214,10 @@ class BidsifyDialog:
         row.pack(fill="x", padx=14, pady=8)
 
         tk.Label(row, text="Container:", bg="#ececec", fg=_FG).pack(side="left")
-        for c in ("EDF", "BDF"):
+        # BDF first, matching the default. EDF's 16-bit step is coarse enough
+        # to be visible in a small MEP at EMG gains, so BDF is the safer
+        # starting point; EDF stays available for anyone who needs it.
+        for c in ("BDF", "EDF"):
             tk.Radiobutton(row, text=c + "+", value=c, variable=self.container_var,
                            bg="#ececec", activebackground="#ececec").pack(side="left")
 

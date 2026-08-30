@@ -139,7 +139,13 @@ class BidsifyState:
         self.root         = root
         self.modality     = "TMS"
         self.defaults     = {}          # shared session-constant sidecar values
-        self.container    = "EDF"
+        # BDF by default. EMG is recorded at amplifier gains that put a
+        # 16-bit container's quantisation step within range of the signal
+        # itself: EDF's step is coarse enough to be visible in a small MEP,
+        # and the read-back check tolerates one step, so a conversion can
+        # verify while having lost more than the analyst would accept.
+        # BDF's 24 bits remove the question. Both remain available.
+        self.container    = "BDF"
         self.powerline_hz = 50
         self.marker_name  = "A"
         self.rawdata_root = ""          # chosen output rawdata root (optional)

@@ -181,7 +181,7 @@ class PlannedFile:
 class Plan:
     layout:        DatasetLayout
     files:         list = field(default_factory=list)
-    container:     str = "EDF"      # 'EDF' or 'BDF'
+    container:     str = "BDF"      # 'BDF' or 'EDF'
     powerline_hz:  int = 50
     warnings:      list = field(default_factory=list)
     #: Delete each native original once its archival copy is in sourcedata/
@@ -255,7 +255,7 @@ def _suffix_for_modality(modality: str) -> str:
 
 def plan_bidsify(items: list,
                  layout: DatasetLayout,
-                 container: str = "EDF",
+                 container: str = "BDF",
                  powerline_hz: int = 50,
                  move_sources: bool = False,
                  io_module: Any = None) -> Plan:
@@ -379,7 +379,7 @@ def write_recording(path: str,
                     rec: Recording,
                     channel_types: list,
                     channel_units: list,
-                    container: str = "EDF",
+                    container: str = "BDF",
                     prefilter: str = "") -> None:
     """
     Write a Recording to an EDF+/BDF file. channel_types/channel_units are
