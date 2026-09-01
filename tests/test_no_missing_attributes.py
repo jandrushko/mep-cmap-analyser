@@ -32,7 +32,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 TARGETS = [
     ("app.py", "TMSAnalysisApp",
      ["stage2.py", "filter_preview.py", "bidsify_tab.py", "preview.py",
-      "conditions_tab.py"]),
+      "conditions_tab.py", "reprocess_ui.py"]),
 ]
 
 

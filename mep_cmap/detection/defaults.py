@@ -114,10 +114,13 @@ ONSET_DEFAULTS = {
 
     # Consensus and per-trial method agreement
     "onset_methods_median_members": list(DEFAULT_METHODS_MEDIAN_MEMBERS),
-    # Off by default: computing agreement runs every member detector on every
-    # trial, which multiplies onset-detection time by roughly the number of
-    # members. It is a review-triage aid, not a required metric.
-    "onset_agreement": False,
+    # On by default. It runs every member detector on every trial, so onset
+    # detection costs roughly the number of members -- but the consensus is
+    # now the reported latency wherever it is available (see Latency_Source in
+    # pipeline.LAT_COLS), not a review-triage aid, and a default of False
+    # would mean the reported latency silently depended on a setting most
+    # analysts never open.
+    "onset_agreement": True,
 }
 
 OFFSET_DEFAULTS = {

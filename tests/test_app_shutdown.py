@@ -24,13 +24,18 @@ SRC = (pathlib.Path(__file__).resolve().parent.parent
 
 
 def _load_file_entry_body():
-    """Source of _load_file_entry only.
+    """Source of the file-load body only.
 
     `threading.Thread(target=_worker, ...)` appears in more than one method, so
     anchoring on it finds the wrong region and the assertions silently examine
     unrelated code.
+
+    Anchored on _load_file_entry_INNER: _load_file_entry itself is now a
+    re-entrancy guard around it, and the wait loop these tests are about lives
+    in the inner method. Anchoring on the outer one slices the guard alone and
+    every assertion below passes vacuously.
     """
-    a = SRC.index("def _load_file_entry")
+    a = SRC.index("def _load_file_entry_inner")
     b = SRC.index("\n    def ", a + 10)
     return SRC[a:b]
 
@@ -179,3 +184,24 @@ def test_an_inspector_failure_does_not_hang_the_analysis():
         "the worker must be released so the analysis can finish"
     )
     assert "_log_gui(" in body, "the failure must be reported to the analyst"
+
+
+def test_the_file_load_is_not_re_entrant():
+    """
+    The wait loop pumps the event loop with root.update(), which processes
+    every pending event -- a queued selection, a second click, a menu command.
+    Any of those can call _load_file_entry again while the first call is still
+    inside the loop. The inner call opens the channel-assignment and metadata
+    dialogues and returns; the outer one resumes and opens them a second time.
+    Nothing errors, so the only symptom is being asked everything twice.
+    """
+    a = SRC.index("def _load_file_entry(")
+    guard = SRC[a:SRC.index("def _load_file_entry_inner")]
+    assert "_loading_file" in guard, "the guard flag is gone"
+    assert "return" in guard, "a re-entrant call must return, not proceed"
+    assert "finally" in guard, "the flag must be cleared even if the load raises"
+
+
+def test_the_wait_loop_is_inside_the_guard():
+    """The loop is what makes re-entry possible, so it must be guarded."""
+    assert "while not _ready[0]" in _load_file_entry_body()

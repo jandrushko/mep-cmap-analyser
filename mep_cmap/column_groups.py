@@ -73,6 +73,10 @@ GROUPS = (
     )),
     ("onset", "Onset and latency", (
         "Latency(ms)",
+        # Travels with the latency, as MEP_Offset_Source does with the offset:
+        # a latency whose definition is not stated cannot be pooled with one
+        # whose definition is.
+        "Latency_Source",
         "MEP_Offset(ms)",
         "MEP_Duration(ms)",
         "MEP_Offset_Source",

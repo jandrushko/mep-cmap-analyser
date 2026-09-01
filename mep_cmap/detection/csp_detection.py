@@ -118,7 +118,15 @@ def detect_csp_bootstrap(
         n_boot=1000, rms_window_ms=10, seed=42,
         min_threshold_frac=DEFAULT_MIN_THRESHOLD_FRAC,
         return_duty=DEFAULT_RETURN_DUTY,
-        reason_out=None):
+        reason_out=None,
+        # Optional list. True is appended when the EMG never returned inside
+        # the search window, so the duration is a LOWER BOUND rather than a
+        # measurement.
+        #
+        # Same shape as reason_out, because the caller that needs it is the
+        # one writing a number into a column someone will average, and a lower
+        # bound averaged with measurements is not a mean of anything.
+        truncated_out=None):
     """
     Per-trial cortical silent period detector.
 
@@ -280,6 +288,8 @@ def detect_csp_bootstrap(
     truncated = offset_local is None
     if truncated:
         offset_local = search_env.size
+        if truncated_out is not None:
+            truncated_out.append(True)
 
     csp_start_idx = int(si + onset_local)
     csp_end_idx = int(min(si + offset_local, smooth.size - 1))
@@ -381,7 +391,8 @@ class CspSettings:
 
 
 def detect_csp_for_trial(emg_seg, fs, time_axis, settings, *,
-                         second_peak_ms, pre_ms, reason_out=None):
+                         second_peak_ms, pre_ms, reason_out=None,
+                         truncated_out=None):
     """
     Detect the cortical silent period for one trial.
 
@@ -432,4 +443,5 @@ def detect_csp_for_trial(emg_seg, fs, time_axis, settings, *,
         min_threshold_frac=settings.min_threshold_frac,
         return_duty=settings.return_duty,
         reason_out=reason_out,
+        truncated_out=truncated_out,
     )

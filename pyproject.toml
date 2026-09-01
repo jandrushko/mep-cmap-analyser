@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mep-cmap-analyser"
-version = "1.4.6"
+version = "1.4.7"
 description = "BIDS-compliant TMS/EMG neurophysiology analysis tool for MEP and CMAP quantification"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -30,6 +30,11 @@ dependencies = [
     # CED Signal MATLAB exports are v7.3, which is HDF5; scipy.io cannot
     # read those at all.
     "h5py>=3.7",
+    # Runtime, not tooling. The TMS-RAT add-on fills the official workbook,
+    # and while openpyxl was dev-only that output existed in the code and was
+    # written for nobody who installed the tool normally. Pure Python, no
+    # compiled wheel, so it costs the install nothing.
+    "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]
@@ -48,10 +53,12 @@ dependencies = [
 dev = [
     "pytest>=7.0",
     "pyflakes>=3.0",
-    # tools/build_map.py only, for regenerating the TMS-RAT item mapping from
-    # the official workbook. Deliberately not a runtime dependency: the
-    # application reads the generated JSON and never opens a spreadsheet.
-    "openpyxl>=3.1",
+    # Reading BACK what mep_cmap.docx_writer wrote. The writer itself uses
+    # only the standard library, deliberately: python-docx depends on lxml, a
+    # compiled wheel, and no shipped feature should need it. But asserting on
+    # our own XML only proves it says what we meant; an independent OOXML
+    # parser opening the file is what proves Word will.
+    "python-docx>=1.1",
 ]
 
 [project.scripts]

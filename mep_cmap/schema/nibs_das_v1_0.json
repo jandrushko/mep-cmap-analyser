@@ -1,0 +1,92 @@
+{
+  "schema_name": "nibs_das",
+  "schema_version": "1.0-beta",
+  "based_on": "NIBS-DAS v1.0-beta, from the template repository at https://github.com/danieltcorp/nibs-das_repo. The column list below is taken VERBATIM from the header row of nibs-das_examples/mep_example/collated_participant_data/nibs-das_mep_exampledata_2026-02-04.xlsx, not from the manuscript text, because the example file is what the Big NIBS data platform actually receives. Preprint: doi:10.64898/2026.04.30.720417.",
+  "_notes": [
+    "Columns are the STUDY-INVARIANT part of the format. The per-muscle measure columns (mep_ampl_fdi, pre_rms_fdi, ...) are generated at export time from the Channel column of _trials.csv, so they are described by 'measures' below rather than listed here.",
+    "'source' says where the value comes from in this tool. 'trials' is a column of _trials.csv; 'participants' is a column of participants.tsv; 'nibs' is a field key in nibs_bep037.json; 'setting' is an add-on setting; 'derived' is computed at export.",
+    "A field this tool cannot supply is written blank. A blank in a shared dataset is honest. A guessed value is a wrong number that nobody downstream can detect."
+  ],
+
+  "columns": [
+    {"name": "participant_id", "source": "participants", "from": "participant_id",
+     "description": "BIDS participant label, e.g. sub-01."},
+    {"name": "age", "source": "participants", "from": "age",
+     "description": "Age in years. Integer in the example file."},
+    {"name": "sex", "source": "participants", "from": "sex",
+     "description": "Free text in the example file: 'Male', 'Female'. NOT the BIDS M/F codes, so values are passed through unchanged rather than normalised."},
+    {"name": "handedness", "source": "participants", "from": "handedness",
+     "description": "Free text in the example file: 'Right', 'Left'."},
+    {"name": "ManufacturerModelName", "source": "nibs", "from": "ManufacturersModelName",
+     "description": "Stimulator model, e.g. 'BiStim2'. The name drops the possessive 's' relative to BIDS because NIBS-BIDS v6.3 renamed it; nibs_bep037.json already emits the v6.3 spelling, so this is a straight copy and not a correction."},
+    {"name": "protocol_name", "source": "trials", "from": "Condition",
+     "description": "The block or paradigm a trial belongs to, e.g. 'SICI'. NOT the same question as tms_stim_mode: in the example file every row is protocol_name SICI while tms_stim_mode alternates single and dual, because the test-alone and conditioned trials of one SICI block share a protocol and differ in mode."},
+    {"name": "waveform", "source": "nibs", "from": "PulseShape",
+     "description": "Lowercase in the example file ('monophasic'), whereas the NIBS-BIDS vocabulary is capitalised ('Monophasic'). Lowercased on export."},
+    {"name": "current_direction", "source": "nibs", "from": "CurrentDirection",
+     "description": "'normal' in the example file, i.e. the stimulator's normal/reverse setting, which is FirstInflection in NIBS-BIDS terms rather than the cl/co winding vocabulary. Mapping is ambiguous and is left to the add-on setting when it cannot be resolved."},
+    {"name": "targeting_method", "source": "nibs", "from": "TargetingMethod",
+     "description": "'manual' in the example file. NIBS-BIDS uses 'scalp-heuristic' and 'fixed-position' for the same idea, so the vocabularies do not line up exactly."},
+    {"name": "pulse_intensity_rmt", "source": "nibs", "from": "ConditioningStimulusIntensity",
+     "description": "Percent of resting motor threshold for the first (conditioning) pulse. 80 in the example."},
+    {"name": "second_pulse_intensity_rmt", "source": "nibs", "from": "TestStimulusIntensity",
+     "description": "Percent of resting motor threshold for the second (test) pulse. 120 in the example. Blank for single-pulse protocols."},
+    {"name": "inter_stimulus_interval", "source": "nibs", "from": "InterPulseInterval",
+     "description": "Interval between the paired pulses, in ms. 2 in the example, which is a SICI interval. Note the NIBS-BIDS field of the same name (InterStimulusInterval) means the interval BETWEEN trials and is in seconds; this column is the within-pair interval, so the two must not be confused."},
+    {"name": "tms_pos_centre", "source": "nibs", "from": "TargetRegion",
+     "description": "Stimulation site, e.g. 'Left_M1'. Underscore-joined in the example file."},
+    {"name": "rmt_intensity", "source": "nibs", "from": "RestingMotorThreshold",
+     "description": "Measured resting motor threshold as percent of maximum stimulator output. 56 in the example."},
+    {"name": "trial_number", "source": "trials", "from": "Segment_Overall",
+     "description": "Chronological trial number within a participant, from 1. Segment_Overall rather than Segment because Segment restarts per stimulus type, so with two stimulus types it would number two different trials the same. In the example file this runs 1 to 40 with no gaps, meaning rejected trials are not represented at all."},
+    {"name": "tms_stim_mode", "source": "derived", "from": "Stim_Label",
+     "description": "Whether the trial delivered one pulse or two. Resolved from the trial's stimulus label through stim_mode_vocabulary below."}
+  ],
+
+  "measures": {
+    "_pattern": "{measure}_{muscle}",
+    "_notes": [
+      "The muscle suffix comes from the Channel column of _trials.csv, lowercased and slugified. Channel is free text the user typed, so a study recording 'First Dorsal Interosseous' produces a valid but non-conventional suffix. The original-to-slug mapping is written into the export sidecar rather than guessed at.",
+      "Only channels actually recorded produce columns. A study with FDI and APB gets each measure twice; a single-channel study gets each once."
+    ],
+    "standard": [
+      {"name": "mep_ampl", "from": "PTP(mV)", "units": "mV",
+       "description": "Peak-to-peak amplitude of the evoked response. Already mV in _trials.csv and mV in the example file, so no conversion."},
+      {"name": "pre_rms", "from": "PreStimRMS", "units": "mV",
+       "description": "RMS of the pre-stimulus window. Same units as the signal, i.e. mV, though the _trials.csv column name does not say so."}
+    ],
+    "extended": [
+      {"name": "csp_dur", "from": "cSP_Duration(ms)", "units": "ms",
+       "description": "Cortical silent period duration."},
+      {"name": "mep_lat", "from": "Latency(ms)", "units": "ms",
+       "description": "Onset latency of the evoked response. Resolved per trial from a manual marker, the consensus across onset detectors, or the single selected detector, in that order; mep_lat_source says which applied."},
+      {"name": "mep_lat_source", "from": "Latency_Source", "units": null,
+       "description": "Which method produced mep_lat on this trial: manual, consensus, detector, or none. Categorical, not a measurement, hence no units. Carried per trial rather than stated once per file because the fallback varies within a file: agreement can fail on one trial and succeed on the next. Without it a collated latency column mixes definitions with no way to separate them, which is the condition that makes a pooled analysis unsound."},
+      {"name": "mep_auc", "from": "AUC(mV*s)", "units": "mV*s",
+       "description": "Area under the rectified response."},
+      {"name": "mep_dur", "from": "MEP_Duration(ms)", "units": "ms",
+       "description": "Onset to offset duration of the evoked response."},
+      {"name": "hreflex_ampl", "from": "PTP(mV)", "units": "mV",
+       "description": "H-reflex amplitude, where the stimulus type is an H-reflex rather than a cortical stimulus. Shares a source column with mep_ampl; which name applies is a property of the stimulus, not of the arithmetic."}
+    ],
+    "_extended_status": "NOT AGREED. NIBS-DAS v1.0-beta defines mep_ampl and pre_rms only. The names above follow their own {measure}_{muscle} pattern rather than inventing a parallel convention, but they are this tool's proposal and nothing more until the NIBS-DAS authors adopt them. Written only when the add-on's extended-measure setting is on, which is off by default, so that a default export cannot pre-empt the vocabulary decision. mep_lat_source needs raising separately: it is the first entry here that is provenance rather than a measurement, so it takes a slot in a per-muscle measure block without being a measure, and NIBS-DAS may prefer such a field elsewhere entirely. It is placed beside mep_lat because it qualifies mep_lat and must not be separable from it by a column selection."
+  },
+
+  "unmapped": [
+    {"column": "Outlier_Decision",
+     "problem": "NIBS-DAS has no trial-status column. In the example file trial_number runs 1 to 40 with no gaps, so rejected trials are simply absent and a reader cannot distinguish a study that rejected nothing from one that dropped its rejections before export."},
+    {"column": "Clipped",
+     "problem": "A trial containing ADC-saturated samples has an underestimated amplitude. Without a flag it appears in the collated file as an ordinary, and lower, number."},
+    {"column": "Units_Assumed",
+     "problem": "The amplitude unit was not declared by the source file and was assumed. The collated format states mV by convention with no way to say the value is unverified."}
+  ],
+
+  "stim_mode_vocabulary": {
+    "_notes": [
+      "Matched case-insensitively against the alphabetic characters of the stimulus label only, so 'sici', 'SICI_80' and 'ICF120' all resolve. Kept here rather than in code because these labels are lab-specific and will need editing without a release; the add-on settings override this list.",
+      "A label matching neither list exports blank, and the unmatched labels are named in the run log. A guessed 'single' on a paired-pulse trial is a wrong number nobody downstream can detect."
+    ],
+    "single": ["CSE", "SP", "SINGLE", "TEST", "MEP", "RMT", "AMT", "IO", "SICURVE", "RC"],
+    "dual": ["SICI", "LICI", "ICF", "LICF", "SICF", "SAI", "LAI", "PPTMS", "PAIRED", "CSP"]
+  }
+}

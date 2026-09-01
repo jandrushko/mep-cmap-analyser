@@ -211,7 +211,10 @@ def test_the_methods_draft_marks_every_gap(tmp_path):
     paths, _ = _run(deriv, tms_rat_study="S1")
     md = open(next(p for p in paths if p.endswith(".md")), encoding="utf-8").read()
     assert "[TMS-RAT" in md
-    assert "Search for `[TMS-RAT`" in md
+    # No backticks: the same sentence is rendered into Word, where a backtick
+    # is a literal character rather than code formatting.
+    assert "Search for [TMS-RAT" in md
+    assert "`" not in md
     # The amplifier model is not in any recording, so it must be marked.
     assert "J1" in md
 
@@ -321,3 +324,35 @@ def test_a_participants_file_without_the_column_says_which_column(tmp_path):
     assert rows["A1"]["Rating"] == TR.MISSING
     assert "no 'age' column" in rows["A1"]["Comments"]
     assert "no participants.tsv" not in rows["A1"]["Comments"]
+
+
+def test_the_add_on_writes_a_word_draft_beside_the_markdown(tmp_path):
+    """
+    The markdown is the diffable copy; the .docx is the one an author edits
+    into a manuscript. Both are rendered from one set of blocks, so a gap
+    present in one is present in the other.
+    """
+    import io
+    import xml.etree.ElementTree as ET
+    import zipfile
+
+    W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    deriv = _study(tmp_path)
+    paths, _ = _run(deriv, tms_rat_study="S1")
+
+    docx = next((p for p in paths if p.endswith(".docx")), None)
+    assert docx, "no Word draft was written"
+    md = open(next(p for p in paths if p.endswith(".md")), encoding="utf-8").read()
+
+    with zipfile.ZipFile(io.BytesIO(open(docx, "rb").read())) as z:
+        doc = ET.fromstring(z.read("word/document.xml").decode("utf-8"))
+    text = "".join(t.text or "" for t in doc.iter(f"{W}t"))
+
+    assert "[TMS-RAT" in text
+    # Every marker in one draft is in the other. A gap that survives to the
+    # markdown but not to the document is a gap the author never fixes.
+    for line in md.splitlines():
+        if "[TMS-RAT" in line and line.startswith("- "):
+            assert line[2:].split("]")[0] + "]" in text
+    assert [r for r in doc.iter(f"{W}r")
+            if r.find(f"{W}rPr/{W}highlight") is not None]

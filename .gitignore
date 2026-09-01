@@ -75,3 +75,19 @@ build/
 backups/ 
 commit_msg_*.txt 
 tools/TMS_Reporting_Assessment_Tool_v1.0.xlsx
+
+# ── added 2026-09-01 ─────────────────────────────────────────────────────────
+# The commit_msg_*.txt pattern above requires an underscore after "msg", so it
+# matched neither commit_msg.txt nor commit_message.txt, both of which have sat
+# in the working tree. These cover the spellings actually used.
+commit_msg*.txt
+commit_message*.txt
+
+# Temporary analysis scripts, written to run once and deleted.
+_tmp_*.py
+
+# Export scratch output (collated_participant_data/ dry runs). Anchored with a
+# leading slash so it means the folder at the repo ROOT and cannot match
+# anything named test/ deeper in the tree. Note it is one character away from
+# tests/, which must stay tracked.
+/test/

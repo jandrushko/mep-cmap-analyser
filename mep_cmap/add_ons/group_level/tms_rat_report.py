@@ -8,6 +8,7 @@ TMS-RAT v1.0 reporting checklist, emitting:
     <study>_tms-rat.csv       the OUTPUT sheet format, one row per item
     <study>_tms-rat.xlsx      the official workbook with INPUT filled in
     <study>_methods.md        a methods draft with a marker at every gap
+    <study>_methods.docx      the same draft, with the gaps highlighted
 
 Why group level: TMS-RAT assesses one protocol within one study, and its
 quantitative items are rated Full only when a central tendency AND a dispersion
@@ -30,10 +31,12 @@ import shutil
 # import raises at import time and the add-on is silently skipped as broken.
 try:
     from mep_cmap import tms_rat as TR
+    from mep_cmap import docx_writer as DW
     from mep_cmap.reporting import SIDECAR_SUFFIX, load_tms_rat_mapping
     _IMPORT_ERROR = None
 except Exception as _ex:                  # pragma: no cover - packaging failure
     TR = None
+    DW = None
     SIDECAR_SUFFIX = "reporting.json"
     load_tms_rat_mapping = lambda *_a, **_k: None       # noqa: E731
     _IMPORT_ERROR = _ex
@@ -282,13 +285,24 @@ def run(context):
         w.writerows(TR.output_rows(results))
     written.append(csv_path)
 
+    # Built once, rendered twice. The Markdown is the readable, diffable,
+    # version-controllable copy; the .docx is the one an author actually edits
+    # into a manuscript. Rendering both from the same blocks is what stops the
+    # two drafts from disagreeing about what the study did.
+    blocks = TR.methods_blocks(
+        results, faults, study=study, protocol=protocol,
+        tool_version=records[0].get("tool_version") or "",
+        detection_version=records[0].get("detection_version") or "")
+
     md_path = os.path.join(out_dir, f"{stem}_methods.md")
     with open(md_path, "w", encoding="utf-8") as fh:
-        fh.write(TR.methods_markdown(
-            results, faults, study=study, protocol=protocol,
-            tool_version=records[0].get("tool_version") or "",
-            detection_version=records[0].get("detection_version") or ""))
+        fh.write(TR.render_markdown(blocks))
     written.append(md_path)
+
+    docx_path = os.path.join(out_dir, f"{stem}_methods.docx")
+    with open(docx_path, "wb") as fh:
+        fh.write(DW.document_bytes(blocks))
+    written.append(docx_path)
 
     xlsx_path = fill_workbook(
         results, os.path.join(out_dir, f"{stem}_tms-rat.xlsx"),

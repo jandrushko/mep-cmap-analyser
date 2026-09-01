@@ -150,12 +150,26 @@ class ConditionsTabMixin:
         tk.Button(head, text="⟳ Reload from file",
                   command=self._cond_reload).pack(side="right")
 
-        body = tk.Frame(parent)
+        # A paned window, not three packed frames.
+        #
+        # With pack, every child is given its REQUESTED width first and only
+        # the remainder is shared between the expanding ones. The requested
+        # width of the table pane is set by its widest child, which is the row
+        # of action buttons, and the width of a row of buttons is a property of
+        # the font: the same nine labels are substantially wider in macOS's
+        # system font than in Segoe UI at the same point size. So the table
+        # claimed most of the window and the review pane -- the one part of
+        # this tab you actually have to look at -- was squeezed to nothing,
+        # while on Windows the identical layout looked correct.
+        #
+        # Sash positions do not care what anything requests, and the weights
+        # keep the proportions when the window is resized. Dragging is a
+        # bonus, but the point is that no widget can take over the tab again.
+        body = ttk.PanedWindow(parent, orient="horizontal")
         body.pack(fill="both", expand=True, padx=10, pady=(0, 4))
 
         # ── the table ────────────────────────────────────────────────────────
         left = tk.Frame(body)
-        left.pack(side="left", fill="both", expand=True)
         _lh = tk.Frame(left); _lh.pack(fill="x")
         tk.Label(_lh, text="Conditions table").pack(side="left")
         attach_info_icon(_lh, HELP["table"]).pack(side="left", padx=(3, 0))
@@ -179,16 +193,28 @@ class ConditionsTabMixin:
         self._cond_tree.bind("<Double-1>", lambda _e: self._cond_rename())
 
         btns = tk.Frame(left); btns.pack(fill="x")
-        for txt, cmd in (("Split selection…", self._cond_split),
-                         ("Set from selection", self._cond_set_from_selection),
-                         ("Rename…", self._cond_rename),
-                         ("Auto fill…", self._cond_autofill),
-                         ("Set epoch from view", self._cond_set_epoch),
-                         ("Clear epoch", self._cond_clear_epoch),
-                         ("Add unassigned", self._cond_add_unassigned),
-                         ("Exclude", self._cond_toggle_exclude),
-                         ("Delete", self._cond_delete)):
-            tk.Button(btns, text=txt, command=cmd).pack(side="left", padx=(0, 4))
+        # Gridded across two rows rather than packed into one. Nine buttons in
+        # a line is a lot to read at the best of times, and in a proportional
+        # font it is also the thing that decides how wide this pane wants to
+        # be. Two rows halves that, and the columns share the pane's width
+        # evenly instead of each button demanding its label's length.
+        _per_row = 5
+        for _i, (txt, cmd) in enumerate(
+                (("Split selection…", self._cond_split),
+                 ("Combine selected", self._cond_merge),
+                 ("Set from selection", self._cond_set_from_selection),
+                 ("Rename…", self._cond_rename),
+                 ("Auto fill…", self._cond_autofill),
+                 ("Set epoch from view", self._cond_set_epoch),
+                 ("Clear epoch", self._cond_clear_epoch),
+                 ("Add unassigned", self._cond_add_unassigned),
+                 ("Exclude", self._cond_toggle_exclude),
+                 ("Delete", self._cond_delete))):
+            tk.Button(btns, text=txt, command=cmd).grid(
+                row=_i // _per_row, column=_i % _per_row,
+                sticky="ew", padx=(0, 4), pady=(0, 2))
+        for _c in range(_per_row):
+            btns.columnconfigure(_c, weight=1)
 
         _ep = tk.Frame(left)
         _ep.pack(fill="x", pady=(3, 0))
@@ -202,19 +228,25 @@ class ConditionsTabMixin:
 
         hist = tk.Frame(left)
         hist.pack(fill="x", pady=(4, 0))
-        self._cond_undo_btn = tk.Button(hist, text="\u21b6 Undo", width=20,
-                                        state="disabled",
+        # Wide enough for the longest label these buttons take. They are not
+        # static: the text names what will be undone ("Undo rename", "Undo
+        # set trials"), so a width chosen for the word "Undo" clips the thing
+        # the analyst actually needs to read.
+        _hist_w = max(len(f"\u21b6 Undo {w}")
+                      for w in ("split", "rename", "delete", "set trials",
+                                "autofill", "merge", "epoch", "exclude"))
+        self._cond_undo_btn = tk.Button(hist, text="\u21b6 Undo",
+                                        width=_hist_w, state="disabled",
                                         command=self._cond_undo)
         self._cond_undo_btn.pack(side="left")
-        self._cond_redo_btn = tk.Button(hist, text="\u21b7 Redo", width=20,
-                                        state="disabled",
+        self._cond_redo_btn = tk.Button(hist, text="\u21b7 Redo",
+                                        width=_hist_w, state="disabled",
                                         command=self._cond_redo)
         self._cond_redo_btn.pack(side="left", padx=(4, 0))
         tk.Label(hist, fg="grey", text="  Ctrl+Z / Ctrl+Y").pack(side="left")
 
         # ── trials ───────────────────────────────────────────────────────────
         mid = tk.Frame(body)
-        mid.pack(side="left", fill="y", padx=(10, 10))
         _mh = tk.Frame(mid); _mh.pack(fill="x")
         tk.Label(_mh, text="Trials").pack(side="left")
         attach_info_icon(_mh, HELP["trials"]).pack(side="left", padx=(3, 0))
@@ -246,7 +278,6 @@ class ConditionsTabMixin:
 
         # ── review ───────────────────────────────────────────────────────────
         right = tk.Frame(body)
-        right.pack(side="left", fill="both", expand=True)
         _rh = tk.Frame(right); _rh.pack(fill="x")
         tk.Label(_rh, text="Review epochs").pack(side="left")
         attach_info_icon(_rh, HELP["review"]).pack(side="left", padx=(3, 0))
@@ -297,6 +328,41 @@ class ConditionsTabMixin:
         self._cond_canvas = FigureCanvasTkAgg(self._cond_fig, master=right)
         self._cond_canvas.get_tk_widget().pack(fill="both", expand=True,
                                                pady=(2, 0))
+
+        # Added last, once all three exist. Weights govern how EXTRA space is
+        # shared on resize; the initial sash positions do not follow from them
+        # and are set below.
+        body.add(left, weight=3)
+        body.add(mid, weight=0)
+        body.add(right, weight=4)
+
+        def _place_sashes(_event=None):
+            """Set the opening split by proportion, once, when width is known.
+
+            Without this the panes open at their requested widths, which is the
+            behaviour being fixed: the table pane asks for the width of its
+            button grid and takes whatever that happens to be on this font and
+            platform. A proportion is the same on every machine.
+
+            Once only, and never again, so that a sash the analyst has dragged
+            is not snapped back on the next resize or tab switch.
+            """
+            if getattr(self, "_cond_sashes_set", False):
+                return
+            total = body.winfo_width()
+            if total < 400:               # not laid out yet
+                return
+            trials_w = max(mid.winfo_reqwidth(), 120)
+            table_w = max(320, int((total - trials_w) * 0.42))
+            try:
+                body.sashpos(0, table_w)
+                body.sashpos(1, table_w + trials_w)
+            except Exception:             # noqa: BLE001 — not yet mapped
+                return
+            self._cond_sashes_set = True
+
+        body.bind("<Configure>", _place_sashes)
+        self._cond_body = body
 
         # ── apply ────────────────────────────────────────────────────────────
         foot = tk.Frame(parent)
@@ -1001,6 +1067,46 @@ class ConditionsTabMixin:
             return
         self._cond_commit(new_rows, "split")
 
+    def _cond_merge(self):
+        """Combine the selected conditions back into one.
+
+        The way out of a split made on the wrong boundary. Undo only reaches
+        the last action, so once the analyst had done anything else -- or
+        reopened the file, which clears the stacks -- the halves were
+        permanent and the only route back was Reload from file, which discards
+        every other edit made to the table.
+        """
+        rows = self._cond_selected_indices()
+        if len(rows) < 2:
+            messagebox.showinfo(
+                "Combine",
+                "Select two or more conditions to combine.\n\n"
+                "Ctrl+click or Shift+click the rows in the table.",
+                parent=self.root)
+            return
+
+        chosen = [self._cond_rows[i] for i in rows]
+        names = [r.condition or "(unnamed)" for r in chosen]
+        total = len({t for r in chosen for t in r.trials})
+        # Named before it happens. Merging is not destructive of trials, but
+        # it does discard the condition labels of every row but the first, and
+        # those are the analyst's own work.
+        if not messagebox.askyesno(
+                "Combine conditions",
+                f"Combine {len(rows)} conditions into one?\n\n"
+                + "\n".join(f"  • {n} ({len(r.trials)} trial(s))"
+                            for n, r in zip(names, chosen))
+                + f"\n\nThe result keeps the name '{names[0]}' and holds "
+                  f"{total} trial(s). The other names are discarded.",
+                parent=self.root):
+            return
+        try:
+            new_rows = C.merge_rows(self._cond_rows, rows)
+        except C.ConditionError as exc:
+            messagebox.showwarning("Combine", str(exc), parent=self.root)
+            return
+        self._cond_commit(new_rows, "merge")
+
     def _cond_set_from_selection(self):
         """Make the selection the whole of its row.
 
@@ -1379,6 +1485,20 @@ class ConditionsTabMixin:
         # BIDS-ify would leave 1a describing the previous grouping until
         # something else happened to rebuild it.
         try:
+            # Applying conditions splits every stimulus type into new rows --
+            # A becomes A-pre and A-post -- so whatever was confirmed no
+            # longer describes the table. Discarded HERE, at the point the
+            # rows actually change, rather than left to _build_labels_tab:
+            # that method rebuilds for several reasons and cannot tell which
+            # of them invalidates a confirmation.
+            #
+            # Both records are cleared together. _chan_confirmed is the one
+            # the per-channel run guard reads, and clearing only the flag left
+            # that guard still passing for this channel.
+            try:
+                self._chan_confirmed.discard(self.channel_idx)
+            except Exception:
+                pass
             self._build_labels_tab(sorted(groups))
             self.log("   Tab 1a rebuilt from the conditions.")
         except Exception as exc:                      # noqa: BLE001 — reported

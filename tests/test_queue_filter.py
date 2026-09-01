@@ -10,7 +10,8 @@ started against invisible files is expensive to discover afterwards.
 import pytest
 
 from mep_cmap.app import (QUEUE_FILTER_ALL, queue_row_matches,
-                          _queue_type_label)
+                          _queue_type_label, queue_type_choice_label,
+                          _QUEUE_TYPE_LABELS)
 from mep_cmap.dataset_session import (FileEntry, STATUS_NOT_STARTED,
                                       STATUS_COMPLETE, STATUS_LABELS)
 
@@ -110,3 +111,49 @@ def test_the_filters_are_combined_with_and():
 
 def test_all_on_one_axis_does_not_disable_the_others():
     assert not queue_row_matches(TXT, status=QUEUE_FILTER_ALL, ftype="SMR")
+
+
+# ── the type dropdown carries a count ────────────────────────────────────────
+
+@pytest.mark.parametrize("choice,expected", [
+    ("MAT (24)", "MAT"), ("BDF (0)", "BDF"), ("BrainVision (2)", "BrainVision"),
+    ("EDF", "EDF"), ("All", "All"), ("", ""),
+])
+def test_the_count_is_stripped_before_matching(choice, expected):
+    assert queue_type_choice_label(choice) == expected
+
+
+def test_a_label_that_merely_ends_in_a_bracket_is_left_alone():
+    """Only a trailing count is display decoration. Anything else is the name."""
+    assert queue_type_choice_label("ODD (x)") == "ODD (x)"
+    assert queue_type_choice_label("ODD ()") == "ODD ()"
+
+
+def test_filtering_works_through_the_displayed_choice():
+    """
+    The dropdown shows 'SMR (1)' but the row shows 'SMR'. Comparing the two
+    directly would match nothing, and the queue would empty on every type
+    filter.
+    """
+    assert queue_row_matches(SMR, ftype="SMR (1)")
+    assert not queue_row_matches(TXT, ftype="SMR (1)")
+
+
+def test_every_readable_format_can_be_named_in_the_filter():
+    """
+    A supported format absent from the dropdown reads as one the tool cannot
+    open, which is the wrong conclusion and one that has been drawn. BDF is
+    the case that prompted this.
+    """
+    labels = set(_QUEUE_TYPE_LABELS.values())
+    assert {"BDF", "EDF", "ACQ", "ADIBIN", "SMR", "TXT", "MAT", "CSV",
+            "BrainVision"} <= labels
+    bdf = _fe("C:/study/rawdata/sub-01/sub-01_emg.bdf")
+    assert _queue_type_label(bdf.path) == "BDF"
+    assert queue_row_matches(bdf, ftype="BDF (1)")
+
+
+def test_an_empty_type_matches_nothing_rather_than_everything():
+    """An entry showing (0) must filter to an empty queue, not to no filter."""
+    assert not queue_row_matches(SMR, ftype="BDF (0)")
+    assert not queue_row_matches(TXT, ftype="BDF (0)")

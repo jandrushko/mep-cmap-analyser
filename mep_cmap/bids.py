@@ -12,7 +12,7 @@ import re
 import datetime
 from dataclasses import dataclass, field, asdict
 
-TOOL_VERSION = "1.4.6"
+TOOL_VERSION = "1.4.7"
 
 
 @dataclass
@@ -160,7 +160,8 @@ def make_bids_prefix(meta_prefix: str, file_stem: str) -> str:
 
 
 def session_path_for(source_path: str, metadata=None,
-                     derivatives_root: str = "") -> str:
+                     derivatives_root: str = "",
+                     prefix_override: str = "") -> str:
     """Where a recording's session JSON lives.
 
         <derivatives_root>/derivatives/<sub>/<ses>/<bids_prefix>_session.json
@@ -188,6 +189,16 @@ def session_path_for(source_path: str, metadata=None,
     bids_prefix = make_bids_prefix(
         metadata.bids_prefix() if metadata else "",
         os.path.splitext(os.path.basename(source_path))[0])
+    # A caller that already knows where the session lives says so.
+    #
+    # Only the batch re-runner passes this, and it passes the name of the
+    # session file it restored. The naming rule above has changed between
+    # versions, so recomputing sends a re-run's autosave to a NEW file beside
+    # the one it read: the study it was built against went from 135 sessions
+    # to 161 in half a run. The queue still points at the originals, so a
+    # second pass would restore stale state and silently undo the first.
+    if prefix_override:
+        bids_prefix = str(prefix_override)
     source_dir = os.path.dirname(source_path)
     deriv_root = derivatives_root or source_dir
     sub_ses = (metadata.sub_ses_path() if metadata

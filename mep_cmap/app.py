@@ -63,6 +63,8 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, scrolledtext, font
 
 from .compat import _np_trapz
+from .tk_compat import (bind_context_menu, maximise, fit_to_screen,
+                        attach_hscroll)
 from .bids import StudyMetadata, _sanitise_bids_label, TOOL_VERSION
 from .bidsify_tab import BidsifyTabMixin
 from .conditions_tab import ConditionsTabMixin
@@ -89,6 +91,7 @@ from .normalisation import EXCLUDED_DECISIONS
 from .preferences    import prefs, apply_scaling, accent_button_kw
 from .stage2         import Stage2Mixin
 from .filter_preview import FilterPreviewMixin
+from .reprocess_ui import ReprocessMixin
 
 # Labels for the per-recording selected-column override. Three, not a
 # checkbox: "use the preference" must stay distinguishable from "off for this
@@ -120,6 +123,26 @@ def _queue_type_label(path: str) -> str:
     return _QUEUE_TYPE_LABELS.get(ext, ext.lstrip(".").upper() or "—")
 
 
+def queue_type_choice_label(choice: str) -> str:
+    """The bare type from a dropdown choice such as ``MAT (24)``.
+
+    The dropdown shows a count so that a format the tool reads but this study
+    does not contain is visibly present-and-empty rather than simply absent --
+    an absent BDF entry reads as "this tool cannot open BDF", which is the
+    wrong conclusion. The count is display only, so it is stripped before
+    anything is matched against it.
+
+    Parsed rather than stored alongside because the choice is a plain string
+    in a StringVar: a Combobox has no room for a value distinct from its label.
+    """
+    text = str(choice or "").strip()
+    if text.endswith(")") and " (" in text:
+        head, _, tail = text.rpartition(" (")
+        if tail[:-1].isdigit():
+            return head
+    return text
+
+
 def queue_row_matches(fe, *, status=QUEUE_FILTER_ALL, ftype=QUEUE_FILTER_ALL,
                       term="") -> bool:
     """Whether a queue entry passes the filter. Pure, so it can be tested.
@@ -132,7 +155,8 @@ def queue_row_matches(fe, *, status=QUEUE_FILTER_ALL, ftype=QUEUE_FILTER_ALL,
         if STATUS_LABELS.get(fe.status, fe.status) != status:
             return False
     if ftype != QUEUE_FILTER_ALL:
-        if _queue_type_label(fe.path) != ftype:
+        # The choice carries a display count; the label does not.
+        if _queue_type_label(fe.path) != queue_type_choice_label(ftype):
             return False
     term = (term or "").strip().lower()
     if term:
@@ -489,7 +513,8 @@ COLUMN_HELP = {
 
 
 class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
-                     PreviewDetectionMixin, ConditionsTabMixin):
+                     PreviewDetectionMixin, ConditionsTabMixin,
+                     ReprocessMixin):
     def __init__(self, root):
         self.root = root
         # ── State that setup_gui() widgets depend on — must come first ────────
@@ -570,6 +595,23 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         # ─── background‑thread message queue ──────────────────────────────────
         self.msg_q = queue.Queue()
         self._last_outlier_result = None
+        # How the last analysis ended, and a latch saying the GUI thread has
+        # finished dealing with it. Both exist for callers that are not a
+        # person watching the progress bar.
+        #
+        # _analysis_running cannot serve: the worker clears it in `finally`,
+        # so it goes False identically whether the run wrote every output or
+        # raised on the first channel. And it is cleared the instant the
+        # worker exits, which is BEFORE the poller has drained "done" and run
+        # the autosave -- a caller watching it can start loading the next file,
+        # and _reset_state_for_new_file then empties segments_metadata before
+        # the previous file's session has been written. The manual edits a
+        # batch re-run exists to preserve are exactly what that destroys.
+        #
+        # So the latch is set by the POLLER, after the autosave, and both
+        # outcomes route through it.
+        self._run_outcome = None
+        self._run_finished = threading.Event()
         self._poll_queue()
         self.segments_metadata = {}
         # Inspector edits are per CHANNEL as well as per (stim type, trial).
@@ -661,6 +703,25 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                             fe.mark_complete()
                             self._dataset.save()
                             self._queue_refresh()
+                    # LAST, deliberately. A batch runner waiting on this latch
+                    # is free to load the next file the moment it is set, and
+                    # loading resets the state the autosave above reads.
+                    self._run_outcome = ("ok", None)
+                    self._run_finished.set()
+
+                elif msg == "failed":
+                    # The worker raised. It logs the error itself; this branch
+                    # exists so the failure is a RESULT rather than the absence
+                    # of one. Without it a caller can only infer failure from a
+                    # "done" that never arrives, which is indistinguishable
+                    # from a run still in progress.
+                    #
+                    # No autosave and no mark_complete: a file that raised
+                    # part-way has outputs in an unknown state, and recording
+                    # it as complete is how a half-written analysis becomes
+                    # indistinguishable from a finished one.
+                    self._run_outcome = ("error", payload[0] if payload else "")
+                    self._run_finished.set()
 
         except queue.Empty:
             pass
@@ -685,6 +746,23 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         more often than one shown why a particular answer is proposed.
         """
         from .formats.epoched_mat import suggest_unit as _suggest
+
+        # Unattended: a unit the session RECORDED can be reused; a unit it did
+        # not record must not be filled in from the suggestion below. The
+        # suggestion is good enough to lead with when a person is looking at
+        # the evidence and can disagree, and not good enough to apply silently
+        # to a whole study -- every amplitude in the file scales by it. The
+        # planner refuses such a file rather than reaching this point, so this
+        # is the second of two guards, not the only one.
+        _un = getattr(self, "_unattended", None)
+        if _un is not None:
+            _saved = str(_un.get("emg_unit") or "").strip()
+            if _saved:
+                self.log(f"   Amplitude unit: {_saved} (from the saved session)")
+                return _saved
+            self.log("⚠️  No amplitude unit in the saved session; not guessing.")
+            return None
+
         try:
             _default, _evidence = _suggest(fpath)
         except Exception as _e:
@@ -1087,12 +1165,8 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         Falls back to 90%-of-screen geometry if the platform doesn't support
         the zoomed state.
         """
-        import sys as _sys
         try:
-            if _sys.platform in ("win32", "darwin"):
-                self.root.state("zoomed")
-            else:
-                self.root.attributes("-zoomed", True)
+            maximise(self.root)
         except Exception:
             # Fallback: 90% of active monitor, centred
             mon_x, mon_y, sw, sh = self._get_monitor_origin(self.root)
@@ -1357,6 +1431,12 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         # Reset any stale result left by a previous failed/interrupted run.
         self._last_outlier_result = None
 
+        # Clear the completion latch BEFORE the worker starts. Left set from
+        # the previous file, a caller waiting on it would return immediately
+        # and report that file's outcome as this one's.
+        self._run_outcome = None
+        self._run_finished.clear()
+
         # Reset the progress bar so the UI looks fresh for each run.
         self.progress.set(0)
 
@@ -1407,15 +1487,14 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         # be wrong in a way that looks like a result.
         _unset = self._unconfigured_analysis_channels()
         if _unset:
-            messagebox.showwarning(
+            self._setup_refused(
                 "Channels not set up",
                 "These channels are selected for analysis but have no setup "
                 "of their own:\n\n    " + "\n    ".join(_unset) +
                 "\n\nSelect each on the Channel dropdown, configure tab 1a "
                 "and click ✔ Confirm Setup. 'Copy this setup to all channels' "
                 "applies the current table to every channel if they share it.",
-                parent=self.root)
-            self.notebook.select(self.stage1_outer)
+                self.stage1_outer)
             return False
 
         # Guard: EVERY selected channel must be confirmed, not just the one on
@@ -1425,7 +1504,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                         if c not in getattr(self, "_chan_confirmed", set())]
         if getattr(self, "_labels_tab_built", False) and _unconfirmed:
             _nm = list(self.channel_dd["values"]) if hasattr(self, "channel_dd") else []
-            messagebox.showwarning(
+            self._setup_refused(
                 "Setup not confirmed",
                 "These channels are selected for analysis but their setup has "
                 "not been confirmed:\n\n    "
@@ -1433,21 +1512,17 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                                 for c in _unconfirmed)
                 + "\n\nClick ✔ Confirm Setup on each. The button moves you to "
                   "the next one that needs it.",
-                parent=self.root)
-            self.notebook.select(self.stage1_outer)
-            self.nb_stage1.select(self.tab1b_frame)
+                self.stage1_outer, self.tab1b_frame)
             return False
 
         # Guard: Tab 1b must be confirmed before running
         if getattr(self, "_labels_tab_built", False) and \
                 not getattr(self, "_labels_tab_confirmed", False):
-            messagebox.showwarning(
+            self._setup_refused(
                 "Setup not confirmed",
                 "Please go to the '1a – Labels & Analysis Setup' tab "
                 "and click  ✔ Confirm Setup  before running analysis.",
-                parent=self.root)
-            self.notebook.select(self.stage1_outer)
-            self.nb_stage1.select(self.tab1b_frame)
+                self.stage1_outer, self.tab1b_frame)
             return False
         # Guard: prevent launching a second worker while one is already running.
         if getattr(self, '_analysis_running', False):
@@ -1579,6 +1654,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
             delay_source_map  = self.delay_source_map,
             # BIDS
             study_metadata    = copy.deepcopy(self.study_metadata),
+            # Where a batch re-run must write, when it is not where today's
+            # naming rules would put it. None for every ordinary run.
+            bids_prefix_override = getattr(self, "_bids_prefix_override", None),
             limb              = getattr(self.study_metadata, "limb", ""),
             measure           = getattr(self.study_metadata, "measure", ""),
             reference_map          = self.reference_map.copy(),
@@ -2095,6 +2173,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                     delay_ms_map         = _own("delay_ms_map", {}),
                     # BIDS
                     study_metadata       = params["study_metadata"],
+                    bids_prefix_override = params.get("bids_prefix_override"),
                     limb                 = params.get("limb", ""),
                     measure              = params.get("measure", ""),
                     reference_map         = _own("reference_map", {}),
@@ -2111,6 +2190,11 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
 
         except Exception as e:
             self.msg_q.put(("log", f"❌ Error: {e}"))
+            # Reported as an outcome as well as a log line. The log is for the
+            # person watching; this is for a caller that has to decide whether
+            # to move on to the next file, and it must not read a crash as a
+            # success.
+            self.msg_q.put(("failed", f"{type(e).__name__}: {e}"))
 
         finally:
             self._analysis_running = False
@@ -2149,6 +2233,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         file_menu.add_separator()
         file_menu.add_command(label="Reassign channels…",
                               command=self._reassign_channels)
+        file_menu.add_command(
+            label="Re-run study from saved sessions\u2026",
+            command=self.reprocess_study)
         file_menu.add_separator()
         file_menu.add_command(label="Exit",          command=self._shutdown)
 
@@ -2171,9 +2258,13 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         help_menu.add_command(label="About", command=self._show_about)
 
     def _make_scroll_body(self, parent, max_content_w=1100):
-        """Create a vertically-scrollable, width-capped, centred body frame inside
-        `parent`. Returns (body_frame, canvas). Used for the 1b/1c processing bodies
-        and both Add-ons tabs."""
+        """A scrollable body frame inside `parent`. Returns (body, canvas).
+
+        Scrolls vertically always, and horizontally when the content is wider
+        than the window. Used for the 1b/1c processing bodies and both Add-ons
+        tabs. Capped at `max_content_w` and centred while it fits, so a wide
+        window does not stretch a form across the whole screen.
+        """
         scroll_area = ttk.Frame(parent)
         scroll_area.pack(side="top", fill="both", expand=True)
         vscroll = ttk.Scrollbar(scroll_area, orient="vertical")
@@ -2184,14 +2275,37 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         vscroll.config(command=canvas.yview)
         body = ttk.Frame(canvas)
         win = canvas.create_window((0, 0), window=body, anchor="nw")
-        def _resize(event):
-            content_w = min(event.width, max_content_w)
-            x = max(0, (event.width - content_w) // 2)
+        hsync = attach_hscroll(scroll_area, canvas, body)
+
+        def _resize(event=None):
+            """Fit the body to the viewport, or let it overflow and scroll.
+
+            The body used to be capped at the viewport width unconditionally,
+            which centres it nicely when it fits and CLIPS it when it does not.
+            Whether it fits is not a fixed property of the layout -- the same
+            row is wider in a larger font, and wider again in macOS's system
+            font than in Segoe UI at the same point size -- so the decision has
+            to be made from the body's actual request each time.
+
+            Wider than the viewport: pin to the left edge and let the
+            horizontal scrollbar reach the rest. Centring something that
+            overflows would hide both ends of it.
+            """
+            width = event.width if event is not None else canvas.winfo_width()
+            need = body.winfo_reqwidth()
+            if need > width:
+                content_w, x = need, 0
+            else:
+                content_w = min(width, max_content_w)
+                x = max(0, (width - content_w) // 2)
             canvas.itemconfigure(win, width=content_w)
             canvas.coords(win, x, 0)
+            hsync()
+
         canvas.bind("<Configure>", _resize)
         body.bind("<Configure>",
-                  lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+                  lambda e: (canvas.configure(scrollregion=canvas.bbox("all")),
+                             _resize()))
         # Register for wheel scrolling. The handler is a single global binding
         # that dispatches to whichever registered canvas is currently on screen,
         # so every scrollable body gets the wheel without each one installing its
@@ -2284,9 +2398,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         self.ptp_start = tk.IntVar(value=10)
         self.ptp_end = tk.IntVar(value=50)
         self.prestim_ms = tk.IntVar(value=100)
-        self.outlier_review = tk.BooleanVar(value=True)
+        self.outlier_review = tk.BooleanVar(value=False)
         self.outlier_threshold = tk.DoubleVar(value=1.96)
-        self.generate_individual_plots = tk.BooleanVar(value=True)
+        self.generate_individual_plots = tk.BooleanVar(value=False)
         self.apply_humbug = tk.BooleanVar(value=False)
         # csp_search_start_ms removed: the search starts at each trial's 2nd
         # PTP peak. Sessions written before this still carry the key; it is
@@ -2795,11 +2909,13 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         self.progress_bar.pack(side="left", fill="x", expand=True, padx=(8,6))
 
         # --- auto-resize window to content on startup ---
+        # Clamped to the work area. geometry("") honours the content's request
+        # literally, and on a display smaller than the content that opens the
+        # window wider than the screen; pinning minsize to the result then
+        # makes those dimensions the floor, so it cannot be dragged back.
         self.root.update_idletasks()
         self.root.geometry("")   # shrink-wrap to widgets
-
-        # Optional: set a reasonable minimum so it doesn't get too small
-        self.root.minsize(self.root.winfo_width(), self.root.winfo_height())
+        fit_to_screen(self.root)
 
 
 
@@ -3001,7 +3117,12 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
             fp,
             getattr(self, "study_metadata", None),
             (self.derivatives_path.get()
-             if hasattr(self, "derivatives_path") else ""))
+             if hasattr(self, "derivatives_path") else ""),
+            # A batch re-run writes back to the session it was restored from.
+            # Applied HERE because this is the one place the session path is
+            # decided; _autosave_session computes a prefix of its own but then
+            # discards it and calls this, so pinning it there did nothing.
+            prefix_override=getattr(self, "_bids_prefix_override", None))
 
     def _autosave_session(self):
         """Silently save the session to the BIDS derivatives folder.
@@ -3028,6 +3149,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
             # Delegate to the module-level helper so BIDS-named source files
             # never produce redundant prefix tokens in the session JSON name.
             bids_prefix = _make_bids_prefix(_meta_prefix, _file_stem)
+            # NOTE: this local is only used for logging below. The path
+            # actually written is session_path(), which computes its own and
+            # is where the re-run's prefix pin is applied.
 
             source_dir  = os.path.dirname(fp) if fp else os.getcwd()
             deriv_root  = (self.derivatives_path.get()
@@ -5177,7 +5301,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
 
         tk.Label(q_filter, text="Type", fg="#555").pack(side='left', padx=(8, 2))
         self._qf_type_dd = ttk.Combobox(
-            q_filter, textvariable=self._qf_type, state="readonly", width=12,
+            q_filter, textvariable=self._qf_type, state="readonly", width=16,
             values=[QUEUE_FILTER_ALL])
         self._qf_type_dd.pack(side='left')
 
@@ -5321,10 +5445,22 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         self._queue_tree.bind("<Double-1>", self._queue_on_double_click)
 
         # Right-click context menu
+        #
+        # The labels carry what each one does to the analyst's own work,
+        # because that is the only difference that matters at the moment of
+        # choosing and none of the three verbs implies it. "Load & process"
+        # and "Mark as rerun" both keep everything; only the reset discards.
         _ctx = tk.Menu(self._queue_tree, tearoff=0)
-        _ctx.add_command(label="Load & process", command=lambda: self._queue_on_double_click(None))
-        _ctx.add_command(label="Mark as rerun", command=self._queue_mark_rerun)
-        _ctx.add_command(label="🔄  Reset & reprocess from scratch…", command=self._queue_reset_file)
+        _ctx.add_command(label="Load & process  (keeps your edits)",
+                         command=lambda: self._queue_on_double_click(None))
+        _ctx.add_command(label="Mark as rerun  (no changes yet)",
+                         command=self._queue_mark_rerun)
+        _ctx.add_command(label="🔄  Reset & reprocess from scratch…  "
+                               "(discards your edits)",
+                         command=self._queue_reset_file)
+        _ctx.add_separator()
+        _ctx.add_command(label="🔁  Re-run from saved session…",
+                         command=self.reprocess_selected)
         _ctx.add_separator()
         _ctx.add_command(label="✏️  Rename / audit filename…", command=self._queue_rename_selected)
         _ctx.add_separator()
@@ -5340,7 +5476,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                 _ctx.tk_popup(event.x_root, event.y_root)
             finally:
                 _ctx.grab_release()
-        self._queue_tree.bind("<Button-3>", _show_ctx)
+        bind_context_menu(self._queue_tree, _show_ctx)
 
         self._queue_progress_var = tk.StringVar(value="No files loaded")
         tk.Label(parent, textvariable=self._queue_progress_var,
@@ -5409,9 +5545,30 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                                  term=self._qf_text.get())
 
     def _queue_refresh(self):
-        """Redraw the queue treeview from current dataset state."""
+        """Redraw the queue treeview from current dataset state.
+
+        Not re-entrant. The filter variables carry a write trace that calls
+        this method, so anything here that sets one -- and the Type dropdown
+        has to, to keep its counts current -- would otherwise call this method
+        from inside its own insert loop. The inner call clears the tree and
+        inserts every row; the outer call then resumes its loop and inserts an
+        iid that already exists, which Tk refuses, leaving a half-drawn queue
+        and a traceback.
+
+        A dropped redraw is not a risk here: the caller that re-entered is
+        itself a redraw, and it completes.
+        """
         if not hasattr(self, '_queue_tree'):
             return
+        if getattr(self, "_queue_refreshing", False):
+            return
+        self._queue_refreshing = True
+        try:
+            self._queue_refresh_inner()
+        finally:
+            self._queue_refreshing = False
+
+    def _queue_refresh_inner(self):
         tree = self._queue_tree
         tree.delete(*tree.get_children())
 
@@ -5422,16 +5579,41 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                 self._qf_count_var.set("")
             return
 
-        # The Type dropdown offers only the types actually in this queue, so
-        # it can never present a filter that matches nothing. Rebuilt on every
-        # redraw because adding a folder can introduce a new one.
+        # The Type dropdown lists EVERY format the tool reads, each with the
+        # number of matching files in this queue. Listing only the types
+        # present means a supported format this study happens not to contain
+        # is simply absent, which reads as "the tool cannot open BDF" -- the
+        # wrong conclusion, and one drawn in practice. The count keeps the
+        # earlier guarantee visible instead of enforcing it: an entry showing
+        # (0) is obviously going to show nothing before it is clicked.
+        #
+        # Rebuilt on every redraw because the counts change with the queue.
         if hasattr(self, "_qf_type_dd"):
-            present = sorted({_queue_type_label(f.path) for f in ds.files})
-            self._qf_type_dd["values"] = [QUEUE_FILTER_ALL] + present
-            if self._qf_type.get() not in ([QUEUE_FILTER_ALL] + present):
-                # The last file of that type has gone. Silently leaving the
-                # filter set would show an empty queue with no explanation.
-                self._qf_type.set(QUEUE_FILTER_ALL)
+            counts = {}
+            for f in ds.files:
+                label = _queue_type_label(f.path)
+                counts[label] = counts.get(label, 0) + 1
+            labels = sorted(set(_QUEUE_TYPE_LABELS.values()) | set(counts))
+            values = [QUEUE_FILTER_ALL] + [f"{lb} ({counts.get(lb, 0)})"
+                                           for lb in labels]
+            self._qf_type_dd["values"] = values
+            # The selected string changes when its count does, so the choice
+            # is re-anchored on the bare label. Comparing the whole string
+            # would reset the filter to All every time a file was added.
+            #
+            # Set ONLY when it actually differs. This variable has a write
+            # trace that calls this method, so an unconditional set re-enters
+            # the refresh: the inner call clears the tree and inserts every
+            # row, then the outer call resumes its own loop and tries to
+            # insert an iid that now exists. Tk raises "Item ... already
+            # exists" and the queue is left half drawn.
+            chosen = queue_type_choice_label(self._qf_type.get())
+            if chosen in labels:
+                want = f"{chosen} ({counts.get(chosen, 0)})"
+            else:
+                want = QUEUE_FILTER_ALL
+            if self._qf_type.get() != want:
+                self._qf_type.set(want)
 
         shown = 0
         for fe in ds.files:
@@ -6116,12 +6298,23 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                        if fe.status not in ("complete", "skipped")]
 
         if not unprocessed:
-            # All selected files are complete — offer to rerun them
+            # All selected files are complete — offer to rerun them.
+            #
+            # The wording says what happens to the analyst's own work, because
+            # "rerun anyway" does not: this path RESTORES each saved session
+            # first, so settings, conditions and manual edits all survive. It
+            # is not a fresh analysis, and someone expecting one would take
+            # the result as evidence their re-detection had changed nothing.
+            # The from-scratch route is named, since it is on a context menu
+            # and there is otherwise no way to discover it from here.
             resp = messagebox.askyesno(
                 "Already done",
                 f"All {len(entries)} selected file(s) are already complete.\n\n"
-                "Would you like to rerun them anyway?\n"
-                "(Useful for changing settings or reviewing results)",
+                "Rerun them?\n\n"
+                "Your saved settings, conditions and manual edits are restored "
+                "first, so this repeats the analysis as you left it.\n\n"
+                "To start over with automatic detection instead, choose No and "
+                "use right-click → Reset & reprocess from scratch.",
                 parent=self.root)
             if resp:
                 # Reset status to allow reprocessing
@@ -6135,6 +6328,25 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
 
     def _load_file_entry(self, fe: FileEntry, auto_run: bool = False):
         """Load a FileEntry into the Stage 1 processing pipeline."""
+        # Not re-entrant, and it cannot be.
+        #
+        # The wait for the background reader below pumps the event loop with
+        # root.update(), which processes EVERY pending event, not just the
+        # progress redraw: a queued selection, a second click, a menu command.
+        # Any of those can call this method again. The inner call then runs the
+        # whole load, opens the channel-assignment and metadata dialogues, and
+        # returns; the outer call resumes where it left off and opens them a
+        # second time. Nothing errors, so the only symptom is being asked
+        # everything twice.
+        if getattr(self, "_loading_file", False):
+            return
+        self._loading_file = True
+        try:
+            self._load_file_entry_inner(fe, auto_run=auto_run)
+        finally:
+            self._loading_file = False
+
+    def _load_file_entry_inner(self, fe, auto_run: bool = False):
         self._reset_state_for_new_file()
         self.segments_metadata = {}   # clear before restore
         # The per-channel store must go with it, or edits made for a
@@ -6983,7 +7195,31 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                         dlg.geometry(f"+{x}+{y}")
                         self.root.wait_window(dlg)
 
-                    _show_smr_dialog()
+                    # Unattended: the same substitution as the general
+                    # assignment dialogue below, kept here because SMR keeps
+                    # its own. _chosen is what the dialogue would have
+                    # produced, so every line after this is unchanged --
+                    # including writing the sidecar, which is what makes the
+                    # choice stick for the next open.
+                    #
+                    # Checked against `analogue`, this branch's channel list.
+                    # chan_list is not bound until later in the method, so
+                    # naming it here would raise NameError the first time a
+                    # batch reached an SMR file, having worked in every test
+                    # that used any other format.
+                    _un = getattr(self, "_unattended", None)
+                    if _un is not None and _un.get("channel_choice") in analogue:
+                        _names = [analogue[i] for i
+                                  in _un.get("analyse_channels") or []
+                                  if 0 <= i < len(analogue)]
+                        _chosen = {"emg": _un["channel_choice"],
+                                   "stim": _un.get("marker_choice")
+                                   or self.marker_choice.get(),
+                                   "channels": _names or [_un["channel_choice"]]}
+                        self.log(f"   Channel: {_chosen['emg']} "
+                                 f"(from the saved session)")
+                    else:
+                        _show_smr_dialog()
 
                     if not _chosen:
                         self.log("⚠️  SMR channel assignment cancelled.")
@@ -7382,7 +7618,29 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
             self._reopen_assignment = lambda: (_show_assign_dlg(),
                                                _apply_choice())
 
-            _show_assign_dlg()
+            # Unattended: this dialogue is NOT gated on saved state -- it opens
+            # on every load for every format but SMR, deliberately, so that a
+            # recording whose markers are wrong still has a route to Event
+            # sources. That makes it the single thing standing between a
+            # restored session and an unsupervised re-run.
+            #
+            # The answer is supplied by the planner, which has already checked
+            # the channel name against this file's channel list and refused
+            # any file where the session disagrees with itself. It is applied
+            # through _apply_choice, the same path the dialogue uses, so there
+            # is one place where a channel choice takes effect.
+            _un = getattr(self, "_unattended", None)
+            if _un is not None and _un.get("channel_choice") in chan_list:
+                _chosen = {"emg": _un["channel_choice"],
+                           "stim": _un.get("marker_choice")
+                           or self.marker_choice.get(),
+                           "channels": [chan_list[i] for i
+                                        in _un.get("analyse_channels") or []
+                                        if 0 <= i < len(chan_list)]
+                           or [_un["channel_choice"]]}
+                self.log(f"   Channel: {_chosen['emg']} (from the saved session)")
+            else:
+                _show_assign_dlg()
 
             _apply_choice()
 
@@ -7397,7 +7655,35 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                                   (_saved_crop_start is not None
                                    and _saved_crop_end is not None))
 
-        if _has_saved_range:
+        # Unattended: the saved range IS the answer, and this dialogue's own
+        # default is already "reuse". Skipping it changes nothing about what
+        # gets analysed; it only stops asking a question whose answer is in
+        # the session being restored.
+        #
+        # NO saved range is also an answer, and it means the whole recording.
+        # That is not an inference: "Use whole file" below is IMPLEMENTED as
+        # setting crop_ranges, crop_start and crop_end all to None, so their
+        # absence in a session is how a whole-file analysis was recorded. 134
+        # of the 135 sessions in the study this was built against have no
+        # range for exactly that reason.
+        #
+        # This previously fell through to the whole-recording prompt, on the
+        # reasoning that the planner would refuse such files anyway and an
+        # unexpected one should ask rather than assume. Both halves were
+        # wrong: the planner does not refuse them, and analysing the whole
+        # recording is not an assumption but the recorded answer. The result
+        # was a modal dialogue on 134 of 135 files.
+        if getattr(self, "_unattended", None) is not None:
+            if _has_saved_range:
+                choice = "reuse"
+                self.log("   Data range: reusing the saved selection")
+            else:
+                self.crop_ranges = None
+                self.crop_start = None
+                self.crop_end = None
+                self.log("   Data range: whole recording, as the session "
+                         "recorded")
+        elif _has_saved_range:
             if _saved_crop_ranges:
                 _range_desc = f"{len(_saved_crop_ranges)} range(s) previously selected"
             else:
@@ -7623,6 +7909,32 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         Modal dialog to collect BIDS-style metadata.
         context: optional filename shown at top to clarify which file this is for.
         """
+        # Unattended: the session already carries this, and _apply_loaded_session
+        # restored it before the load reached here. The dialogue would be
+        # asking for something known, and it grabs the pointer and waits for a
+        # window nobody is looking at -- so a batch stops dead on the first
+        # file with no indication why.
+        #
+        # The fourth decision point of the unattended load, and the one not
+        # covered when the other three were: this sits at the very end of
+        # _browse_file_path, after every choice the planner checks, so a file
+        # that plans cleanly still stops here.
+        #
+        # Refuses rather than guesses when the session had no participant ID.
+        # Output paths are built from it, and _remembered_meta carries the
+        # PREVIOUS file's metadata across files -- so filling a blank silently
+        # would write one recording's results under another's identifier.
+        _un = getattr(self, "_unattended", None)
+        if _un is not None:
+            _sub = str(getattr(self.study_metadata, "participant_id", "")
+                       or "").strip()
+            if _sub:
+                self.log(f"   Study metadata: {_sub} (from the saved session)")
+                return
+            self.log("⚠️  The saved session records no participant ID; not "
+                     "guessing one.")
+            return
+
         parsed = self._parse_bids_from_filename(self.file_path.get())
         carry = self._remembered_meta or self.study_metadata
         v_sub     = tk.StringVar(value=parsed['participant_id'] or carry.participant_id)
@@ -8228,6 +8540,31 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         tk.Button(btns, text="Cancel", width=10,
                   command=top.destroy).pack(side="left", padx=6)
 
+    def _setup_refused(self, title, message, outer=None, inner=None):
+        """Report a setup guard's refusal, and go where it can be fixed.
+
+        One place, because the three guards below it did the same two things
+        in the same order and only one of them was ever updated at a time.
+
+        Unattended, neither happens. A modal dialogue stops a batch on a file
+        nobody is watching, and the navigation flicks the analyst's tabs about
+        once per file. The refusal is logged instead, which is what a caller
+        driving the run needs: run_analysis_start still returns False, the
+        runner records the file as failed, and the run carries on to the next.
+        """
+        if getattr(self, "_unattended", None) is not None:
+            first = str(message).split("\n\n")[0]
+            self.log(f"   ⚠️  {title}: {first}")
+            return
+        messagebox.showwarning(title, message, parent=self.root)
+        try:
+            if outer is not None:
+                self.notebook.select(outer)
+            if inner is not None:
+                self.nb_stage1.select(inner)
+        except Exception:
+            pass
+
     def _unconfigured_analysis_channels(self):
         """Selected channels with no stored 1a setup.
 
@@ -8518,8 +8855,15 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         vscroll.config(command=cv.yview)
         inner = ttk.Frame(cv)
         cv.create_window((0, 0), window=inner, anchor="nw")
+        # This table is as wide as the recording's widest stimulus row, which
+        # is a font-dependent number, so it runs off the edge on some machines
+        # and not others. The scrollregion always covered it; there was simply
+        # nothing to scroll it with.
+        _hsync = attach_hscroll(outer, cv, inner)
         inner.bind("<Configure>",
-                   lambda e: cv.configure(scrollregion=cv.bbox("all")))
+                   lambda e: (cv.configure(scrollregion=cv.bbox("all")),
+                              _hsync()))
+        cv.bind("<Configure>", lambda e: _hsync())
 
         # ── header hint ───────────────────────────────────────────────────────
         # The two long paragraphs that used to sit here, on the blanking gap
@@ -8837,19 +9181,50 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
             fg="grey").pack(side="left", padx=6)
 
         self._labels_tab_built     = True
-        self._labels_tab_confirmed = False
-        self._confirm_btn_var.set("⚠  Setup not confirmed — click to confirm")
+        # Confirmation is a property of the CHANNEL, and _chan_confirmed is
+        # where that is recorded. Hardcoding False here contradicted it on
+        # every rebuild, and the two flags are read by different guards in
+        # _validate_analysis_setup -- so they disagreed and the stricter one
+        # won.
+        #
+        # Two things were broken by that. Switching to an already-confirmed
+        # channel showed "not confirmed": _on_channel_selected restores the
+        # flag from _chan_confirmed and then calls this method, which cleared
+        # it again. And a run driven from a restored session could not start
+        # at all, because the session restores _chan_confirmed but the rebuild
+        # that follows always left this False.
+        #
+        # Rebuilds where the confirmation genuinely no longer holds -- opening
+        # a file, applying conditions -- discard it from _chan_confirmed at
+        # source instead, so both flags say the same thing.
+        self._labels_tab_confirmed = self.channel_idx in getattr(
+            self, "_chan_confirmed", set())
+        self._confirm_btn_var.set(
+            "\u2714  Setup confirmed" if self._labels_tab_confirmed
+            else "\u26a0  Setup not confirmed — click to confirm")
 
         # Only after a file was opened, and once.
+        #
+        # Not during a batch re-run. Sending the analyst to the Conditions tab
+        # is the right landing place when they have just opened a file by
+        # hand; with a hundred files going past it is a tab flicking on every
+        # one, and the run appears to be doing something the analyst is
+        # expected to answer.
+        #
+        # It is also side-effectful: the Conditions tab autosaves the session
+        # when conditions are confirmed there, so navigating into it during an
+        # unattended run puts a write to the session on a path that should
+        # only be reading it.
         if getattr(self, "_go_to_conditions_after_load", False):
             self._go_to_conditions_after_load = False
-            self.root.update_idletasks()
-            try:
-                self.notebook.select(self.setup_outer)
-                self.nb_setup.select(self.tab_conditions)
-            except Exception:
-                self.notebook.select(self.stage1_outer)
-                self.nb_stage1.select(self.tab1b_frame)
+            if getattr(self, "_unattended", None) is None:
+                self.root.update_idletasks()
+                try:
+                    self.notebook.select(self.setup_outer)
+                    self.nb_setup.select(self.tab_conditions)
+                except Exception:
+                    self.notebook.select(self.stage1_outer)
+                    self.nb_stage1.select(self.tab1b_frame)
 
         # No navigation here.
         #

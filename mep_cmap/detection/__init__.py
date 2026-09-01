@@ -124,7 +124,21 @@ from .quantification import (                                         # noqa: F4
 #   * the run-length bootstrap resamples in blocks, so the stated significance
 #     level is the one applied.
 # Re-run any analysis whose cSP values are being reported.
-DETECTION_VERSION = "2026-modular-v5"
+#
+# v6 changes the reported onset latency and the cSP end condition. Onset and
+# MEP offset DETECTORS are untouched and reproduce v5 exactly; what changed is
+# which of their results is reported:
+#   * Latency(ms) is now resolved per trial as manual marker, then consensus
+#     across detectors, then the single selected detector, and Latency_Source
+#     records which applied. With onset agreement now on by default, most
+#     trials report the consensus where v5 reported one detector.
+#   * a cSP duration is written only where the silent period was observed to
+#     END. v5 wrote a duration for a period truncated by the end of the epoch,
+#     which reads as a short silent period rather than as an unmeasured one.
+# The version stamp is what stops a group analysis pooling v5 and v6 files as
+# though their latencies meant the same thing, which is the whole reason it
+# exists. Re-run any analysis whose latency or cSP values are being reported.
+DETECTION_VERSION = "2026-modular-v6"
 
 # ── Method registry ───────────────────────────────────────────────────────────
 # Maps preference key → callable

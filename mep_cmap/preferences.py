@@ -560,7 +560,21 @@ class Preferences:
         Called AFTER the window is visible so Tk reports the correct monitor.
         tk scaling = pt/px.  At 96 DPI: 0.75 pt/px.
         dpi = tk_scaling * 96 / 0.75
+
+        NOT on Aqua. macOS does display scaling itself: Tk reports a scaling of
+        1.0 whether or not the screen is Retina, and the system font at its
+        native size is already right for the display. Putting 1.0 through the
+        formula above yields 128 DPI and a factor of 1.33, so every font in the
+        application comes out a third larger than intended and the layout wants
+        more width than the screen has. The window then either opens wider than
+        the display or, once clamped, clips its own panels.
         """
+        try:
+            if root.tk.call("tk", "windowingsystem") == "aqua":
+                self._dpi_scale = 1.0
+                return self._dpi_scale
+        except Exception:                   # noqa: BLE001 — not Aqua, carry on
+            pass
         try:
             tk_scale = float(root.tk.call('tk', 'scaling'))
             dpi = tk_scale * 96.0 / 0.75

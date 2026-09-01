@@ -498,3 +498,51 @@ def group_events(event_rows, separator=SEPARATOR):
         groups.setdefault(key, []).append(onset)
         decoded[key] = (stim, cond)
     return ({k: sorted(v) for k, v in groups.items()}, decoded)
+
+
+def merge_rows(rows, indices, *, condition=None):
+    """Combine two or more rows of the same stimulus type into one.
+
+    The inverse of :func:`split_row`, and the reason it exists: a split made
+    on a wrong boundary could only be undone while it was still the last
+    action. Once the analyst had renamed something else, or reopened the file,
+    the halves were permanent and the only route back was Reload from file,
+    which discards every other edit too.
+
+    Restricted to ONE stimulus type. Two rows from different types describe
+    responses to different stimuli, and a row holding both would claim a
+    single condition contains trials that are not comparable -- the trial
+    indices are per type, so they would also collide meaninglessly.
+
+    The union is taken, so a trial appearing in two rows appears once here.
+    That cannot arise from splitting, but it can from hand-set trial lists,
+    and silently duplicating a trial would double-count it in every summary
+    downstream.
+    """
+    if len(indices) < 2:
+        raise ConditionError("select two or more conditions to combine.")
+    if any(not 0 <= i < len(rows) for i in indices):
+        raise ConditionError("that row does not exist.")
+
+    chosen = [rows[i] for i in sorted(indices)]
+    stim_types = {r.stim_type for r in chosen}
+    if len(stim_types) > 1:
+        raise ConditionError(
+            "those conditions belong to different stimulus types "
+            f"({', '.join(sorted(stim_types))}), and their trials are "
+            "numbered separately, so they cannot be combined.")
+
+    trials = tuple(sorted({t for r in chosen for t in r.trials}))
+    if condition is None:
+        # The first row's name, because a split leaves the original there and
+        # keeping it is the outcome someone undoing a split expects. Falls
+        # back to the next name that is set, so combining two halves of an
+        # unnamed row does not silently discard the only label present.
+        condition = next((r.condition for r in chosen if r.condition), "")
+
+    first = min(indices)
+    out = [r for i, r in enumerate(rows) if i not in set(indices)]
+    out.insert(min(first, len(out)),
+               replace(chosen[0], condition=sanitise_name(condition),
+                       trials=trials))
+    return out

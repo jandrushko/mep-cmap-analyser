@@ -294,7 +294,11 @@ class PipelineConfig:
     onset_anchor_min_trials:   int   = 8
     # Outlier detection
     outlier_threshold:     float = 1.96
-    enable_outlier_review: bool  = True
+    # Off by default, matching app.py's control. Review halts an analysis to
+    # put flagged trials to the analyst, which an unattended batch cannot
+    # answer -- reprocess.py refuses any session that had it on for exactly
+    # that reason.
+    enable_outlier_review: bool  = False
     # Bootstrap
     bootstrap_iter:        int   = 10000
     # Output labels / colours
@@ -1438,14 +1442,21 @@ def pipeline_quantify_segments(stim_type, segs_all, prestim_all,
                         _w = seg[_ptp_s:_ptp_e]
                         _pk2 = _ptp_s + int(max(int(np.argmin(_w)),
                                                 int(np.argmax(_w))))
+                        _trunc = []
                         _csp_auto = detect_csp_for_trial(
                             seg, fs,
                             np.linspace(-_pre_type_ms, _post_type_ms,
                                         len(seg), endpoint=False),
                             CspSettings.from_source(cfg),
                             second_peak_ms=(_pk2 - _segs_sb) * 1000.0 / fs,
-                            pre_ms=_pre_type_ms)
-                        if _csp_auto is not None:
+                            pre_ms=_pre_type_ms,
+                            truncated_out=_trunc)
+                        # Truncated means the EMG never returned inside the
+                        # search window, so the "duration" is that window's
+                        # width (386 ms of 400) and not a measurement. Left
+                        # blank. On an M-wave, which has no silent period at
+                        # all, that was happening on every trial.
+                        if _csp_auto is not None and not _trunc:
                             _s_i, _e_i = _csp_auto
                             silent_dur = round((_e_i - _s_i) * 1000 / fs, 2)
                             silent_durs.append(silent_dur)
@@ -1665,10 +1676,33 @@ def pipeline_quantify_segments(stim_type, segs_all, prestim_all,
 
         auto_row   = common.copy()
         manual_row = common.copy()
+
+        # ── Which latency is reported ────────────────────────────────────
+        # Precedence lives in resolve_reported_latency, beside LAT_COLS, so it
+        # can be tested without running an analysis. Latency_Source records
+        # which branch fired, so no reported latency's definition has to be
+        # inferred from the settings that produced it.
+        _onset_marked = (mk in segments_metadata
+                         and "onset_idx" in segments_metadata[mk])
+        _cons_lat = agreement.consensus_ms if agreement is not None else None
+        # Same rule the single-detector values are held to above: at or before
+        # the stimulus is a placeholder, not an onset.
+        if _cons_lat is not None and _cons_lat <= 0:
+            _cons_lat = None
+
+        # The auto row is the untouched automatic result, so a manual marker
+        # never reaches it; the consensus does, being itself automatic.
+        _auto_lat_val, _auto_lat_src = resolve_reported_latency(
+            auto_lat, _cons_lat, False)
+        _man_lat_val, _man_lat_src = resolve_reported_latency(
+            man_lat, _cons_lat, _onset_marked)
+
         auto_row  [_C_PTP] = round(auto_ptp, 2)
-        auto_row  [_C_LAT] = round(auto_lat, 2) if auto_lat is not None else "Not Detected"
+        auto_row  [_C_LAT] = (round(_auto_lat_val, 2)
+                              if _auto_lat_val is not None else "Not Detected")
         manual_row[_C_PTP] = round(man_ptp, 2)
-        manual_row[_C_LAT] = round(man_lat, 2) if man_lat is not None else "Not Detected"
+        manual_row[_C_LAT] = (round(_man_lat_val, 2)
+                              if _man_lat_val is not None else "Not Detected")
 
         # RMS over the PTP window. Identical for the auto and manual rows by
         # design: the manual override moves two peak markers, which is not a
@@ -1702,6 +1736,11 @@ def pipeline_quantify_segments(stim_type, segs_all, prestim_all,
             _row[_C_OFF]     = mep_offset_ms
             _row[_C_DUR]     = mep_duration_ms
             _row[_C_OFF_SRC] = mep_offset_src
+
+        # Written per row, not in the loop above: the two rows can resolve to
+        # different sources, which is the whole point of the column.
+        auto_row  [_C_LAT_SRC] = _auto_lat_src
+        manual_row[_C_LAT_SRC] = _man_lat_src
 
         if agreement is not None:
             # Retain the per-method breakdown for the comparison report. The
@@ -1992,6 +2031,18 @@ LAT_COLS = [
     "Onset_Disagreement(ms)",# max - min across members
     "Onset_IQR(ms)",         # interquartile range; robust to one stray member
     "Onset_Methods_N",       # members that returned a latency
+    # Which of the three sources produced Latency(ms) on THIS trial.
+    #
+    # manual    an onset marker placed by the analyst
+    # consensus the median across the member detectors
+    # detector  the single selected detector, where no consensus was available
+    # none      no onset was established
+    #
+    # Per trial rather than per file because the fallback varies within a
+    # file: agreement can fail on one trial and succeed on the next, and a
+    # study that mixes definitions silently is the thing tms_rat.py warns
+    # about. Stated here, it can be reported and filtered on.
+    "Latency_Source",
     # The condition this trial was assigned to, blank where none was. Appended
     # rather than placed beside StimType because `common` above is a positional
     # list of literals padded to this width: inserting mid-list would shift
@@ -2026,6 +2077,44 @@ _C_AG_CONS = LAT_COLS.index("Onset_MethodsMedian(ms)")
 _C_AG_SPRD = LAT_COLS.index("Onset_Disagreement(ms)")
 _C_AG_IQR  = LAT_COLS.index("Onset_IQR(ms)")
 _C_AG_N    = LAT_COLS.index("Onset_Methods_N")
+_C_LAT_SRC = LAT_COLS.index("Latency_Source")
+
+#: The four values Latency_Source can take, in precedence order.
+LATENCY_SOURCES = ("manual", "consensus", "detector", "none")
+
+
+def resolve_reported_latency(single_lat, consensus_lat, manual_marked):
+    """Return ``(latency_ms, source)`` for one trial.
+
+    Precedence: a marker the analyst placed, then the consensus across
+    detectors, then the single selected detector.
+
+    The manual marker wins because it is a deliberate act -- the analyst looked
+    at the trace and said where the response begins -- and no automatic median
+    outranks that.
+
+    The consensus outranks the single detector because it does not depend on
+    which detector happened to be selected. It is only present when
+    ``cfg.onset_agreement`` ran and returned a value, so the single detector
+    stays the fallback rather than the column going blank: a study analysed
+    before agreement was on by default must still report a latency.
+
+    A module-level function rather than a closure so the precedence can be
+    tested directly. It is the rule the whole latency column rests on, and a
+    rule only reachable by running a full analysis is a rule nobody checks.
+
+    ``single_lat`` is already the manual value where a marker exists (the
+    caller resolves that), so ``manual_marked`` says whether that is what it
+    is. Values at or before the stimulus are the caller's to reject; this
+    function trusts what it is handed.
+    """
+    if manual_marked and single_lat is not None:
+        return single_lat, "manual"
+    if consensus_lat is not None:
+        return consensus_lat, "consensus"
+    if single_lat is not None:
+        return single_lat, "detector"
+    return None, "none"
 
 
 def _trials_frame(rows):
@@ -2867,6 +2956,11 @@ def run_pipeline(input_path,
                  crop_end=None,
                  crop_ranges=None,
                  study_metadata=None,
+                 # Set only by the batch re-runner, which must write back to
+                 # the prefix its session was saved under rather than to
+                 # whatever today's naming rules produce. See where it is
+                 # applied below.
+                 bids_prefix_override=None,
                  limb="", measure="",
                  reference_map=None, mmax_file="",
                  plateau_tolerance=0.10,
@@ -2981,6 +3075,25 @@ def run_pipeline(input_path,
     # file stem — but strip any tokens that are already in the metadata prefix
     # to avoid redundancy (e.g. sub-o001 appearing twice).
     _bids_prefix = _make_bids_prefix(meta.bids_prefix(), pathlib.Path(input_path).stem)
+
+    # A re-run says where its outputs go, rather than recomputing it.
+    #
+    # The rule above derives the prefix from the metadata and the file stem,
+    # and BOTH have drifted between versions: of 135 sessions in the study the
+    # batch re-runner was built against, 84 would land on a different prefix
+    # today than the one they were saved under. Some grow (the stem's own BIDS
+    # tokens get appended), some shrink (a token is now deduplicated away).
+    #
+    # Recomputing would therefore leave the original results untouched beside
+    # a second, differently named set -- and the group-level merge and any
+    # analysis scripts still point at the originals. That is worse than
+    # overwriting: the numbers do not change, they fork, and the stale branch
+    # is the one already cited.
+    #
+    # Only the batch re-runner passes this. An ordinary run recomputes exactly
+    # as before.
+    if bids_prefix_override:
+        _bids_prefix = str(bids_prefix_override)
 
     # Tag the outputs with the channel when more than one is being analysed,
     # so the passes do not overwrite each other.

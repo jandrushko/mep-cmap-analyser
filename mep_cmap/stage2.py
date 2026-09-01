@@ -21,6 +21,7 @@ from .bids import StudyMetadata
 from .preferences import accent_button_kw
 from .results_layout import FAMILIES as _RL_FAMILIES
 from .results_layout import sibling as _rl_sibling
+from .tk_compat import bind_context_menu
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -463,7 +464,7 @@ class Stage2Mixin:
         # Bind double-click to edit a cell
         self._s2_tree.bind("<Double-1>", self._s2_on_double_click)
         # Bind right-click on heading for column context menu
-        self._s2_tree.bind("<Button-3>", self._s2_on_right_click)
+        bind_context_menu(self._s2_tree, self._s2_on_right_click)
 
         # Shift+wheel scrolls sideways, which is what anyone reaches for before
         # dragging a scrollbar. Bound to the tree rather than the window so it
