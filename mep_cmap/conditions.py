@@ -45,6 +45,7 @@ be tested without a display and without a recording.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field, replace
 
@@ -546,3 +547,41 @@ def merge_rows(rows, indices, *, condition=None):
                replace(chosen[0], condition=sanitise_name(condition),
                        trials=trials))
     return out
+
+
+# ── which recording the applied rows belong to ───────────────────────────────
+
+def recording_key(path) -> str:
+    """A comparable identity for a recording path. Empty for no path.
+
+    Normalised so that the same file reached as C:/a/b.smr and C:\\a\\B.smr,
+    or through a relative path, is recognised as the same recording.
+    """
+    if not path:
+        return ""
+    try:
+        return os.path.normcase(os.path.abspath(os.path.normpath(str(path))))
+    except Exception:                       # noqa: BLE001 - odd input
+        return str(path)
+
+
+def rows_for_recording(rows, owner_key: str, path) -> list:
+    """The applied event rows, if they belong to the recording at ``path``.
+
+    Applied conditions are held on the app as one flat list of events with
+    onsets. Nothing tied that list to the recording it came from, so after
+    opening a different file the previous file's events were still there:
+    the analysis cut the new file's EMG at the old file's stimulus times, and
+    applying conditions merged the old events into the new file's events
+    file, where they survived a restart.
+
+    ``owner_key`` is :func:`recording_key` of the file the rows were applied
+    to. Rows owned by another recording come back empty. An empty owner means
+    the rows predate this record and their origin is unknown; they are
+    returned unchanged, because the reset on opening a file is what removes
+    those.
+    """
+    rows = list(rows or [])
+    if not rows or not owner_key:
+        return rows
+    return rows if owner_key == recording_key(path) else []

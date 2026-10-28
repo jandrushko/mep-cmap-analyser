@@ -373,7 +373,12 @@ def _write_figure(stim_type, traces, t_ms, onsets, edges, boundary_ms,
 
     fig.tight_layout()
     os.makedirs(out_dir, exist_ok=True)
-    safe = "".join(ch if (ch.isalnum() or ch in "-_") else "_" for ch in str(stim_type))
+    try:
+        # The shared rule: collision-free, and leaves working names alone.
+        from mep_cmap.utils import filename_token
+        safe = filename_token(stim_type)
+    except Exception:                       # add-on used outside the package
+        safe = "".join(ch if (ch.isalnum() or ch in "-_") else "_" for ch in str(stim_type))
     path = os.path.join(out_dir, f"{prefix}_{ADDON_NAME}_{safe}.png")
     fig.savefig(path, dpi=150)
     plt.close(fig)

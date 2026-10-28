@@ -578,7 +578,18 @@ class ConditionsTabMixin:
         merged = {}
         # Whatever earlier channels established, so switching channel and
         # applying again accumulates rather than replaces.
-        for row in (getattr(self, "condition_event_rows", None) or []):
+        #
+        # Earlier channels OF THIS RECORDING. This read every row on the app,
+        # and after opening another file those were the previous recording's
+        # events -- which were merged in here and written into this file's
+        # events file, where they were read back on every later load.
+        _prior = (self._owned_condition_rows()
+                  if hasattr(self, "_owned_condition_rows")
+                  else C.rows_for_recording(
+                      getattr(self, "condition_event_rows", None),
+                      getattr(self, "_cond_rows_path", ""),
+                      self.file_path.get()))
+        for row in _prior:
             try:
                 merged[_key(row["onset"])] = dict(row)
             except (KeyError, TypeError, ValueError):
@@ -624,6 +635,46 @@ class ConditionsTabMixin:
         from .pipeline import crop_for_channel
         return crop_for_channel(getattr(self, "_chan_settings", {}), _ch,
                                 params)
+
+    def _cond_groups_in_range(self, groups):
+        """The groups that have at least one trial the analysis will measure.
+
+        The events file deliberately gives every event in the recording a
+        row, including events outside the selected range, so that per-channel
+        ranges cannot leave a channel without its trials. Tab 1a was built
+        from all of them, so a stimulus type whose in-range trials had all
+        been excluded still got a row there -- from its out-of-range events
+        alone -- and the analysis, which crops by the same rule, then measured
+        nothing for it.
+
+        Kept if in range for ANY analysed channel, because tab 1a is rebuilt
+        from this one list when switching channel. Returns ``groups``
+        unchanged if the ranges cannot be resolved, or if nothing would be
+        left (a row too many is a nuisance; an empty setup table is not).
+        """
+        try:
+            from .pipeline import crop_stim_times
+            params = self._snapshot_analysis_params()
+            chans = []
+            try:
+                chans = list(self._analysis_channel_indices() or [])
+            except Exception:                         # noqa: BLE001
+                chans = []
+            if not chans:
+                chans = [self._cond_selected_channel_idx()]
+            keep = set()
+            for ch in chans:
+                _cr, _cs, _ce = self._cond_crop_for(params, channel_idx=ch)
+                keep.update(crop_stim_times(groups, _cr, _cs, _ce).keys())
+        except Exception:                             # noqa: BLE001
+            return groups
+        if not keep:
+            return groups
+        dropped = sorted(k for k in groups if k not in keep)
+        if dropped:
+            self.log("   Not in tab 1a (no trials inside the selected range): "
+                     + ", ".join(dropped))
+        return {k: v for k, v in groups.items() if k in keep}
 
     def _cond_load_segments(self):
         """Read and cut the recording once, for the review pane only.
@@ -1373,6 +1424,8 @@ class ConditionsTabMixin:
         # Held on the app, and read by _snapshot_analysis_params, so that the
         # analysis and the preview group trials by these conditions.
         self.condition_event_rows = event_rows
+        # And which recording they describe, so no other file can use them.
+        self._cond_rows_path = C.recording_key(path)
         self.condition_map = decoded
 
         # Per-condition epochs become the per-type windows the labels tab and
@@ -1499,7 +1552,7 @@ class ConditionsTabMixin:
                 self._chan_confirmed.discard(self.channel_idx)
             except Exception:
                 pass
-            self._build_labels_tab(sorted(groups))
+            self._build_labels_tab(sorted(self._cond_groups_in_range(groups)))
             self.log("   Tab 1a rebuilt from the conditions.")
         except Exception as exc:                      # noqa: BLE001 — reported
             self.log(f"   ⚠️  Could not rebuild the labels tab: {exc}")

@@ -63,6 +63,13 @@ except Exception as _ex:                  # pragma: no cover - packaging failure
     V = None
     _IMPORT_ERROR = _ex
 
+try:
+    # Stimulus types such as ">" or "?" cannot go into a filename as they are.
+    from mep_cmap.utils import filename_token as _fname_token
+except Exception:                         # pragma: no cover - packaging failure
+    def _fname_token(label):
+        return "".join(c if (c.isalnum() or c in "-_") else "_" for c in str(label))
+
 ADDON_NAME        = "variability_group"
 ADDON_DESCRIPTION = ("Dataset-level reliability: variance components, how many trials "
                      "and sessions are needed, ICC, and session-to-session agreement, "
@@ -1200,7 +1207,7 @@ def run(context):
         n_png = n_cap = 0
         if fig_dir:
             for res, stim_type in fig_jobs:
-                png = os.path.join(fig_dir, f"{context.bids_prefix}_stim-{stim_type}"
+                png = os.path.join(fig_dir, f"{context.bids_prefix}_stim-{_fname_token(stim_type)}"
                                             f"_{ADDON_NAME}.png")
                 try:
                     _plot_stratum(res, metric, stim_type, png)

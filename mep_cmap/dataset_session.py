@@ -49,11 +49,13 @@ STATUS_COLOURS = {
 # ── Path portability helpers ──────────────────────────────────────────────────
 
 def _study_root_from_deriv(derivatives_root: str) -> str:
-    """Return the study root (parent of derivatives/) given derivatives_root."""
-    norm = os.path.normpath(derivatives_root)
-    if os.path.basename(norm).lower() == "derivatives":
-        return os.path.dirname(norm)
-    return norm
+    """Return the study root (parent of derivatives/) given derivatives_root.
+
+    Through bids.derivatives_dir, so a root set to the study folder, its
+    derivatives folder or derivatives/mep-cmap-analyser all give the study.
+    """
+    from .bids import derivatives_dir
+    return os.path.dirname(os.path.normpath(derivatives_dir(derivatives_root)))
 
 
 def _to_relative(abs_path: str, study_root: str) -> str:
@@ -251,17 +253,15 @@ class DatasetSession:
 
     @property
     def _deriv_dir(self) -> str:
-        """The derivatives/ subfolder — where the JSON is stored."""
-        # If derivatives_root already ends in 'derivatives', use it directly.
-        # Otherwise append 'derivatives/' so the JSON lives inside the folder
-        # that also contains sub-XXX session subfolders.
-        if os.path.basename(self.derivatives_root).lower() == "derivatives":
-            return self.derivatives_root
-        candidate = os.path.join(self.derivatives_root, "derivatives")
-        if os.path.isdir(candidate):
-            return candidate
-        # Neither exists yet — will be created on first save
-        return candidate
+        """The derivatives/ subfolder — where the JSON is stored.
+
+        The study's derivatives/ folder, not this pipeline's folder inside it:
+        the queue file has always lived there, and every existing queue is
+        found there. bids.derivatives_dir accepts any of the three roots an
+        analyst might configure.
+        """
+        from .bids import derivatives_dir
+        return derivatives_dir(self.derivatives_root)
 
     @property
     def json_path(self) -> str:

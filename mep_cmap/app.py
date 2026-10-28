@@ -192,16 +192,22 @@ def _under_sourcedata(file_path: str, scan_root: str) -> bool:
 
 
 def session_path_for(source_path: str, metadata=None,
-                     derivatives_root: str = "") -> str:
+                     derivatives_root: str = "", **kwargs) -> str:
     """Deprecated alias. The rule lives in mep_cmap.bids.
 
     Moved because things that are not the GUI need it -- the converter, and the
     tests -- and importing this module to compute a filename drags in pywt,
     matplotlib and Tk. CI installs none of those, so every caller that reached
     a path rule through here failed there while passing locally.
+
+    Keywords are passed through rather than listed. When bids.session_path_for
+    gained prefix_override this alias did not, and App.session_path -- which
+    resolves to this name, not to bids -- raised TypeError on every auto-save.
     """
     from .bids import session_path_for as _impl
-    return _impl(source_path, metadata, derivatives_root)
+    if kwargs.get("prefix_override") is None:
+        kwargs.pop("prefix_override", None)
+    return _impl(source_path, metadata, derivatives_root, **kwargs)
 
 
 def _make_bids_prefix(meta_prefix: str, file_stem: str) -> str:
@@ -527,6 +533,10 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         # Conditions tab. Empty until conditions are applied; empty means the
         # analysis groups by stimulus type exactly as before.
         self.condition_event_rows = []
+        # Which recording those rows belong to (conditions.recording_key).
+        # Checked wherever they are used, so rows applied to one file can
+        # never reach another file's analysis or events file.
+        self._cond_rows_path = ""
         self.condition_map        = {}
         self._lab_entry_pre    = {}
         self._lab_entry_post   = {}
@@ -696,6 +706,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                     # Analysis finished — autosave regardless of whether the
                     # inspector was used
                     self._autosave_session()
+                    # Now that the new session is on disk, this recording's
+                    # copy in the pre-1.4.8 folder layout is superseded.
+                    self._archive_legacy_layout()
                     # Mark file complete in dataset queue
                     if self._dataset is not None and hasattr(self, '_current_file_entry'):
                         fe = self._current_file_entry
@@ -1678,8 +1691,12 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
             # Conditions assigned in the interface, as BIDS events-file records.
             # None until the Conditions tab has been applied, which is what
             # makes an unassigned recording behave exactly as it always did.
-            event_rows        = list(self.condition_event_rows or []) or None,
-            condition_map     = dict(self.condition_map or {}),
+            # Only rows applied to THIS recording: rows left over from the
+            # previously open file were used here exclusively, so its EMG was
+            # cut at the other file's stimulus times.
+            event_rows        = self._owned_condition_rows() or None,
+            condition_map     = (dict(self.condition_map or {})
+                                 if self._owned_condition_rows() else {}),
         )
 
         # ---- CLAMP WINDOWS TO A PRE-EPOCHED FILE'S REAL EXTENT ----
@@ -2050,6 +2067,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
             _chan_list = params.get("analysis_channels") or [params["channel_idx"]]
             _chan_names = params.get("channel_names") or []
             _chan_setups = params.get("chan_settings") or {}
+            # (channel name, file name, reason) for every file that raised on
+            # any pass, so the completion message can say the run was partial.
+            _run_failures = []
 
             for _pass, _ch in enumerate(_chan_list, start=1):
                 _nm = _chan_names[_ch] if _ch < len(_chan_names) else f"channel {_ch}"
@@ -2078,7 +2098,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                 _src_raw = (params.get("event_sources") or {}).get(_ch) or []
                 _own_sources = [_ES_worker.from_dict(_d) for _d in _src_raw]
 
-                run_pipeline(
+                _outcome = run_pipeline(
                     input_path           = params["input_path"],
                     nibs_record          = params.get("nibs_record"),
                     marker_name          = marker,
@@ -2183,6 +2203,26 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                     wide_window_s         = params.get("wide_window_s", 3.0),
                     derivatives_root     = params["derivatives_root"],
                 )
+                for _fname, _why in ((_outcome or {}).get("failed") or []):
+                    _run_failures.append((_nm, _fname, _why))
+
+            # run_pipeline catches an error per file so the other files in a
+            # folder still run, which meant a recording that crashed part way
+            # through still reached "Analysis complete!", was auto-saved and
+            # was marked complete in the dataset queue. A file that failed on
+            # any channel is now reported through the "failed" outcome, which
+            # does none of those things.
+            if _run_failures:
+                _what = "; ".join(
+                    (f"{_f} on {_c}" if len(_chan_list) > 1 else _f)
+                    + f" ({_w})" for _c, _f, _w in _run_failures)
+                self.msg_q.put(("log",
+                    f"⚠️  Analysis finished with errors: {_what}. The outputs "
+                    f"are incomplete and the file has not been marked "
+                    f"complete."))
+                self.msg_q.put(("progress", 100))
+                self.msg_q.put(("failed", _what))
+                return
 
             self.msg_q.put(("log", "✅ Analysis complete!"))
             self.msg_q.put(("progress", 100))
@@ -2236,6 +2276,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         file_menu.add_command(
             label="Re-run study from saved sessions\u2026",
             command=self.reprocess_study)
+        file_menu.add_command(
+            label="Migrate study to BIDS layout\u2026",
+            command=self.migrate_study_layout)
         file_menu.add_separator()
         file_menu.add_command(label="Exit",          command=self._shutdown)
 
@@ -2993,13 +3036,14 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
             "latency_muscle_map":    dict(self.latency_muscle_map),
         }
         # ── Compute study root for relative path storage ──────────────────
-        # The JSON lives at:  <study_root>/derivatives/<sub>/<ses>/<name>.json
-        # Walk up 3 levels from save_dir to get study_root.
+        # The study folder is the parent of the enclosing derivatives/ folder,
+        # found by name: the session sits three folders below it in the legacy
+        # layout and five in the current one (.../mep-cmap-analyser/sub/ses/emg).
         # Paths stored as relative to study_root so the file is portable
         # across computers (OneDrive, different user home folders, etc.).
+        from .bids import study_root_for as _study_root_for
         _json_deriv_dir = save_dir
-        _study_root_for_json = os.path.dirname(
-            os.path.dirname(os.path.dirname(_json_deriv_dir)))
+        _study_root_for_json = _study_root_for(_json_deriv_dir)
 
         def _rel(p):
             """Store p relative to study root; fall back to basename if outside."""
@@ -3040,7 +3084,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
             # None of them were saved, so reopening a session lost every
             # condition assigned in it -- and silently, because the analysis
             # still ran on the stimulus types underneath.
-            "condition_event_rows": list(self.condition_event_rows or []),
+            # Only rows applied to this recording, or another file's events
+            # would be saved into this one's session and restored with it.
+            "condition_event_rows": list(self._owned_condition_rows()),
             "condition_map":        {k: list(v) for k, v
                                      in (self.condition_map or {}).items()},
             "condition_rows":       [
@@ -3124,6 +3170,110 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
             # discards it and calls this, so pinning it there did nothing.
             prefix_override=getattr(self, "_bids_prefix_override", None))
 
+    def _owned_condition_rows(self) -> list:
+        """The applied condition rows, if they belong to the open recording.
+
+        Every reader of condition_event_rows goes through here -- the
+        analysis snapshot, the session save and the Conditions tab's merge --
+        so rows applied to one recording cannot be used for another, however
+        the second one came to be open. The reset on opening a file clears
+        them as well; this is the check that does not depend on every load
+        path remembering to.
+        """
+        from .conditions import rows_for_recording
+        fp = self.file_path.get() if hasattr(self, "file_path") else ""
+        return rows_for_recording(getattr(self, "condition_event_rows", None),
+                                  getattr(self, "_cond_rows_path", ""), fp)
+
+    def _archive_legacy_layout(self):
+        """Move the open recording's pre-1.4.8 outputs aside after a re-run.
+
+        Called once the run has finished AND its session has been saved into
+        the current layout (derivatives/mep-cmap-analyser/sub/ses/emg); before
+        that, the legacy session is the only copy of the analyst's inspector
+        edits on disk. Leaving the legacy copy would make Stage 2 count the
+        recording twice. Never raises: housekeeping must not fail a run.
+        """
+        try:
+            from .layout_migration import archive_legacy_for_recording
+            fp = self.file_path.get()
+            root = (self.derivatives_path.get()
+                    if hasattr(self, "derivatives_path") else "") \
+                or os.path.dirname(fp)
+            archive_legacy_for_recording(
+                fp, getattr(self, "study_metadata", None), root,
+                self.session_path(), log_callback=self.log)
+        except Exception as exc:                      # noqa: BLE001 — reported
+            self.log(f"   ⚠️  Could not move this recording's outputs from the "
+                     f"old folder layout ({type(exc).__name__}: {exc}). They "
+                     f"can be moved with File → Migrate study to BIDS layout…")
+
+    def migrate_study_layout(self):
+        """File → Migrate study to BIDS layout…
+
+        Moves a whole study's pre-1.4.8 outputs from derivatives/sub/ses/ into
+        derivatives/mep-cmap-analyser/sub/ses/emg/, after showing what will
+        happen. Recordings already re-run in the new layout have their old
+        copy archived instead. Nothing is deleted.
+        """
+        if getattr(self, "_analysis_running", False):
+            messagebox.showinfo(
+                "Analysis running",
+                "Wait for the analysis to finish before migrating a study.",
+                parent=self.root)
+            return
+        start = (self.derivatives_path.get()
+                 if hasattr(self, "derivatives_path") else "") or ""
+        folder = filedialog.askdirectory(
+            title="Choose the study folder (the one containing derivatives/)",
+            initialdir=start or None, parent=self.root)
+        if not folder:
+            return
+        from . import layout_migration as LM
+        try:
+            plan = LM.plan_migration(folder)
+        except Exception as exc:                      # noqa: BLE001 — reported
+            messagebox.showerror("Migrate study",
+                                 f"Could not read the study:\n\n{exc}",
+                                 parent=self.root)
+            return
+        if not plan.moves and not plan.archive:
+            msg = ("Nothing in this study is in the old folder layout, so "
+                   "there is nothing to migrate.")
+            if plan.conflicts or plan.leftovers:
+                msg += "\n\n" + plan.describe()
+            messagebox.showinfo("Migrate study", msg, parent=self.root)
+            return
+        if not messagebox.askyesno(
+                "Migrate study to BIDS layout",
+                plan.describe()
+                + "\n\nFiles are moved, not copied, and nothing is deleted. A "
+                  "record of every move is written beside derivatives/. "
+                  "Pause OneDrive first if it is syncing this folder.\n\n"
+                  "Go ahead?",
+                parent=self.root):
+            return
+        self.log(f"🗂  Migrating {plan.study_root} to the BIDS layout…")
+        out = LM.apply_migration(plan, log_callback=self.log)
+        # The open queue restores each recording from its stored session
+        # path, which the migration has just moved.
+        try:
+            if getattr(self, "_dataset", None) is not None:
+                _n = LM.remap_session_paths(self._dataset.files, plan)
+                if _n:
+                    self._dataset.save()
+                    self.log(f"   Updated {_n} queue entr"
+                             f"{'y' if _n == 1 else 'ies'} to the new location.")
+        except Exception as exc:                      # noqa: BLE001 — reported
+            self.log(f"   ⚠️  Could not update the queue: {exc}")
+        messagebox.showinfo(
+            "Migrate study",
+            f"Moved {out['moved']} file(s) or folder(s)."
+            + (f"\n{len(out['failed'])} could not be moved; see the log."
+               if out["failed"] else "")
+            + f"\n\nRecord: {os.path.basename(out['manifest'])}",
+            parent=self.root)
+
     def _autosave_session(self):
         """Silently save the session to the BIDS derivatives folder.
 
@@ -3132,9 +3282,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         are never lost if the user forgets to click Save Session manually.
 
         The file is written as:
-            <derivatives_root>/derivatives/<sub>/<ses>/<bids_prefix>_session.json
-        or, if no derivatives root is configured:
-            <source_file_dir>/derivatives/<sub>/<ses>/<bids_prefix>_session.json
+            <study>/derivatives/mep-cmap-analyser/<sub>/<ses>/emg/<bids_prefix>_session.json
+        where <study> is the configured derivatives root or, if none is
+        configured, the source file's folder (rule: bids.session_output_dir).
         """
         try:
             import datetime, json
@@ -3160,7 +3310,8 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                            else source_dir)
 
             sub_ses     = meta.sub_ses_path() if meta else os.path.join("sub-unknown", "ses-01")
-            # Avoid derivatives/derivatives/ — same fix as in pipeline.py
+            # The path itself comes from session_path(), which shares
+            # bids.session_output_dir with the pipeline's outputs.
             save_path = self.session_path()
             if not save_path:
                 return
@@ -3268,11 +3419,11 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                 return stored          # absolute and valid on this machine
             if not json_path:
                 return stored          # no anchor — return as-is
-            # Derive study root from JSON location:
-            # JSON lives at <study_root>/derivatives/<sub>/<ses>/<name>.json
-            # Walk up 3 levels from the JSON's directory.
+            # Derive study root from JSON location: the parent of the
+            # enclosing derivatives/ folder, in either layout (bids.study_root_for).
+            from .bids import study_root_for as _study_root_for
             json_dir    = os.path.dirname(os.path.abspath(json_path))
-            study_root  = os.path.dirname(os.path.dirname(os.path.dirname(json_dir)))
+            study_root  = _study_root_for(json_path)
             candidate   = os.path.normpath(
                 os.path.join(study_root, stored.replace("\\", os.sep)))
             if os.path.exists(candidate):
@@ -3315,6 +3466,12 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         # loads as a recording with none assigned -- the state every session
         # had until now.
         self.condition_event_rows = list(sess.get("condition_event_rows") or [])
+        # They belong to the recording this session describes: the one it
+        # names, or the one already open when the caller keeps its path (a
+        # recording that has moved since the session was written).
+        from .conditions import recording_key as _rk
+        _owner_fp = self.file_path.get() if preserve_file_path else fp
+        self._cond_rows_path = _rk(_owner_fp) if self.condition_event_rows else ""
         self.condition_map = {k: tuple(v) for k, v
                               in (sess.get("condition_map") or {}).items()}
         try:
@@ -3561,6 +3718,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                       "delay_source_map", "reference_map", "latency_map",
                       "latency_stim_map", "latency_muscle_map", "csp_types",
                       "window_map", "condition_map", "condition_event_rows",
+                      "_cond_rows_path",
                       "_chan_settings", "_cond_rows", "_cond_epochs"):
             if hasattr(self, _attr):
                 _keep[_attr] = getattr(self, _attr)
@@ -4025,6 +4183,17 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         # Event sources describe one recording's channels and markers, so they
         # cannot carry to another file any more than a channel index can.
         self.event_sources = {}
+        # Conditions are a list of THIS recording's events with onsets, so
+        # they are file-level too. Kept across files, the previous recording's
+        # events were analysed against the next one's EMG, and merged into its
+        # events file by the next Apply. A session restored after this reset
+        # puts back the ones that belong to the file being opened.
+        self.condition_event_rows = []
+        self.condition_map = {}
+        self._cond_rows_path = ""
+        self._cond_rows = []
+        self._cond_epochs = {}
+        self._cond_confirmed_path = None
 
         # ── 0. Per-channel 1a setup is FILE-level, not session-level ──────────
         #
@@ -5935,6 +6104,16 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                      if hasattr(self, "derivatives_path") else ""))
                 if _sp:
                     _sess_candidates.append(pathlib.Path(_sp))
+                # And where versions before 1.4.8 kept it, or a reset of a
+                # not-yet-migrated study would leave its session to be
+                # restored on the next open.
+                _sp_old = session_path_for(
+                    str(p), _meta,
+                    (self.derivatives_path.get()
+                     if hasattr(self, "derivatives_path") else ""),
+                    legacy=True)
+                if _sp_old:
+                    _sess_candidates.append(pathlib.Path(_sp_old))
             except Exception:               # noqa: BLE001 — never block a reset
                 pass
             # The pre-derivatives location too, so a file last touched by an

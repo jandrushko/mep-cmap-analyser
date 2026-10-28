@@ -629,17 +629,19 @@ def find_session_for(source_path: str, metadata=None,
     participant id was corrected, leaving the old one orphaned -- the most
     recently written wins, since that is the one the analyst last worked in.
     """
-    from .bids import session_path_for
+    from .bids import session_path_for, derivatives_dir
 
-    direct = session_path_for(source_path, metadata, derivatives_root)
-    if direct and os.path.isfile(direct):
-        return direct
+    # The current layout first, then where versions before 1.4.8 wrote it.
+    for _legacy in (False, True):
+        direct = session_path_for(source_path, metadata, derivatives_root,
+                                  legacy=_legacy)
+        if direct and os.path.isfile(direct):
+            return direct
     if not source_path:
         return ""
 
-    root = derivatives_root or os.path.dirname(source_path)
-    if os.path.basename(os.path.normpath(root)).lower() != "derivatives":
-        root = os.path.join(root, "derivatives")
+    # The whole derivatives folder, which holds both layouts.
+    root = derivatives_dir(derivatives_root or os.path.dirname(source_path))
     if not os.path.isdir(root):
         return ""
 

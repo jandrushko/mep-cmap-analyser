@@ -32,13 +32,18 @@ import numpy as np
 import pandas as pd
 import matplotlib
 import matplotlib.backends.backend_agg
+# Imported explicitly because the figures below are built as
+# matplotlib.figure.Figure. "import matplotlib" does not load submodules, so
+# this only ever worked because app.py had imported it first; called from a
+# script, every file failed at its first figure.
+import matplotlib.figure
 from scipy.signal import butter, filtfilt, sosfiltfilt
 from scipy.stats import zscore
 from numpy.random import default_rng
 
 from .compat import _np_trapz, _np_ptp
 from .bids import _sanitise_bids_label, StudyMetadata
-from .utils import _add_time_and_digmark
+from .utils import _add_time_and_digmark, filename_token
 from .io import extract_emg_waveform_and_fs, extract_stim_times
 from .filters import adaptive_mains_cancel, design_notch_sos
 from .detection     import (compute_ptp, compute_rms, compute_auc,
@@ -412,6 +417,30 @@ def _make_bids_prefix(meta_prefix, file_stem):
     return f"{meta_prefix}_{suffix}"
 
 
+def events_past_recording_end(stim_times, duration_s, tolerance_s=1.0):
+    """How many events fall after the end of the recording.
+
+    Returns ``(n_past_end, n_events)``. ``tolerance_s`` absorbs rounding in
+    an events file and a stimulus delivered in the last moment of a
+    recording; anything later than that cannot be a stimulus in this file.
+    A duration of zero or less (unknown) reports nothing.
+    """
+    n_all = n_past = 0
+    try:
+        limit = float(duration_s) + float(tolerance_s)
+    except (TypeError, ValueError):
+        return 0, 0
+    for times in (stim_times or {}).values():
+        for t in (times or []):
+            n_all += 1
+            try:
+                if duration_s > 0 and float(t) > limit:
+                    n_past += 1
+            except (TypeError, ValueError):
+                continue
+    return n_past, n_all
+
+
 def pipeline_load_file(file_path, channel_idx, marker_name,
                        crop_ranges=None, crop_start=None, crop_end=None,
                        sources=None, channel_names=None, warn=None,
@@ -449,6 +478,21 @@ def pipeline_load_file(file_path, channel_idx, marker_name,
         # trials belong together.
         from .conditions import group_events
         stim_times, _decoded = group_events(event_rows)
+        # An events file says nothing about which recording it was written
+        # for, and these rows are used INSTEAD of the file's own markers. A
+        # recording cannot have stimuli after it ends, so events that do are
+        # the plainest sign the rows came from another file -- which is how
+        # one recording was analysed at another's stimulus times without a
+        # word being said.
+        _n_past, _n_all = events_past_recording_end(
+            stim_times, (len(emg) / fs) if fs else 0.0)
+        if _n_past and warn is not None:
+            warn(f"{_n_past} of {_n_all} event(s) in the assigned conditions "
+                 f"fall after the end of this recording "
+                 f"({len(emg) / fs:.1f} s). The events may belong to a "
+                 f"different recording: check "
+                 f"{os.path.splitext(os.path.basename(file_path))[0]}"
+                 f"_events.tsv and re-apply the conditions.")
     elif sources:
         from .io import extract_events
         stim_times, _warnings = extract_events(file_path, sources,
@@ -2494,7 +2538,7 @@ def pipeline_generate_plots(trace_stats, segments_metadata,
             ax_i.set_xlabel("Latency (ms)")
             ax_i.set_ylabel(_ylab("EMG Amplitude"))
             ax_i.legend()
-            safe = label_name.replace(" ", "_")
+            safe = filename_token(label_name.replace(" ", "_"))
             out_i = os.path.join(figures_out, f"{bids_prefix}_stim-{safe}_traces.png")
             matplotlib.backends.backend_agg.FigureCanvasAgg(fig_i).print_figure(out_i, dpi=600)
             fig_i.clf()
@@ -2831,7 +2875,7 @@ def pipeline_generate_averaged_plots(means, fs, cfg, figures_out, bids_prefix,
         ax.set_ylabel(f"EMG ({unit})" if unit else "EMG")
         ax.legend(loc="upper right", frameon=False)
         _pth = os.path.join(figures_out,
-                            f"{bids_prefix}_stim-{stim_type}_averaged.png")
+                            f"{bids_prefix}_stim-{filename_token(stim_type)}_averaged.png")
         matplotlib.backends.backend_agg.FigureCanvasAgg(fig).print_figure(_pth, dpi=600)
         fig.clf()
         paths.append(_pth)
@@ -2886,6 +2930,31 @@ def pipeline_write_segments_bundle(bundle, results_out, bids_prefix,
     log_callback(f"💾 Waveform bundle written: {os.path.basename(out_path)} "
                  f"({len(bundle)} group(s))")
     return out_path
+
+
+def _report_run_outcome(failed, n_files, log_callback=print,
+                        ok_message="✅ All results saved."):
+    """Say how the run actually ended, and return it.
+
+    ``failed`` is a list of ``(file_name, reason)`` for recordings that raised
+    part way through. A failed file may have written some outputs (the trial
+    CSVs come early) and none of its results, so a partial run is reported as
+    one rather than as "All results saved".
+
+    Returns ``{"n_files": int, "failed": [(name, reason), ...], "ok": bool}``
+    so the caller can say the same thing in its own completion message.
+    """
+    failed = list(failed or [])
+    if failed:
+        _names = ", ".join(n for n, _r in failed)
+        log_callback(
+            f"⚠️  Finished with errors: {len(failed)} of {n_files} file(s) "
+            f"failed ({_names}). Outputs for "
+            f"{'that file' if len(failed) == 1 else 'those files'} are "
+            f"missing or incomplete; see the error above.")
+    else:
+        log_callback(ok_message)
+    return {"n_files": int(n_files), "failed": failed, "ok": not failed}
 
 
 def run_pipeline(input_path,
@@ -3055,19 +3124,15 @@ def run_pipeline(input_path,
     meta         = study_metadata or StudyMetadata()
     _source_dir  = os.path.dirname(input_path) or "."
 
-    def _make_deriv_base(root):
-        """Build the derivatives base path, avoiding derivatives/derivatives."""
-        norm = os.path.basename(os.path.normpath(root)).lower()
-        if norm == "derivatives":
-            # root IS the derivatives folder — don't append another level
-            return os.path.join(root, meta.sub_ses_path())
-        else:
-            return os.path.join(root, "derivatives", meta.sub_ses_path())
-
-    _deriv_base = (_make_deriv_base(derivatives_root)
-                   if derivatives_root
-                   else os.path.join(_source_dir, "derivatives", meta.sub_ses_path()))
+    # derivatives/mep-cmap-analyser/sub-XX/ses-YY/emg -- one rule, in bids.py,
+    # shared with the session JSON so a session always sits beside the outputs
+    # it describes (archive_superseded relies on exactly that).
+    from .bids import session_output_dir, write_derivatives_description
+    _study_root = derivatives_root or _source_dir
+    _deriv_base = session_output_dir(_study_root, meta)
     os.makedirs(_deriv_base, exist_ok=True)
+    # Every BIDS derivative dataset carries a description of what made it.
+    write_derivatives_description(_study_root)
     # Always ensure _bids_prefix is unique per source file.
     # For BIDS-named files the stem is already unique and embedded in the prefix.
     # For non-BIDS files (e.g. LabChart exports) the user enters shared metadata
@@ -3176,6 +3241,11 @@ def run_pipeline(input_path,
     rejected_outlier_log = []
     rng = default_rng(42)
 
+    # Files that raised part way through. Each is logged where it fails, but
+    # the run used to end with "All results saved" regardless, so a recording
+    # that wrote half its outputs and no results read as a clean success.
+    _failed_files = []
+
     # ── Per-file loop ─────────────────────────────────────────────────────────
     for file_i, raw_file in enumerate(txt_files):
         name = pathlib.Path(raw_file).stem
@@ -3258,7 +3328,7 @@ def run_pipeline(input_path,
                 df_all   = pd.DataFrame(emg_all).T
                 df_all   = _add_time_and_digmark(df_all, samples_before, fs)
                 df_all.to_csv(os.path.join(stim_out_all,
-                              add_tag(f"{stim_type}.csv")), index=False)
+                              add_tag(f"{filename_token(stim_type)}.csv")), index=False)
 
                 fig_all = matplotlib.figure.Figure(figsize=(12, 6))
                 ax_all  = fig_all.add_subplot(111)
@@ -3274,7 +3344,7 @@ def run_pipeline(input_path,
                 ax_all.set_ylabel(f"EMG ({unit})" if unit else "EMG")
                 ax_all.legend()
                 matplotlib.backends.backend_agg.FigureCanvasAgg(fig_all).print_figure(
-                    os.path.join(figures_all, add_tag(f"stim-{stim_type}_traces_all.png")),
+                    os.path.join(figures_all, add_tag(f"stim-{filename_token(stim_type)}_traces_all.png")),
                     dpi=600)
                 fig_all.clf()
 
@@ -3335,7 +3405,7 @@ def run_pipeline(input_path,
                 df_clean = pd.DataFrame(emg_segs).T
                 df_clean = _add_time_and_digmark(df_clean, samples_before, fs)
                 df_clean.to_csv(os.path.join(stim_out,
-                                add_tag(f"{stim_type}.csv")), index=False)
+                                add_tag(f"{filename_token(stim_type)}.csv")), index=False)
 
                 # Always pass ALL segments (segs_all) to the inspector so
                 # that segment indices align with pipeline_quantify_segments.
@@ -3668,6 +3738,7 @@ def run_pipeline(input_path,
             import traceback
             log_callback(f"❌ Error processing {name}: {e}")
             log_callback(traceback.format_exc())
+            _failed_files.append((name, f"{type(e).__name__}: {e}"))
 
         if progress_callback:
             progress_callback(((file_i + 1) / len(txt_files)) * 100)
@@ -3691,8 +3762,8 @@ def run_pipeline(input_path,
             log_callback("\u26a0\ufe0f  Averaged mode: no rows produced \u2014 nothing written.")
         if progress_callback:
             progress_callback(100)
-        log_callback("\u2705 Averaged analysis complete.")
-        return
+        return _report_run_outcome(_failed_files, len(txt_files), log_callback,
+                                   ok_message="\u2705 Averaged analysis complete.")
 
     # ── Stage 9a: EMG excitability compensation (Carson 2026, QR) ─────────
     # Runs unconditionally (independent of normalisation). Fits QR per StimType
@@ -3805,7 +3876,8 @@ def run_pipeline(input_path,
 
     if progress_callback:
         progress_callback(100)
-    log_callback("✅ All results saved.")
+    return _report_run_outcome(_failed_files, len(txt_files), log_callback,
+                               ok_message="✅ All results saved.")
 
 
 # ─────────────────────────── End of run_pipeline ─────────────────────────────

@@ -12,7 +12,7 @@ import re
 import datetime
 from dataclasses import dataclass, field, asdict
 
-TOOL_VERSION = "1.4.7"
+TOOL_VERSION = "1.4.8"
 
 
 @dataclass
@@ -161,13 +161,18 @@ def make_bids_prefix(meta_prefix: str, file_stem: str) -> str:
 
 def session_path_for(source_path: str, metadata=None,
                      derivatives_root: str = "",
-                     prefix_override: str = "") -> str:
+                     prefix_override: str = "",
+                     legacy: bool = False) -> str:
     """Where a recording's session JSON lives.
 
-        <derivatives_root>/derivatives/<sub>/<ses>/<bids_prefix>_session.json
+        <study>/derivatives/mep-cmap-analyser/<sub>/<ses>/emg/<bids_prefix>_session.json
 
-    falling back to the source file's own folder when no derivatives root is
-    configured.
+    or, with ``legacy=True``, where versions before 1.4.8 put it:
+
+        <study>/derivatives/<sub>/<ses>/<bids_prefix>_session.json
+
+    The study folder is the configured derivatives root, falling back to the
+    source file's own folder when none is configured.
 
     Derivatives rather than beside the recording, because a session is
     something the tool produced; raw data is what the amplifier and the
@@ -201,11 +206,131 @@ def session_path_for(source_path: str, metadata=None,
         bids_prefix = str(prefix_override)
     source_dir = os.path.dirname(source_path)
     deriv_root = derivatives_root or source_dir
-    sub_ses = (metadata.sub_ses_path() if metadata
-               else os.path.join("sub-unknown", "ses-01"))
-    # Avoid derivatives/derivatives/ — same fix as in pipeline.py
-    if os.path.basename(os.path.normpath(deriv_root)).lower() == "derivatives":
-        save_dir = os.path.join(deriv_root, sub_ses)
-    else:
-        save_dir = os.path.join(deriv_root, "derivatives", sub_ses)
+    save_dir = (legacy_session_output_dir(deriv_root, metadata) if legacy
+                else session_output_dir(deriv_root, metadata))
     return os.path.join(save_dir, f"{bids_prefix}_session.json")
+
+
+# ── The derivatives layout ───────────────────────────────────────────────────
+#
+#   <study>/derivatives/mep-cmap-analyser/dataset_description.json
+#   <study>/derivatives/mep-cmap-analyser/sub-XX/ses-YY/emg/
+#       <prefix>_session.json, trials/, results/, figures/, ...
+#
+# BIDS derivatives mirror the raw layout -- sub, ses, then the datatype folder
+# -- and sit in a folder named for the pipeline that made them, described by a
+# dataset_description.json of DatasetType "derivative". EMG has been a BIDS
+# datatype since 1.11.0.
+#
+# Before v1.4.8 everything went straight into <study>/derivatives/sub-XX/ses-YY/.
+# That LEGACY layout is still read -- sessions restore from it and group-level
+# scans find it -- and is moved aside, not deleted, when a recording is re-run
+# or a study is migrated (mep_cmap.layout_migration).
+
+PIPELINE_NAME = "mep-cmap-analyser"
+DATATYPE = "emg"
+BIDS_VERSION = "1.11.0"
+CODE_URL = "https://github.com/jandrushko/mep-cmap-analyser"
+
+
+def derivatives_dir(root: str) -> str:
+    """The study's ``derivatives`` folder, from whatever root was configured.
+
+    The analyst may point the tool at the study folder, at its
+    ``derivatives`` folder, or at this pipeline's folder inside it. All three
+    mean the same place; appending blindly is what produced
+    ``derivatives/derivatives/`` in the past.
+    """
+    root = os.path.normpath(root or ".")
+    base = os.path.basename(root).lower()
+    if base == PIPELINE_NAME:
+        return os.path.dirname(root)
+    if base == "derivatives":
+        return root
+    return os.path.join(root, "derivatives")
+
+
+def pipeline_dir(root: str) -> str:
+    """``<study>/derivatives/mep-cmap-analyser``."""
+    return os.path.join(derivatives_dir(root), PIPELINE_NAME)
+
+
+def _sub_ses(metadata) -> str:
+    return (metadata.sub_ses_path() if metadata
+            else os.path.join("sub-unknown", "ses-01"))
+
+
+def session_output_dir(root: str, metadata=None) -> str:
+    """Where a recording's outputs and session JSON go: ``.../sub/ses/emg``."""
+    return os.path.join(pipeline_dir(root), _sub_ses(metadata), DATATYPE)
+
+
+def legacy_session_output_dir(root: str, metadata=None) -> str:
+    """Where versions before 1.4.8 wrote them: ``derivatives/sub/ses``."""
+    return os.path.join(derivatives_dir(root), _sub_ses(metadata))
+
+
+def is_in_pipeline_dir(path: str) -> bool:
+    """True if ``path`` sits inside a ``derivatives/mep-cmap-analyser`` tree."""
+    parts = [p.lower() for p in os.path.normpath(os.path.abspath(path)).split(os.sep)]
+    return any(a == "derivatives" and b == PIPELINE_NAME
+               for a, b in zip(parts, parts[1:]))
+
+
+def study_root_for(path: str) -> str:
+    """The study folder a derivatives file belongs to.
+
+    The parent of the nearest enclosing ``derivatives`` folder. Session JSONs
+    store their recording's path relative to this so a study can move between
+    computers; both the save and the load used to count three folders up from
+    the session, which was right for the legacy layout only and would have
+    resolved every recording against the wrong folder once sessions moved
+    into ``mep-cmap-analyser/.../emg``. Falls back to three folders up when
+    no ``derivatives`` folder encloses the path.
+    """
+    d = os.path.abspath(path)
+    # A file (existing, or named with an extension) answers for its folder; a
+    # folder may not exist yet when a session is about to be saved into it.
+    if os.path.isfile(d) or (not os.path.isdir(d) and os.path.splitext(d)[1]):
+        d = os.path.dirname(d)
+    probe = d
+    while True:
+        if os.path.basename(probe).lower() == "derivatives":
+            return os.path.dirname(probe)
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            break
+        probe = parent
+    return os.path.dirname(os.path.dirname(os.path.dirname(d)))
+
+
+def write_derivatives_description(root: str, version: str = "") -> str:
+    """Create ``dataset_description.json`` for this pipeline's derivatives.
+
+    Required of every BIDS derivative dataset. Written once and then left
+    alone: an analyst who has added a name, authors or a licence has made it
+    theirs. Returns the path; never raises, because a missing description is
+    a validation warning and not a reason to lose an analysis.
+    """
+    import json
+    try:
+        pdir = pipeline_dir(root)
+        os.makedirs(pdir, exist_ok=True)
+        path = os.path.join(pdir, "dataset_description.json")
+        if os.path.exists(path):
+            return path
+        desc = {
+            "Name": "MEP-CMAP Analyser derivatives",
+            "BIDSVersion": BIDS_VERSION,
+            "DatasetType": "derivative",
+            "GeneratedBy": [{
+                "Name": "MEP-CMAP Analyser",
+                "Version": version or TOOL_VERSION,
+                "CodeURL": CODE_URL,
+            }],
+        }
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(desc, fh, indent=2)
+        return path
+    except Exception:                       # noqa: BLE001 - never block a run
+        return ""

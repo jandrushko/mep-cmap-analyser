@@ -69,8 +69,10 @@ def sidecar_path(file_path: str, suffix: str) -> Path:
     root = _deriv_root[0]
     if not root:
         return legacy_path(file_path, suffix)
-    base = os.path.basename(os.path.normpath(root)).lower()
-    parent = root if base == "derivatives" else os.path.join(root, "derivatives")
+    # The study's derivatives/ folder whichever of the study folder, the
+    # derivatives folder or the pipeline folder was configured.
+    from .bids import derivatives_dir
+    parent = derivatives_dir(root)
     return Path(parent) / _SUBDIR / (Path(file_path).stem + suffix)
 
 

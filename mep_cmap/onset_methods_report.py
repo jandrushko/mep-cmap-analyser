@@ -306,7 +306,10 @@ def _display(method):
 
 
 def _safe(stim_type):
-    return "".join(c if c.isalnum() or c in "-_" else "_" for c in str(stim_type))
+    # The shared rule. The old replace-with-underscore mapped "=", ">" and "?"
+    # all to "_", so one stimulus type's figure overwrote another's.
+    from .utils import filename_token
+    return filename_token(stim_type)
 
 
 def plot_onset_methods_on_trace(stim_type, segs, fs, pre_ms, rows,

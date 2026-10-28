@@ -565,12 +565,20 @@ def run(context):
             fig_dir = os.path.join(fig_root, f"{context.bids_prefix}_{ADDON_NAME}_figures")
             os.makedirs(fig_dir, exist_ok=True)
             n_png = 0
+            try:
+                # Stimulus types such as ">" or "?" cannot go into a filename.
+                from mep_cmap.utils import filename_token as _ftok
+            except Exception:              # add-on used outside the package
+                def _ftok(label):
+                    return "".join(c if (c.isalnum() or c in "-_") else "_"
+                                   for c in str(label))
             for stim_type, items in details_by_stim.items():
+                _st_tok = _ftok(stim_type)
                 for (ti, det, fe, fnd, yv) in items:
                     if det is not None:
                         _plot_trial(det, stim_type, ti, fe, "uV",
                                     os.path.join(fig_dir,
-                                    f"{context.bids_prefix}_stim-{stim_type}_trial-{ti:03d}.png"))
+                                    f"{context.bids_prefix}_stim-{_st_tok}_trial-{ti:03d}.png"))
                         n_png += 1
                 # This type's own axis, not whichever one the measuring loop
                 # happened to leave behind: the figures are drawn in a second
@@ -579,7 +587,7 @@ def run(context):
                                  else context.time_ms, float)
                 _plot_montage(items, stim_type, "uV", _mt,
                               os.path.join(fig_dir,
-                              f"{context.bids_prefix}_stim-{stim_type}_montage.png"))
+                              f"{context.bids_prefix}_stim-{_st_tok}_montage.png"))
                 n_png += 1
             log(f"mepfeatx: {n_png} figure(s) -> {os.path.basename(fig_dir)}/")
         except Exception as ex:

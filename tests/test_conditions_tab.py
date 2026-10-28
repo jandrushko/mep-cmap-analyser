@@ -267,7 +267,7 @@ def test_loading_a_file_lands_on_conditions():
 
 def test_confirming_goes_on_to_the_labels_tab():
     body = _method("_cond_apply")
-    assert "_build_labels_tab(sorted(groups))" in body
+    assert "_build_labels_tab(sorted(self._cond_groups_in_range(groups)))" in body
     # The navigation is done here, not inside the rebuild: that method runs on
     # every rebuild, so navigating from it sent channel switches and confirms
     # somewhere unexpected too.
@@ -801,7 +801,7 @@ def test_the_channel_is_chosen_before_the_table_is_built():
     displayed with no way to notice."""
     body = _method("_cond_apply")
     i = body.index("self.channel_idx = _first")
-    j = body.index("_build_labels_tab(sorted(groups))")
+    j = body.index("_build_labels_tab(sorted(self._cond_groups_in_range(groups)))")
     assert i < j, "the channel must be selected before the rebuild"
 
 
