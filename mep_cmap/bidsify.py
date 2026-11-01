@@ -630,12 +630,15 @@ def find_session_for(source_path: str, metadata=None,
     recently written wins, since that is the one the analyst last worked in.
     """
     from .bids import session_path_for, derivatives_dir
+    from .utils import long_path
 
     # The current layout first, then where versions before 1.4.8 wrote it.
+    # Checked in Windows' extended-length form: a plain path over 260
+    # characters reports False, so a session in a deep study would be missed.
     for _legacy in (False, True):
         direct = session_path_for(source_path, metadata, derivatives_root,
                                   legacy=_legacy)
-        if direct and os.path.isfile(direct):
+        if direct and os.path.isfile(long_path(direct)):
             return direct
     if not source_path:
         return ""

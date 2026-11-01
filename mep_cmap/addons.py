@@ -118,6 +118,12 @@ def load_contexts(segments_npz_path, config=None, log=print):
     # and the per-trial table below was looked for somewhere it never is, which
     # left context.trials silently None rather than raising.
     from .results_layout import results_root_for
+    # In Windows' extended-length form, as the pipeline's own outputs are:
+    # add-on figures sit as deep and carry the same long prefix, so they hit
+    # the 260-character limit first. Every path an add-on joins onto these
+    # inherits the exemption.
+    from .utils import long_path
+    segments_npz_path = long_path(segments_npz_path)
     results_dir = results_root_for(segments_npz_path)
     # figures/ is the sibling of results/ in the BIDS derivatives layout
     figures_dir = os.path.join(os.path.dirname(results_dir), "figures")
@@ -264,7 +270,12 @@ def run_addon(entry, context):
     """
     try:
         paths = entry["module"].run(context) or []
-        return {"ok": True, "paths": [str(p) for p in paths], "error": None}
+        # Contexts carry Windows' extended-length paths so add-ons can write
+        # past 260 characters; what they report back is for people and logs,
+        # so it is returned in the ordinary form.
+        from .utils import display_path
+        return {"ok": True, "paths": [display_path(str(p)) for p in paths],
+                "error": None}
     except Exception:
         return {"ok": False, "paths": [], "error": traceback.format_exc()}
 

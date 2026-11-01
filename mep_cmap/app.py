@@ -3316,7 +3316,11 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
             if not save_path:
                 return
             save_dir = os.path.dirname(save_path)
-            os.makedirs(save_dir, exist_ok=True)
+            # Written in Windows' extended-length form so a deep study folder
+            # cannot fail the save; save_path itself stays plain, because it
+            # is stored in the queue and used for the session's relative paths.
+            from .utils import long_path as _lp
+            os.makedirs(_lp(save_dir), exist_ok=True)
 
             # ── Serialise (same logic as save_session, no dialog) ─────────────
             def _j(v):
@@ -3337,7 +3341,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
             session = self._session_payload(fp, sm, meta_s,
                                             save_dir, _j)
 
-            with open(save_path, "w", encoding="utf-8") as f:
+            with open(_lp(save_path), "w", encoding="utf-8") as f:
                 json.dump(session, f, indent=2)
 
             # Update the FileEntry in the dataset session
@@ -6536,11 +6540,17 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         self._current_file_entry = fe
         self.log(f"📄 Loading: {fe.basename}")
 
-        # Restore per-file session if available
-        if fe.derivatives_json and os.path.isfile(fe.derivatives_json):
+        # Restore per-file session if available. The existence check needs the
+        # extended-length form too: a plain path over 260 characters reports
+        # False on Windows, which skipped a long session without a word.
+        from .utils import long_path as _lp_chk
+        if fe.derivatives_json and os.path.isfile(_lp_chk(fe.derivatives_json)):
             try:
                 import json as _json
-                with open(fe.derivatives_json, encoding="utf-8") as fh:
+                from .utils import long_path as _lp
+                # Extended-length form: a session saved in a deep study folder
+                # must load as surely as it saved.
+                with open(_lp(fe.derivatives_json), encoding="utf-8") as fh:
                     sess = _json.load(fh)
                 self._apply_loaded_session(sess, json_path=fe.derivatives_json, preserve_file_path=True)
                 self.log(f"💾 Restored session — {len(self.segments_metadata)} segment(s) with saved edits")

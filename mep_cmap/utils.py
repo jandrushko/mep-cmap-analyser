@@ -65,3 +65,78 @@ def filename_token(label) -> str:
         else:
             out.append(ch)
     return "".join(out)
+
+
+# ── Windows long paths ───────────────────────────────────────────────────────
+#
+# Windows refuses any path over 260 characters (MAX_PATH) unless long paths
+# are switched on machine-wide, which university PCs rarely allow -- and it
+# says so as "[Errno 2] No such file or directory", not as a length problem.
+# A study kept a few folders deep in OneDrive reaches that easily: the BIDS
+# layout (derivatives/mep-cmap-analyser/sub/ses/emg), a full BIDS prefix and a
+# condition label in each figure's name came to 268 characters on a lab PC,
+# and the run failed at its first figure after writing the trial CSVs.
+#
+# The extended-length form, \\?\C:\..., is exempt from the limit with no
+# setting at all. Paths for WRITING go through long_path(); anything a person
+# reads or a file stores goes through display_path(), so the prefix never
+# reaches a log line, a session JSON or a manifest.
+
+_LONG_PREFIX = "\\\\?\\"
+_LONG_UNC_PREFIX = "\\\\?\\UNC\\"
+
+# Longest path Windows accepts without the extended-length form.
+WINDOWS_MAX_PATH = 259
+
+
+def long_path(path):
+    """``path`` in a form Windows will write however long it is.
+
+    Absolute and normalised, then prefixed with ``\\\\?\\`` (or
+    ``\\\\?\\UNC\\`` for a network share). Unchanged on other systems, for an
+    empty path, or if it is already in that form. Everything joined beneath
+    the result inherits the exemption, so prefixing an output folder once is
+    enough for every file written into it.
+    """
+    import os
+    if os.name != "nt" or not path:
+        return path
+    p = str(path)
+    if p.startswith(_LONG_PREFIX):
+        return p
+    p = os.path.abspath(p)
+    if p.startswith("\\\\"):                 # \\server\share\...
+        return _LONG_UNC_PREFIX + p[2:]
+    return _LONG_PREFIX + p
+
+
+def display_path(path):
+    """``path`` without the extended-length prefix, for logs and storage."""
+    if not path:
+        return path
+    p = str(path)
+    if p.startswith(_LONG_UNC_PREFIX):
+        return "\\\\" + p[len(_LONG_UNC_PREFIX):]
+    if p.startswith(_LONG_PREFIX):
+        return p[len(_LONG_PREFIX):]
+    return p
+
+
+def path_too_long_hint(exc):
+    """A plain explanation if ``exc`` is Windows refusing a long path; else "".
+
+    For the places the extended-length form cannot reach (a program that
+    strips it, a share that rejects it), so the analyst is told what to do
+    rather than shown "No such file or directory" for a folder that exists.
+    """
+    import os
+    if os.name != "nt" or not isinstance(exc, OSError):
+        return ""
+    names = [getattr(exc, "filename", None), getattr(exc, "filename2", None)]
+    longest = max((len(display_path(n)) for n in names if n), default=0)
+    if longest <= WINDOWS_MAX_PATH:
+        return ""
+    return (f"That path is {longest} characters long, and Windows refuses "
+            f"paths over {WINDOWS_MAX_PATH + 1} unless long paths are enabled. "
+            f"Move the study to a shorter folder (closer to the top of "
+            f"OneDrive or the drive), or shorten the condition labels.")

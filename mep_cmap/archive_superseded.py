@@ -349,21 +349,26 @@ def apply_archive(plan: ArchivePlan, archive_root: str,
     os.makedirs(archive_root, exist_ok=True)
     manifest = write_manifest(plan, archive_root)
 
+    # File operations use Windows' extended-length form: archived paths are
+    # longer than the originals (superseded_derivatives/<timestamp>/ is added),
+    # so a deep study could otherwise fail every move with "No such file".
+    # The plan and the manifest keep the plain paths.
+    from .utils import long_path as _lp
     moved, failed = 0, []
     for item in plan.items:
         target = _archive_target(item, plan, archive_root)
         try:
-            os.makedirs(os.path.dirname(target), exist_ok=True)
-            if os.path.exists(target):
+            os.makedirs(_lp(os.path.dirname(target)), exist_ok=True)
+            if os.path.exists(_lp(target)):
                 # Never overwrite inside the archive: two runs archiving the
                 # same path would otherwise lose the earlier copy, which is
                 # the one thing an archive must not do.
                 stem, ext = os.path.splitext(target)
                 n = 2
-                while os.path.exists(f"{stem}__{n}{ext}"):
+                while os.path.exists(_lp(f"{stem}__{n}{ext}")):
                     n += 1
                 target = f"{stem}__{n}{ext}"
-            shutil.move(item.path, target)
+            shutil.move(_lp(item.path), _lp(target))
             moved += 1
         except Exception as exc:                      # noqa: BLE001 — reported
             failed.append((item.path, f"{type(exc).__name__}: {exc}"))

@@ -43,7 +43,8 @@ from numpy.random import default_rng
 
 from .compat import _np_trapz, _np_ptp
 from .bids import _sanitise_bids_label, StudyMetadata
-from .utils import _add_time_and_digmark, filename_token
+from .utils import (_add_time_and_digmark, filename_token, long_path,
+                    display_path, path_too_long_hint)
 from .io import extract_emg_waveform_and_fs, extract_stim_times
 from .filters import adaptive_mains_cancel, design_notch_sos
 from .detection     import (compute_ptp, compute_rms, compute_auc,
@@ -3129,7 +3130,10 @@ def run_pipeline(input_path,
     # it describes (archive_superseded relies on exactly that).
     from .bids import session_output_dir, write_derivatives_description
     _study_root = derivatives_root or _source_dir
-    _deriv_base = session_output_dir(_study_root, meta)
+    # In Windows' extended-length form (utils.long_path), so no output fails
+    # for being over 260 characters: every path below is joined onto this one
+    # and inherits it. Paths shown or stored go through display_path().
+    _deriv_base = long_path(session_output_dir(_study_root, meta))
     os.makedirs(_deriv_base, exist_ok=True)
     # Every BIDS derivative dataset carries a description of what made it.
     write_derivatives_description(_study_root)
@@ -3715,13 +3719,15 @@ def run_pipeline(input_path,
                 latency_auto, latency_manual)
 
             # ── Stage 9: Plots ────────────────────────────────────────────────
-            # Clean up stale figures from previous runs with old prefix names
-            for _old_fig in glob.glob(os.path.join(figures_out, "*_traces.png")):
+            # Clean up stale figures from previous runs with old prefix names.
+            # The folders are escaped because the long-path prefix contains a
+            # "?", which glob would otherwise read as a wildcard.
+            for _old_fig in glob.glob(os.path.join(glob.escape(figures_out), "*_traces.png")):
                 try:
                     os.remove(_old_fig)
                 except Exception:
                     pass
-            for _old_fig in glob.glob(os.path.join(figures_all, "*_traces_all.png")):
+            for _old_fig in glob.glob(os.path.join(glob.escape(figures_all), "*_traces_all.png")):
                 try:
                     os.remove(_old_fig)
                 except Exception:
@@ -3738,6 +3744,9 @@ def run_pipeline(input_path,
             import traceback
             log_callback(f"❌ Error processing {name}: {e}")
             log_callback(traceback.format_exc())
+            _hint = path_too_long_hint(e)
+            if _hint:
+                log_callback(f"   ⚠️  {_hint}")
             _failed_files.append((name, f"{type(e).__name__}: {e}"))
 
         if progress_callback:
@@ -3872,7 +3881,8 @@ def run_pipeline(input_path,
     if txt_files:
         combined = os.path.join(figures_out, f"{_bids_prefix}_traces.png")
         if os.path.exists(combined):
-            webbrowser.open(combined)
+            # The shell is handed the ordinary form; it is not a file write.
+            webbrowser.open(display_path(combined))
 
     if progress_callback:
         progress_callback(100)

@@ -43,6 +43,9 @@ from dataclasses import dataclass, field
 from . import archive_superseded as AR
 from .bids import (DATATYPE, PIPELINE_NAME, derivatives_dir,
                    legacy_session_output_dir, pipeline_dir)
+# Existence checks and moves use Windows' extended-length form; plans and
+# manifests keep plain paths (utils.long_path).
+from .utils import long_path
 
 REASON_LEGACY = "legacy-layout"
 _SESSION_SUFFIX = "_session.json"
@@ -120,7 +123,7 @@ def archive_legacy_for_recording(source_path: str, metadata, study_root: str,
     """
     log = log_callback or (lambda _m: None)
     if not (source_path and new_session_path
-            and os.path.isfile(new_session_path)):
+            and os.path.isfile(long_path(new_session_path))):
         return None
     root = study_root or os.path.dirname(source_path)
     legacy_dir = legacy_session_output_dir(root, metadata)
@@ -233,7 +236,8 @@ def plan_migration(study_root: str) -> MigrationPlan:
         for prefix in _session_prefixes(sdir):
             items = legacy_items(sdir, prefix)
             claimed.update(items)
-            rerun = os.path.isfile(os.path.join(target, prefix + _SESSION_SUFFIX))
+            rerun = os.path.isfile(long_path(
+                os.path.join(target, prefix + _SESSION_SUFFIX)))
             for src in items:
                 if rerun:
                     try:
@@ -245,7 +249,7 @@ def plan_migration(study_root: str) -> MigrationPlan:
                         prefix=prefix, mtime=mtime))
                     continue
                 dst = os.path.join(target, os.path.relpath(src, sdir))
-                if os.path.exists(dst):
+                if os.path.exists(long_path(dst)):
                     plan.conflicts.append((src, dst))
                 else:
                     plan.moves.append((src, dst, prefix))
@@ -279,8 +283,11 @@ def apply_migration(plan: MigrationPlan, log_callback=None) -> dict:
         w.writerow(MIGRATION_MANIFEST_HEADER)
         for src, dst, prefix in plan.moves:
             try:
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
-                shutil.move(src, dst)
+                # Extended-length form: the destination is 22 characters
+                # longer than the source (mep-cmap-analyser/ and emg/), which
+                # is exactly how a study near the limit tips over it.
+                os.makedirs(long_path(os.path.dirname(dst)), exist_ok=True)
+                shutil.move(long_path(src), long_path(dst))
                 moved += 1
                 w.writerow([src, dst, prefix, "moved"])
             except Exception as exc:                  # noqa: BLE001 - reported
