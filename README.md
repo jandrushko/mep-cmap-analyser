@@ -7,7 +7,7 @@
 
 [![PyPI version](https://badge.fury.io/py/mep-cmap-analyser.svg)](https://pypi.org/project/mep-cmap-analyser/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://github.com/jandrushko/mep-cmap-analyser/blob/main/LICENSE)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
 **PyPI:** https://pypi.org/project/mep-cmap-analyser/  
 **GitHub:** https://github.com/jandrushko/mep-cmap-analyser  
@@ -1427,7 +1427,7 @@ pip install mep-cmap-analyser
 mep-cmap
 ```
 
-Python 3.9 or later is required. Tkinter must be available:
+Python 3.10 or later is required. Tkinter must be available:
 
 * **Windows / macOS** — included with standard Python installers
 * **Linux (Ubuntu / Debian)** — `sudo apt install python3-tk`

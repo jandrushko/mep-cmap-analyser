@@ -81,7 +81,9 @@ def test_module_is_importable_on_python39(path):
         f"{path.relative_to(PKG.parent)} uses the PEP 604 `X | Y` annotation "
         f"shorthand at line(s) {sorted(set(hits))} without "
         f"`from __future__ import annotations`. This raises TypeError on import "
-        f"under Python 3.9, which pyproject.toml still supports."
+        f"under Python 3.9. pyproject.toml now requires 3.10, but this "
+        f"guard is kept while development environments (Apple's bundled "
+        f"Python on macOS) are still 3.9."
     )
 
 

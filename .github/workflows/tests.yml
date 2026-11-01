@@ -13,12 +13,15 @@ jobs:
       fail-fast: false
       matrix:
         # Oldest supported and current, so the format-coverage guard runs on both.
-        python-version: ["3.9", "3.12"]
+        # 3.10 rather than 3.9: Python 3.9 reached end of life in October 2025,
+        # and the Ubuntu 26.04 image behind ubuntu-latest (from 19 October 2026)
+        # does not provide it, so that leg failed at setup and tested nothing.
+        python-version: ["3.10", "3.12"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 

@@ -9,7 +9,7 @@ No admin privileges needed — uses a local virtual environment.
 
 Prerequisites
 -------------
-  * Python 3.9+ (python.org installer)
+  * Python 3.10+ (python.org installer)
   * Rust toolchain  https://rustup.rs  (one-time install)
 
 Usage
