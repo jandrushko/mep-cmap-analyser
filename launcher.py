@@ -16,10 +16,71 @@ multiprocessing.freeze_support()
 import sys
 import os
 
+
+def _point_tcl_at_bundled_files():
+    """Tell Tcl/Tk where the built app keeps its library files.
+
+    PyInstaller ships them as _internal/_tcl_data and _internal/_tk_data and
+    normally sets TCL_LIBRARY / TK_LIBRARY from a runtime hook. The 1.4.10
+    Windows build -- identical files, identical hook -- started without them
+    set, and the first tkinter window failed with "Can't find a usable
+    init.tcl"; setting them by hand made the same build start. Doing it here
+    as well, before anything imports tkinter, does not depend on that hook.
+
+    Only in the built app, only if the folders exist, and never overriding a
+    value already set to a folder that exists.
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+    for var, sub in (("TCL_LIBRARY", "_tcl_data"), ("TK_LIBRARY", "_tk_data")):
+        folder = os.path.join(base, sub)
+        if os.path.isdir(folder) and not os.path.isdir(os.environ.get(var, "")):
+            os.environ[var] = folder
+
+
+_point_tcl_at_bundled_files()
+
+_RELAUNCH_MARK = "MEPCMAP_TCL_RELAUNCHED"
+
+
+def _relaunch_with_tcl_env(exc):
+    """Restart the built app once with the Tcl/Tk folders set from the start.
+
+    The second line of defence. Setting TCL_LIBRARY in-process (above, and in
+    PyInstaller's own hook) is normally enough, but with the 1.4.10 Windows
+    build only a value present when the process STARTED was seen by Tcl:
+    launched with the variable already set, the same build ran. So if the
+    first window still fails to find init.tcl, start a fresh copy with the
+    variables in its environment, at most once, and leave this one.
+
+    Returns True if a relaunch was started; False if it does not apply.
+    """
+    if not getattr(sys, "frozen", False) or os.environ.get(_RELAUNCH_MARK):
+        return False
+    if "init.tcl" not in str(exc):
+        return False
+    import subprocess
+    env = dict(os.environ)
+    env[_RELAUNCH_MARK] = "1"
+    # A built app starting a fresh copy of itself must say so, or the copy
+    # treats PyInstaller's runtime variables as its own (PyInstaller docs,
+    # "independent instance of the same application").
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    subprocess.Popen([sys.executable] + sys.argv[1:], env=env,
+                     cwd=os.path.dirname(sys.executable))
+    return True
+
+
 if __name__ == '__main__':
 
     from splash_screen import show_splash
-    splash = show_splash()
+    try:
+        splash = show_splash()
+    except Exception as _tcl_exc:
+        if _relaunch_with_tcl_env(_tcl_exc):
+            sys.exit(0)
+        raise
 
     try:
         splash.update_message("Loading numpy...")
