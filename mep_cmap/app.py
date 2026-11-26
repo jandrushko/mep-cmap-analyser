@@ -5217,9 +5217,24 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                 if col in clean.columns:
                     clean[col] = _pd.to_numeric(clean[col], errors='coerce')
 
+            # Match on Condition as well as StimType when both tables carry it:
+            # a summary row per condition (A·haptic, A·no_haptic) matched on
+            # StimType alone was given the mean of every A trial, conditions
+            # pooled. Missing conditions read as "" on both sides.
+            _by_cond = ("Condition" in df_sum.columns
+                        and "Condition" in clean.columns)
+            if _by_cond:
+                _clean_cond = clean["Condition"].fillna("").astype(str) \
+                    .replace({"n/a": ""})
             for idx, row in df_sum.iterrows():
                 st   = row.get("StimType", "")
                 grp  = clean[clean["StimType"] == st] if "StimType" in clean.columns                        else clean
+                if _by_cond:
+                    _c = row.get("Condition", "")
+                    _c = "" if (_c is None or (isinstance(_c, float)
+                                               and _np.isnan(_c))) else str(_c)
+                    _c = "" if _c == "n/a" else _c
+                    grp = grp[_clean_cond.loc[grp.index] == _c]
                 if len(grp) == 0:
                     continue
                 # Normalised_PTP

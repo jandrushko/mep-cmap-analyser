@@ -122,6 +122,7 @@ def apply_normalisation(
         reference_map: dict[str, str],
         plateau_tolerance: float = 0.10,
         log_callback=print,
+        key_of=None,
 ) -> None:
     """
     Fill normalisation columns in-place in the trial row list.
@@ -137,21 +138,42 @@ def apply_normalisation(
     ----------
     latency_rows    : list of rows indexed by col dict
     col             : {column_name: row_index}
-    stim_ptps       : {stim_type: [ptp_val, ...]}
-    reference_map   : {stim_type: ref_stim_type}  —  "" / None = no normalisation
+    stim_ptps       : {group_key: [ptp_val, ...]}
+    reference_map   : {group_key: ref_group_key}  —  "" / None = no normalisation
     plateau_tolerance: fraction of peak for plateau detection (0 = simple mean)
+    key_of          : row -> the group key reference_map is keyed by. Defaults
+                      to the StimType column, which is the group key only for
+                      a recording without conditions. With conditions a row
+                      says StimType=B, Condition=haptic while tab 1a says
+                      B·haptic, so the caller passes the rule that rebuilds the
+                      key (pipeline.group_key_for); without it every
+                      condition-split row was skipped and left blank.
+
+    Anything designated on tab 1a that cannot be applied is logged with a ⚠️:
+    a reference with no usable trials, and a group that ends up with no
+    normalised trial. A blank Normalised_PTP column is never silent.
     """
     if not latency_rows or not reference_map:
         return
 
     # ── Compute reference mean for each referenced stim ───────────────────────
     ref_means: dict[str, tuple[float, int, str]] = {}  # {ref_stim: (mean, n, method)}
-    for ref_st in set(v for v in reference_map.values() if v):
+    for ref_st in sorted(set(v for v in reference_map.values() if v)):
+        _users = sorted(k for k, v in reference_map.items() if v == ref_st)
         if ref_st not in stim_ptps:
+            log_callback(
+                f"⚠️  Normalisation: reference '{ref_st}' (chosen on tab 1a "
+                f"for {', '.join(_users)}) has no trials in this file, so "
+                f"{'that group is' if len(_users) == 1 else 'those groups are'} "
+                f"not normalised.")
             continue
         vals = [v for v in stim_ptps[ref_st]
                 if v is not None and np.isfinite(v) and v > 0]
         if not vals:
+            log_callback(
+                f"⚠️  Normalisation: reference '{ref_st}' has no usable PTP "
+                f"values (none above zero), so {', '.join(_users)} "
+                f"{'is' if len(_users) == 1 else 'are'} not normalised.")
             continue
         if plateau_tolerance > 0:
             r = compute_mmax(vals, plateau_tolerance=plateau_tolerance)
@@ -182,8 +204,13 @@ def apply_normalisation(
     ri_adj       = col.get("Adjusted_PTP_QR(mV)")
     ri_norm_adj  = col.get("Normalised_Adjusted_PTP_QR")
 
+    if key_of is None:
+        def key_of(row):
+            return row[ri_sttype]
+    n_done: dict[str, int] = {}
+
     for row in latency_rows:
-        st       = row[ri_sttype]
+        st       = key_of(row)
         ref_st   = reference_map.get(st, "")
         if not ref_st or ref_st not in ref_means:
             continue
@@ -201,6 +228,7 @@ def apply_normalisation(
         row[ri_mean] = round(mean_ref, 4)
         row[ri_n]    = n_ref
         row[ri_norm] = round(ptp_f / mean_ref, 4)
+        n_done[st] = n_done.get(st, 0) + 1
         # Normalised_PTP / PreStimRMS
         if ri_norm_rms is not None and ri_rms is not None:
             try:
@@ -220,6 +248,15 @@ def apply_normalisation(
             except (TypeError, ValueError):
                 pass
 
+    # A group set to be normalised to a reference that WAS found, yet with no
+    # trial normalised, is the silent failure this check exists for: the rows
+    # did not match tab 1a's group key. Say so rather than leave a blank column.
+    for target, ref_st in sorted(reference_map.items()):
+        if ref_st and ref_st in ref_means and not n_done.get(target):
+            log_callback(
+                f"⚠️  Normalisation: '{target}' was set to be normalised to "
+                f"'{ref_st}', but no '{target}' trial was normalised. Its "
+                f"Normalised_PTP column is blank.")
 
 
 # ─── EMG excitability compensation (Carson 2026, quantile regression) ──────────
@@ -516,7 +553,8 @@ def apply_emg_compensation(
     # ── Fit + write per group ─────────────────────────────────────────────────
     for key, idxs in groups.items():
         st    = key[0]
-        label = " / ".join(str(k) for k in key)
+        label = " / ".join(str(k) for k in key
+                           if k is not None and str(k) not in ("", "n/a"))
         rms_vals = [float(latency_rows[i][ri_rms]) for i in idxs]
         ptp_vals = [float(latency_rows[i][ri_ptp]) for i in idxs]
 

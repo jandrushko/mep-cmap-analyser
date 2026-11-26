@@ -712,6 +712,29 @@ def split_group_key(cfg: PipelineConfig, group_key: str):
     return str(stim), str(cond or "")
 
 
+def group_key_for(cfg: PipelineConfig, stim_type, condition) -> str:
+    """The analysis group key for a trial row's StimType and Condition.
+
+    The inverse of split_group_key, read from the same map, so the two can
+    never disagree. Trial rows carry the stimulus and its condition in two
+    columns (StimType=B, Condition=haptic), while everything configured on tab
+    1a -- the normalisation reference above all -- is keyed by the group
+    (B·haptic). Stages that ran after the split looked rows up by StimType
+    alone: normalisation then found no instruction for any condition-split
+    trial and left its columns blank without a word.
+
+    A row with no condition is its stimulus type, as split_group_key has it.
+    """
+    stim = "" if stim_type is None else str(stim_type)
+    cond = "" if condition is None else str(condition)
+    if not cond or cond.lower() == "n/a":         # BIDS "no condition"
+        return stim
+    for key, pair in (cfg.condition_map or {}).items():
+        if pair and str(pair[0]) == stim and str(pair[1] or "") == cond:
+            return str(key)
+    return stim
+
+
 def resolve_window(cfg: PipelineConfig, stim_type: str):
     """This stimulus type's (pre_ms, post_ms), falling back to the file-wide pair.
 
@@ -3792,11 +3815,18 @@ def run_pipeline(input_path,
                      "(direct muscle response; not spinally mediated)")
     else:
         _emg_col_idx = {c: i for i, c in enumerate(LAT_COLS)}
+        # One fit per SAMPLE, which is a stimulus type within one condition:
+        # A·haptic and A·no_haptic are different samples in Carson's sense.
+        # Rows carry the condition in its own column, so it is passed as part
+        # of the sample key; fitting on StimType alone pooled every condition
+        # of a stimulus type into one regression.
         apply_emg_compensation(
             latency_manual, _emg_col_idx,
+            extra_group_cols=("Condition",),
             log_callback=log_callback)
         apply_emg_compensation(
             latency_auto, _emg_col_idx,
+            extra_group_cols=("Condition",),
             log_callback=lambda _: None)
 
     # ── Stage 9b: Apply normalisation (Mmax / paired-pulse ratios) ─────────
@@ -3804,9 +3834,18 @@ def run_pipeline(input_path,
         _col_idx  = {c: i for i, c in enumerate(LAT_COLS)}
         _stim_ptps: dict = {}
         _ri_st  = _col_idx["StimType"]
+        _ri_cnd = _col_idx["Condition"]
         _ri_ptp = _col_idx["PTP(mV)"]
+
+        # Rows carry StimType and Condition apart; tab 1a's reference_map and
+        # full_ptp_data are keyed by the group (B·haptic). Every lookup below
+        # goes through the one rule that rebuilds it, or a condition-split
+        # recording finds no reference and no instruction for any of its rows.
+        def _row_key(row):
+            return group_key_for(cfg, row[_ri_st], row[_ri_cnd])
+
         for _row in latency_manual:
-            _st  = _row[_ri_st]
+            _st  = _row_key(_row)
             _ptp = _row[_ri_ptp]
             try:    _stim_ptps.setdefault(_st, []).append(float(_ptp))
             except (TypeError, ValueError): pass
@@ -3831,12 +3870,14 @@ def run_pipeline(input_path,
             latency_manual, _col_idx, _stim_ptps,
             cfg.reference_map,
             plateau_tolerance=cfg.plateau_tolerance,
-            log_callback=log_callback)
+            log_callback=log_callback,
+            key_of=_row_key)
         apply_normalisation(
             latency_auto, _col_idx, _stim_ptps,
             cfg.reference_map,
             plateau_tolerance=cfg.plateau_tolerance,
-            log_callback=lambda _: None)
+            log_callback=lambda _: None,
+            key_of=_row_key)
 
     # ── Stage 10: Write outputs ───────────────────────────────────────────────
     _selected_groups = pipeline_write_outputs(
