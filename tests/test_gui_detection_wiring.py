@@ -520,7 +520,12 @@ def test_the_two_anchor_controls_name_the_window_they_move():
     app_src = (root / "mep_cmap" / "app.py").read_text(encoding="utf-8")
     pref_src = (root / "mep_cmap" / "preferences.py").read_text(encoding="utf-8")
 
-    assert "Anchor the ONSET SEARCH window" in app_src
+    # v1.4.13: the onset-search control no longer says "anchor" at all, and
+    # the amplitude note names its own setting, so the two cannot be read as
+    # one setting contradicting itself.
+    assert "Narrow the onset search to around each event type's" in app_src
+    assert "Anchor the ONSET SEARCH window" not in app_src
+    assert "Amplitude window anchoring is ON (set in" in app_src
     assert "Amplitude (PTP) Window Anchoring" in pref_src
     # Neither may carry a bare "anchor" label that does not say which window.
     assert 'text="Anchor onset search window to sample-median onset"' not in app_src

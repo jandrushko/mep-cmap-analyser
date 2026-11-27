@@ -174,9 +174,15 @@ PTP_ANCHOR_DEFAULTS = {
     # for an M-wave is most of the response. Amplitude, not just latency, was
     # affected.
     #
-    # Off by default so existing analyses reproduce; intended to become the
-    # default once validated on real recordings.
-    "ptp_anchor": False,
+    # On by default from v1.4.13, for NEW installs. It was off "so existing
+    # analyses reproduce, intended to become the default once validated on
+    # real recordings"; peripheral-nerve recordings measured with the fixed
+    # 10 ms start were that validation. Existing installs keep the value they
+    # have been running with: Preferences.load pins a stored file that
+    # predates this key to False, and no migration flips it, because amplitude
+    # anchoring is not saved per session and a re-run would otherwise change
+    # an old analysis's amplitudes without anyone deciding to.
+    "ptp_anchor": True,
     # Window start = median onset - this. Small, so the window opens just
     # before the rise without admitting baseline.
     "ptp_anchor_pre_ms": 2.0,

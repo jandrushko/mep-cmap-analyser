@@ -228,7 +228,8 @@ def test_the_amplitude_note_states_the_state_only():
 
     body = APP[APP.index("def _refresh_ptp_note"):]
     body = body[:body.index("self._refresh_ptp_note = ")]
-    for line in ("Anchoring is ON \u2014", "Anchoring is OFF \u2014"):
+    for line in ("Amplitude window anchoring is ON (set in",
+                 "Amplitude window anchoring is OFF (set in"):
         assert line in body
     notes = re.findall(r"_ptp_note\.config\(\s*text=(.*?)\)\n", body, re.S)
     assert len(notes) == 2, "one note per state"

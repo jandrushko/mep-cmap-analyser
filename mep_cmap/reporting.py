@@ -173,6 +173,13 @@ def analysis_facts(cfg, *, fs=None, emg_unit=None, source_format=None):
         "latency_map": {k: list(v) for k, v in (g("latency_map", {}) or {}).items()},
         "amplitude_window_ms": [_round(g("ptp_start")), _round(g("ptp_end"))],
         "amplitude_window_anchored": bool(g("ptp_anchor", False)),
+        # The onset search narrowed to +/- this many ms around each type's
+        # median onset (on by default from v1.4.13), or null when it was not.
+        # Recorded beside amplitude anchoring: both change which part of the
+        # trace a measurement comes from, and a methods section needs both.
+        "onset_search_halfwidth_ms": (
+            _round(g("onset_anchor_halfwidth_ms", 8.0))
+            if g("onset_anchor", False) else None),
         "mep_offset_enabled": bool(g("mep_offset_enabled", False)),
         "outlier_review": bool(g("enable_outlier_review", False)),
         "outlier_threshold_z": _round(g("outlier_threshold")),

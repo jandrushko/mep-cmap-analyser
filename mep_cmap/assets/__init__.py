@@ -101,3 +101,37 @@ def tmsmultilab_logo(size: int = 22):
         if img is not None:
             return img
     return None
+
+
+def set_window_icon(window) -> bool:
+    """Give a Tk window (and, on Windows, every later dialog) the MEP icon.
+
+    The build spec's icon= only stamps the .exe file, which is what Explorer
+    and the taskbar show; the window's own title-bar icon is set by Tk at run
+    time, and nothing set it, so every window showed Tk's feather.
+
+    Windows: iconbitmap(default=...) with the bundled MEP.ico, which also
+    becomes the icon of every Toplevel created afterwards. Linux: the same
+    image through Pillow and iconphoto(True, ...). macOS: nothing -- title
+    bars there carry no icon, and the Dock icon comes from MEP.icns in the
+    app bundle.
+
+    Total like the rest of this module: returns False instead of raising,
+    because an icon is never worth stopping the tool from opening.
+    """
+    try:
+        if sys.platform == "darwin":
+            return False
+        ico = asset_path("MEP.ico")
+        if not os.path.isfile(ico):
+            return False
+        if sys.platform.startswith("win"):
+            window.iconbitmap(default=ico)
+            return True
+        from PIL import Image, ImageTk
+        img = ImageTk.PhotoImage(Image.open(ico), master=window)
+        _CACHE["window_icon"] = img             # keep it alive (see _CACHE)
+        window.iconphoto(True, img)
+        return True
+    except Exception:                           # noqa: BLE001 - decoration
+        return False

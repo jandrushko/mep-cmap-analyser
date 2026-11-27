@@ -207,8 +207,10 @@ def test_anchored_window_respects_the_artefact_floor():
     assert win[0] >= ARTEFACT_FLOOR_MS
 
 
-def test_anchoring_is_off_by_default():
-    assert PipelineConfig().ptp_anchor is False
+def test_anchoring_is_on_by_default_for_new_installs():
+    # On from v1.4.13. Existing preference files keep the value they have
+    # been running with (see test_window_icon_and_wording).
+    assert PipelineConfig().ptp_anchor is True
 
 
 def test_too_few_onsets_falls_back_to_the_file_wide_window():

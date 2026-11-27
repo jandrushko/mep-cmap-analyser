@@ -119,6 +119,13 @@ class Preferences:
                 for k, v in stored.items():
                     if k in DEFAULTS:
                         self._data[k] = v
+                # Amplitude window anchoring became the default in v1.4.13 for
+                # NEW installs only. A file written before the key existed has
+                # been running without anchoring, and anchoring is not saved
+                # per session, so taking the new default here would change the
+                # amplitudes of every re-run of that analyst's old work.
+                if stored and "ptp_anchor" not in stored:
+                    self._data["ptp_anchor"] = False
         except Exception:
             stored = {}
         # Bring forward defaults that were raised after this file was written,
@@ -1429,9 +1436,39 @@ def open_preferences_dialog(root, on_apply=None):
     def _reset_font():
         scale_var.set(100); _apply()
 
-    tk.Button(btn_row, text="Apply",           width=10, command=_apply).pack(side="left", padx=4)
-    tk.Button(btn_row, text="Reset font 100%", width=14, command=_reset_font).pack(side="left", padx=4)
-    tk.Button(btn_row, text="Cancel",          width=10, command=win.destroy).pack(side="left", padx=4)
+    def _close():
+        # Saves, then closes -- the usual OK. Cancel is the way out without
+        # saving; a Close that only closed would be a second Cancel, and an
+        # analyst who changed something and pressed Close would lose it.
+        _apply()
+        win.destroy()
+
+    _apply_btn = tk.Button(btn_row, text="Apply", width=10, command=_apply)
+    _apply_btn.pack(side="left", padx=4)
+    _reset_btn = tk.Button(btn_row, text="Reset font 100%", width=14,
+                           command=_reset_font)
+    _reset_btn.pack(side="left", padx=4)
+    tk.Button(btn_row, text="Close", width=10,
+              command=_close).pack(side="left", padx=4)
+    tk.Button(btn_row, text="Cancel", width=10,
+              command=win.destroy).pack(side="left", padx=4)
+
+    # Reset font belongs to the Font & UI tab; on any other tab it reads as
+    # though it resets that tab's settings.
+    def _show_reset_for_tab(_event=None):
+        try:
+            on_font_tab = notebook.select() == str(font_tab)
+        except Exception:                       # noqa: BLE001
+            on_font_tab = True
+        # winfo_manager, not winfo_ismapped: before the window is first drawn
+        # every widget reports unmapped, which would pack it a second time.
+        shown = bool(_reset_btn.winfo_manager())
+        if on_font_tab and not shown:
+            _reset_btn.pack(side="left", padx=4, after=_apply_btn)
+        elif not on_font_tab and shown:
+            _reset_btn.pack_forget()
+
+    notebook.bind("<<NotebookTabChanged>>", _show_reset_for_tab, add="+")
 
     win.update_idletasks()
     sw = win.winfo_screenwidth()

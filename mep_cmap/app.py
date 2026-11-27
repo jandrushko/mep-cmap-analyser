@@ -584,6 +584,10 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         # month/year written here goes stale silently and did so across several
         # releases. TOOL_VERSION is the single source of truth for a build.
         self.root.title(f"MEP-CMAP Analyser, Version {TOOL_VERSION}")
+        # The title-bar icon (and, on Windows, every dialog's). Without this
+        # Tk showed its own feather: the .exe's icon is a different thing.
+        from .assets import set_window_icon
+        set_window_icon(self.root)
 
         # Pending Tk `after` callbacks, so they can be cancelled on exit.
         #
@@ -2441,7 +2445,16 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         self.onset_bigoni_smooth_ms   = tk.DoubleVar(value=prefs.onset_bigoni_smooth_ms)
         self.onset_bigoni_min_run_ms  = tk.DoubleVar(value=prefs.onset_bigoni_min_run_ms)
         self.onset_bigoni_walkback_sd = tk.DoubleVar(value=prefs.onset_bigoni_walkback_sd)
-        # Onset search-window anchoring (per-run detection config; not a global pref)
+        # Onset search-window narrowing (per-run detection config; not a global
+        # pref). OFF by default again from v1.4.14, after being on in 1.4.13.
+        # Tested against an analyst's judgements on reviewed lower-limb
+        # recordings (methods-median, 105 trials): narrowing to +/-8 ms put
+        # several onsets exactly on the latency profile's lower bound -- the
+        # median window reaching below it is clipped there -- and lost a trial
+        # outright, while without it no onset sat on a window edge. It remains
+        # an option for noisy recordings. Old work is unaffected either way:
+        # every session stores this value, and one written before it existed
+        # loads it as off (see _apply_loaded_session).
         self.onset_anchor             = tk.BooleanVar(value=False)
         self.onset_anchor_halfwidth   = tk.DoubleVar(value=8.0)
         # Retained as the internal fallback for any stimulus type not on tab
@@ -2725,11 +2738,17 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                 self._ptp_start_lbl.config(
                     text="Amplitude start — fallback (ms): " + INFO_ICON,
                     fg="#555")
+                # Named in full, with where it is set. "Anchoring is ON" sat
+                # above an unticked box about a DIFFERENT anchor (the onset
+                # search window), and read as a contradiction.
                 self._ptp_note.config(
-                    text="Anchoring is ON — each event type starts at its own "
-                         "median onset minus %g ms." % pre)
+                    text="Amplitude window anchoring is ON (set in "
+                         "Preferences → Detection): each event type's "
+                         "amplitude window starts at its own median onset "
+                         "minus %g ms." % pre)
                 _detail = (_COMMON +
-                           "Anchoring is ON: for each event type the start is "
+                           "Amplitude window anchoring is ON: for each event "
+                           "type the start is "
                            "its median detected onset minus %g ms, so the "
                            "value in this box is used only as a fallback, for "
                            "event types with fewer than %d detected onsets. "
@@ -2743,11 +2762,12 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                     text="Amplitude window start (ms): " + INFO_ICON,
                     fg="black")
                 self._ptp_note.config(
-                    text="Anchoring is OFF — every event type uses this "
-                         "window.")
+                    text="Amplitude window anchoring is OFF (set in "
+                         "Preferences → Detection): every event type uses "
+                         "this fixed window.")
                 _detail = (_COMMON +
-                           "Anchoring is OFF, so this window applies to every "
-                           "event type.\n\n"
+                           "Amplitude window anchoring is OFF, so this window "
+                           "applies to every event type.\n\n"
                            "For files mixing M-waves and MEPs that is usually "
                            "wrong, the two arriving at quite different times: "
                            "enable amplitude anchoring in Preferences → "
@@ -2811,10 +2831,14 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
             command=_open_detection_prefs, cursor="hand2"
         ).grid(row=5, column=3, sticky='w', padx=6, pady=(2, 4))
 
-        # Onset search-window anchoring (median-waveform seed)
+        # Onset search-window narrowing (median-waveform seed). Deliberately
+        # not called "anchor": the amplitude-window anchoring note sits just
+        # above, and two different anchors one line apart read as one setting
+        # contradicting itself.
         tk.Checkbutton(
             time_frame,
-            text="Anchor the ONSET SEARCH window to the sample-median onset",
+            text="Narrow the onset search to around each event type's "
+                 "median onset",
             variable=self.onset_anchor
         ).grid(row=6, column=0, columnspan=3, sticky='w', padx=6, pady=(0, 4))
         tk.Label(time_frame, text="Window ± (ms):").grid(
