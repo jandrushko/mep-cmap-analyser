@@ -163,19 +163,23 @@ class BidsifyTabMixin:
         """
         Where bidsify_state.json lives: the study root (parent of derivatives/,
         sibling to rawdata/), so its relative-path keys line up with the rawdata
-        files. Falls back to the derivatives/rawdata folder, then home.
+        files. Falls back to the derivatives/rawdata folder.
+
+        "" when no study is open. It used to fall back to the home folder,
+        which put BIDS-ify state (and, through the dataset, a queue) there;
+        the tab now says no study is open instead.
         """
         ds = self._get_or_create_dataset()
         root = ""
         try:
             dd = ds._deriv_dir                      # derivatives/ folder
-            if dd and os.path.isabs(dd):
+            if (ds.derivatives_root or "").strip() and dd and os.path.isabs(dd):
                 root = os.path.dirname(dd)          # study root
         except Exception:
             root = ""
         if not root or not os.path.isabs(root):
             root = (getattr(ds, "derivatives_root", "") or self.derivatives_path.get()
-                    or self._rawdata_path.get() or os.path.expanduser("~"))
+                    or self._rawdata_path.get() or "")
         return root
 
     def _get_bidsify_state(self) -> BidsifyState:
@@ -430,6 +434,14 @@ class BidsifyTabMixin:
     # ---- refresh --------------------------------------------------------------
     def _bidsify_tab_refresh(self):
         if not hasattr(self, "_bidsify_tree"):
+            return
+        # No study open: say so rather than build a worklist from nothing.
+        if not self._bidsify_state_root():
+            self._bidsify_tree.delete(*self._bidsify_tree.get_children())
+            self._bidsify_iid_to_path = {}
+            self._bidsify_counts_var.set(
+                "No study open. Choose the study's raw data or derivatives "
+                "folder on the Dataset tab first.")
             return
         state = self._get_bidsify_state()
         schema = self._bidsify_schema

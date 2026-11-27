@@ -2981,6 +2981,44 @@ def _report_run_outcome(failed, n_files, log_callback=print,
     return {"n_files": int(n_files), "failed": failed, "ok": not failed}
 
 
+def ptp_window_warnings(cfg) -> list:
+    """Warn when the fixed PTP window starts after a response could begin.
+
+    With PTP anchoring off, peak-to-peak amplitude is read from the fixed,
+    file-wide window, whatever onset search window each stimulus type uses.
+    Choosing the peripheral-nerve upper-limb profile (onsets from 2 ms) with
+    the window still at a TMS-style 10 ms start measured mostly the trace
+    AFTER an M-wave's first phase, and nothing said so. The onset search
+    window's start is the analyst's own statement of where a response can
+    begin, so a fixed window starting later than that can miss part of it.
+
+    Returns one message per affected run, naming every stimulus type
+    involved, or [] when anchoring is on or every window starts in time.
+    """
+    if getattr(cfg, "ptp_anchor", False):
+        return []
+    try:
+        start = float(cfg.ptp_start)
+    except (TypeError, ValueError):
+        return []
+    late = []
+    for st, lat in sorted((getattr(cfg, "latency_map", None) or {}).items()):
+        try:
+            lo = float(lat[0])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if start > lo:
+            late.append(f"{st} ({lo:g} ms)")
+    if not late:
+        return []
+    return [f"The fixed PTP window starts at {start:g} ms, later than the "
+            f"earliest onset allowed for {', '.join(late)}. The first phase of "
+            f"those responses can fall outside the window, so peak-to-peak "
+            f"amplitude would be measured mostly after it. Turn on PTP window "
+            f"anchoring (Settings ▸ Preferences ▸ Detection) or start the PTP "
+            f"window earlier."]
+
+
 def run_pipeline(input_path,
                  pre_ms,
                  post_ms,
@@ -3073,7 +3111,8 @@ def run_pipeline(input_path,
                  # the application's job, and the worker thread must not
                  # re-read state the analyst may be editing while it runs.
                  nibs_record=None,
-                 existing_segments_metadata=None):
+                 existing_segments_metadata=None,
+                 settings_provenance=None):
     """
     Orchestrate the full per-file MEP/CMAP analysis pipeline.
 
@@ -3272,6 +3311,11 @@ def run_pipeline(input_path,
     # the run used to end with "All results saved" regardless, so a recording
     # that wrote half its outputs and no results read as a clean success.
     _failed_files = []
+
+    # Said once, before any file: a fixed PTP window that starts after a
+    # response may already have begun measures the wrong part of the trace.
+    for _w in ptp_window_warnings(cfg):
+        log_callback(f"⚠️  {_w}")
 
     # ── Per-file loop ─────────────────────────────────────────────────────────
     for file_i, raw_file in enumerate(txt_files):
@@ -3916,6 +3960,13 @@ def run_pipeline(input_path,
             # so a session that predates the feature (key absent) is
             # distinguishable from one that deliberately wrote none.
             "column_selection": _selected_groups,
+            # Where this analysis's settings started: the recording's own
+            # saved session, or the analyst's saved defaults (Settings ▸ Save
+            # current settings as my defaults) with which values they set.
+            # Every setting actually used is recorded elsewhere either way;
+            # this says why a methods section may find a non-standard filter
+            # or window in it. null when the caller did not say.
+            "settings_origin": settings_provenance,
         })
 
     # Auto-open combined figure

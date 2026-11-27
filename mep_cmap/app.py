@@ -576,6 +576,9 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         self._build_menu()
         self._build_scrollable_container()
         self.setup_gui()
+        # The analyst's saved defaults, over the tool's own values, before any
+        # recording is opened (Settings ▸ Save current settings as my defaults).
+        self._init_user_defaults()
         # Deliberately no release date here. bump_version.py has no rule for
         # this line and check_release.py only validates X.Y.Z patterns, so a
         # month/year written here goes stale silently and did so across several
@@ -1591,6 +1594,10 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
             # reading it in the worker would let an edit made during a long
             # run appear in a record of results produced before it.
             nibs_record       = self._bidsify_nibs_record(self.file_path.get()),
+            # Where the settings started (session / my defaults / neither),
+            # for the analysis record. Snapshotted with everything else.
+            settings_provenance = copy.deepcopy(
+                getattr(self, "_settings_origin", None)),
 
             # time windows & analysis settings
             pre_ms            = self.pre_time.get(),
@@ -2101,6 +2108,7 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                 _outcome = run_pipeline(
                     input_path           = params["input_path"],
                     nibs_record          = params.get("nibs_record"),
+                    settings_provenance  = params.get("settings_provenance"),
                     marker_name          = marker,
                     event_sources        = _own_sources,
                     channel_names        = _chan_names,
@@ -2285,6 +2293,12 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         settings_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Settings", menu=settings_menu)
         settings_menu.add_command(label="Preferences...", command=self._open_preferences)
+        settings_menu.add_command(label="Save current settings as my defaults\u2026",
+                                  command=self.save_settings_as_defaults)
+        settings_menu.add_command(label="Apply my defaults",
+                                  command=self.apply_my_defaults)
+        settings_menu.add_command(label="Restore the tool\u2019s original defaults\u2026",
+                                  command=self.restore_original_defaults)
         settings_menu.add_separator()
         settings_menu.add_command(label="Check for updates\u2026",
                                   command=self._check_for_updates)
@@ -2400,8 +2414,11 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         self.apply_bandpass = tk.BooleanVar(value=True)
         self.apply_notch = tk.BooleanVar(value=False)
         self.filter_harmonics = tk.BooleanVar(value=False)
-        # ─── Filter toggles (add these lines near the others) ─────────────────
-        self.apply_humbug     = tk.BooleanVar(value=True)  # master on/off
+        # ─── Filter toggles ────────────────────────────────────────────────────
+        # apply_humbug (hum removal) is created once, further down, OFF by
+        # default. It used to be created here as well, ON, and then replaced a
+        # few lines later -- one setting with two contradictory defaults in
+        # the source, where only the second ever took effect.
         self.humbug_harmonics = tk.IntVar(value=6)         # cancel up to 6 over‑tones
         self.highpass = tk.IntVar(value=20)
         self.lowpass = tk.IntVar(value=450)
@@ -3184,6 +3201,169 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
         fp = self.file_path.get() if hasattr(self, "file_path") else ""
         return rows_for_recording(getattr(self, "condition_event_rows", None),
                                   getattr(self, "_cond_rows_path", ""), fp)
+
+    # ── The analyst's own defaults (Settings menu) ────────────────────────────
+    #
+    # The general settings a user may save as their defaults. Recording-
+    # specific state -- markers, labels, colours, per-type windows, crops,
+    # delays, conditions, references, channels, metadata -- is deliberately
+    # absent: a "default" for those would be one recording's setup imposed on
+    # the next. Onset detection and the epoch window are saved too, but into
+    # the preferences they already live in (see save_settings_as_defaults).
+    _USER_DEFAULT_VARS = (
+        "ptp_start", "ptp_end", "prestim_ms",
+        "apply_filter", "apply_bandpass", "apply_notch", "filter_harmonics",
+        "apply_humbug", "humbug_harmonics", "highpass", "lowpass",
+        "notch_freq", "notch_q", "filter_order", "filter_family",
+        "cheby_ripple", "use_advanced_bp", "hp_order_var", "lp_order_var",
+        "outlier_review", "outlier_threshold",
+        "onset_anchor", "onset_anchor_halfwidth",
+        "plateau_tolerance", "wide_window_s",
+        "enable_inspector", "average_mode",
+        "csp_search_end_ms", "csp_min_silence_ms", "csp_min_return_ms",
+        "csp_criterion", "csp_significance", "csp_n_boot",
+        "csp_max_mep_offset_ms",
+    )
+
+    def _user_default_values(self) -> dict:
+        """Current values of the general settings, by variable name."""
+        out = {}
+        for name in self._USER_DEFAULT_VARS:
+            var = getattr(self, name, None)
+            if var is not None and hasattr(var, "get"):
+                try:
+                    out[name] = var.get()
+                except Exception:                     # noqa: BLE001
+                    pass
+        return out
+
+    def _apply_user_defaults(self, announce: bool = False) -> int:
+        """Set the general settings to the analyst's saved defaults.
+
+        Only names on _USER_DEFAULT_VARS are applied, so a hand-edited or
+        out-of-date preferences file cannot reach anything else. Returns how
+        many were applied (0 when none are saved).
+        """
+        from .preferences import prefs
+        n = 0
+        for name, value in prefs.setup_defaults.items():
+            if name not in self._USER_DEFAULT_VARS:
+                continue
+            var = getattr(self, name, None)
+            if var is None or not hasattr(var, "set"):
+                continue
+            try:
+                var.set(value)
+                n += 1
+            except Exception:                         # noqa: BLE001
+                pass
+        if n and announce and hasattr(self, "log"):
+            self.log("   Started from your saved defaults "
+                     "(Settings ▸ Save current settings as my defaults).")
+        if n:
+            # For the analysis record (trials sidecar, "settings_origin").
+            self._settings_origin = {
+                "source": "user defaults",
+                "values": {k: v for k, v in prefs.setup_defaults.items()
+                           if k in self._USER_DEFAULT_VARS},
+                "onset_method": prefs.onset_method,
+            }
+        return n
+
+    def _init_user_defaults(self):
+        """At start-up: remember the tool's own values, then apply the user's."""
+        self._factory_defaults = self._user_default_values()
+        self._apply_user_defaults()
+
+    def save_settings_as_defaults(self):
+        """Settings ▸ Save current settings as my defaults."""
+        from .preferences import prefs
+        if not messagebox.askyesno(
+                "Save as my defaults",
+                "Save the current general settings as your defaults?\n\n"
+                "This covers the filters, the PTP and pre-stimulus windows, "
+                "the onset method and its parameters, the onset anchor, the "
+                "epoch window for new stimulus types, outlier, plateau and "
+                "silent-period settings.\n\n"
+                "They will be used for every recording that has no saved "
+                "session yet, on this computer. Recordings already set up or "
+                "analysed keep their own settings.",
+                parent=self.root):
+            return
+        prefs.set_setup_defaults(self._user_default_values())
+        prefs.set_onset_prefs(
+            self.onset_method.get(), self.onset_peak_fraction.get(),
+            self.onset_min_amplitude.get(), self.onset_slope_threshold.get(),
+            self.onset_bootstrap_crit.get(), self.onset_bootstrap_n.get(),
+            self.onset_bigoni_smooth_ms.get(),
+            self.onset_bigoni_min_run_ms.get(),
+            self.onset_bigoni_walkback_sd.get())
+        prefs.set_default_epoch_ms(self.pre_time.get(), self.post_time.get())
+        self.log("💾 Saved the current settings as your defaults.")
+
+    def apply_my_defaults(self):
+        """Settings ▸ Apply my defaults (to what is on screen now)."""
+        from .preferences import prefs
+        if not prefs.setup_defaults:
+            messagebox.showinfo(
+                "Apply my defaults",
+                "You have not saved any defaults yet. Set things up as you "
+                "like them, then use Settings ▸ Save current settings as my "
+                "defaults.", parent=self.root)
+            return
+        self._apply_user_defaults()
+        self._sync_onset_vars_from_prefs()
+        self.log("   Applied your saved defaults to the current settings.")
+
+    def restore_original_defaults(self):
+        """Settings ▸ Restore the tool's original defaults."""
+        from .preferences import prefs, DEFAULTS
+        if not messagebox.askyesno(
+                "Restore original defaults",
+                "Forget your saved defaults and return the general settings "
+                "and onset detection to the tool's original values?\n\n"
+                "Font size, the add-ons folder and latency profiles are not "
+                "changed. Recordings already set up keep their own settings.",
+                parent=self.root):
+            return
+        prefs.clear_setup_defaults()
+        prefs.reset_detection()
+        _pre, _post = DEFAULTS["default_epoch_ms"]
+        prefs.set_default_epoch_ms(_pre, _post)
+        for name, value in (getattr(self, "_factory_defaults", None) or {}).items():
+            var = getattr(self, name, None)
+            if var is not None and hasattr(var, "set"):
+                try:
+                    var.set(value)
+                except Exception:                     # noqa: BLE001
+                    pass
+        self._sync_onset_vars_from_prefs()
+        self._settings_origin = {"source": "tool defaults"}
+        self.log("   Restored the tool's original defaults.")
+
+    def _sync_onset_vars_from_prefs(self):
+        """Point the onset controls and epoch window at what prefs now hold."""
+        from .preferences import prefs
+        for var, value in (
+                (self.onset_method, prefs.onset_method),
+                (self.onset_peak_fraction, prefs.onset_peak_frac),
+                (self.onset_min_amplitude, prefs.onset_min_peak_amplitude),
+                (self.onset_slope_threshold, prefs.onset_slope_threshold),
+                (self.onset_bootstrap_crit, prefs.onset_bootstrap_crit),
+                (self.onset_bootstrap_n, prefs.onset_bootstrap_n),
+                (self.onset_bigoni_smooth_ms, prefs.onset_bigoni_smooth_ms),
+                (self.onset_bigoni_min_run_ms, prefs.onset_bigoni_min_run_ms),
+                (self.onset_bigoni_walkback_sd, prefs.onset_bigoni_walkback_sd)):
+            try:
+                var.set(value)
+            except Exception:                         # noqa: BLE001
+                pass
+        _pre, _post = prefs.default_epoch_ms
+        try:
+            self.pre_time.set(int(_pre))
+            self.post_time.set(int(_post))
+        except Exception:                             # noqa: BLE001
+            pass
 
     def _archive_legacy_layout(self):
         """Move the open recording's pre-1.4.8 outputs aside after a re-run.
@@ -5671,11 +5851,26 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                  fg="grey", anchor="w").pack(fill='x', padx=10, pady=(0, 4))
 
     def _get_or_create_dataset(self) -> DatasetSession:
-        """Return current dataset session, creating one if needed."""
+        """Return current dataset session, creating one if needed.
+
+        With no study folder set, the queue lives in memory only (it cannot
+        be saved; DatasetSession.save refuses an empty root). It used to fall
+        back to the home folder, which left a queue file there; months later,
+        with its recordings moved, opening the BIDS-ify tab with no study
+        loaded sent the tool searching the whole home folder, OneDrive
+        included, for them. Once a study folder is chosen, the in-memory
+        queue is folded into that study's own queue.
+        """
+        deriv = self.derivatives_path.get()
         if self._dataset is None:
-            deriv = self.derivatives_path.get()
-            root  = deriv if deriv else os.path.expanduser("~")
-            self._dataset = DatasetSession.load_or_create(root)
+            self._dataset = (DatasetSession.load_or_create(deriv) if deriv
+                             else DatasetSession(derivatives_root=""))
+        elif deriv and not (self._dataset.derivatives_root or "").strip():
+            pending = self._dataset
+            self._dataset = DatasetSession.load_or_create(deriv)
+            for fe in pending.files:
+                if self._dataset.get_by_path(fe.path) is None:
+                    self._dataset.files.append(fe)
         return self._dataset
 
     def _fit_path_column(self):
@@ -6568,9 +6763,21 @@ class TMSAnalysisApp(Stage2Mixin, FilterPreviewMixin, BidsifyTabMixin,
                 with open(_lp(fe.derivatives_json), encoding="utf-8") as fh:
                     sess = _json.load(fh)
                 self._apply_loaded_session(sess, json_path=fe.derivatives_json, preserve_file_path=True)
+                self._settings_origin = {"source": "recording session"}
                 self.log(f"💾 Restored session — {len(self.segments_metadata)} segment(s) with saved edits")
             except Exception as e:
                 self.log(f"⚠️  Could not restore session: {e}")
+        else:
+            # No saved session: this recording starts from the analyst's saved
+            # defaults, not from whatever the previous recording was left at.
+            # A recording WITH a session keeps its own settings (above), so an
+            # analysis already run is never changed by a later default. With
+            # no defaults saved, nothing changes from how it always behaved.
+            if self._apply_user_defaults(announce=True):
+                self._sync_onset_vars_from_prefs()
+            else:
+                self._settings_origin = {
+                    "source": "tool defaults or previous recording"}
 
         # Update status
         if fe.status == STATUS_NOT_STARTED:

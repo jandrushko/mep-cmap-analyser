@@ -40,6 +40,14 @@ DEFAULTS   = {
     # tested on.
     "trials_selected_enabled": False,
     "trials_selected_groups": ["amplitude", "onset", "prestim"],
+    # The analyst's own defaults for the general settings that have no home
+    # elsewhere in this file (filters, PTP and pre-stimulus windows, outlier
+    # and silent-period settings, ...), as {app variable name: value}. Saved
+    # by Settings > Save current settings as my defaults and applied to every
+    # recording with no saved session. Onset detection and the epoch window
+    # are NOT stored here: they already live in this file, and the save
+    # writes them there, so no setting has two homes.
+    "setup_defaults": {},
 }
 DEFAULTS.update(_detection_pref_defaults())
 # Stamped so a superseded default can be recognised rather than shadowed
@@ -164,6 +172,25 @@ class Preferences:
 
     def set_default_epoch_ms(self, pre, post):
         self._data["default_epoch_ms"] = [float(pre), float(post)]
+        self.save()
+
+    # ── The analyst's saved defaults for general settings ─────────────────────
+
+    @property
+    def setup_defaults(self) -> dict:
+        """{app variable name: value}; {} when none have been saved."""
+        v = self._data.get("setup_defaults")
+        return dict(v) if isinstance(v, dict) else {}
+
+    def set_setup_defaults(self, values: dict):
+        # A NEW dict, never an edit in place: self._data began as a shallow
+        # copy of DEFAULTS, so mutating the stored {} would change the
+        # factory default too.
+        self._data["setup_defaults"] = dict(values or {})
+        self.save()
+
+    def clear_setup_defaults(self):
+        self._data["setup_defaults"] = {}
         self.save()
 
     @property

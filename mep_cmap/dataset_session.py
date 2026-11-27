@@ -96,13 +96,39 @@ def _to_absolute(stored_path: str, study_root: str) -> str:
     if os.path.exists(candidate):
         return candidate
     basename = os.path.basename(stored_path)
-    if basename:
+    if basename and _searchable_study_root(study_root):
         for search_root in [os.path.join(study_root, "derivatives"), study_root]:
             if os.path.isdir(search_root):
                 for dirpath, _dirs, filenames in os.walk(search_root):
                     if basename in filenames:
                         return os.path.join(dirpath, basename)
     return candidate
+
+
+def _searchable_study_root(study_root: str) -> bool:
+    """True if a moved file may be searched for under ``study_root``.
+
+    The search walks the whole folder, which is right for a study and wrong
+    for anything wider: a queue file once left in a home folder made every
+    missing recording a walk of the entire home folder, OneDrive included,
+    and opening the BIDS-ify tab took minutes. So never a home folder, a
+    folder above it, a drive or share root, or a OneDrive root itself.
+    """
+    if not study_root:
+        return False
+    try:
+        root = os.path.normcase(os.path.abspath(study_root))
+        home = os.path.normcase(os.path.abspath(os.path.expanduser("~")))
+    except Exception:                       # noqa: BLE001 - odd input
+        return False
+    if root == home or home.startswith(root.rstrip(os.sep) + os.sep):
+        return False                        # the home folder, or above it
+    drive, rest = os.path.splitdrive(root)
+    if rest.strip(os.sep) == "":
+        return False                        # C:\ or \\server\share
+    if os.path.basename(root).lower().startswith("onedrive"):
+        return False                        # a OneDrive root, any platform
+    return True
 
 
 @dataclass
@@ -289,6 +315,13 @@ class DatasetSession:
             "files":             [f.to_dict(study_root=study_root) for f in self.files],
         }
         try:
+            # A queue with no study folder is held in memory only. Saving it
+            # would resolve "derivatives" against whatever the working folder
+            # happens to be -- which is how a stray queue file once ended up
+            # in a home folder and, months later, sent the tool searching all
+            # of it for files that had moved.
+            if not (self.derivatives_root or "").strip():
+                return False
             os.makedirs(self._deriv_dir, exist_ok=True)
             with open(self.json_path, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, indent=2)

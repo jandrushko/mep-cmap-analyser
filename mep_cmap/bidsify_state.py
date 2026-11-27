@@ -198,7 +198,9 @@ class BidsifyState:
     def load_or_create(cls, root: str) -> "BidsifyState":
         st = cls(root)
         path = cls.state_path(root)
-        if os.path.isfile(path):
+        # No study open: an empty state in memory. An empty root would make
+        # state_path relative to whatever the working folder happens to be.
+        if (root or "").strip() and os.path.isfile(path):
             try:
                 with open(path, encoding="utf-8") as fh:
                     d = json.load(fh)
@@ -225,6 +227,9 @@ class BidsifyState:
         return st
 
     def save(self) -> None:
+        # Nowhere to save without a study folder (see load_or_create).
+        if not (self.root or "").strip():
+            return
         os.makedirs(self.root, exist_ok=True)
         payload = {
             "schema_state_version": _SCHEMA_STATE_VERSION,
