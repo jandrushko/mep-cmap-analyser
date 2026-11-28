@@ -800,6 +800,41 @@ class PreviewDetectionMixin:
                 _onsets = pipeline_detect_onsets(
                     _st, _ana, set(), _p0, _p1, _fs, _cfg,
                     log_callback=self.log)
+                # The run's latency-profile check, on the same trials: are the
+                # responses lying AFTER this type's onset search window? Shown
+                # in the log and on the overlay's summary line, so a profile
+                # that does not fit the data is seen before the run, not after.
+                # Never allowed to break the preview.
+                try:
+                    from .pipeline import (profile_fit_warning, LAT_COLS,
+                                           detector_params, onset_search_window)
+                    _ilat = LAT_COLS.index("Latency(ms)")
+                    _rows = []
+                    for _i in range(len(_ana)):
+                        _r = [None] * len(LAT_COLS)
+                        _v = (_onsets or {}).get(_i)
+                        _r[_ilat] = _v if _v is not None else "Not Detected"
+                        _rows.append(_r)
+                    _plo, _phi = (_cfg.latency_map.get(_st)
+                                  or (float(_cfg.ptp_start), float(_cfg.ptp_end)))
+                    _msg = profile_fit_warning(
+                        _st, _ana, _rows, _fs, _before * 1000.0 / _fs,
+                        float(_plo), float(_phi),
+                        onset_search_window(_cfg, _plo, _phi)[1],
+                        gate_mv=float(detector_params(_cfg).get(
+                            "min_peak_amplitude", 0.05) or 0.05))
+                    if not hasattr(self, "_profile_notes"):
+                        self._profile_notes = {}
+                    if _msg:
+                        self.log(f"   ⚠️  {_msg}")
+                        self._profile_notes[_st] = (
+                            f"{_st}: responses mostly AFTER its {float(_plo):g}-"
+                            f"{float(_phi):g} ms onset window, check tab 1a")
+                    else:
+                        self._profile_notes.pop(_st, None)
+                except Exception as _fit_exc:          # noqa: BLE001
+                    self.log(f"   (latency-profile check skipped for "
+                             f"'{_st}': {type(_fit_exc).__name__}: {_fit_exc})")
                 # Detection is keyed by position within ALL trials; the
                 # Inspector numbers only the ones it was given. Map one to the
                 # other, or every marker lands on the wrong trial.
@@ -1024,7 +1059,9 @@ class PreviewDetectionMixin:
                            "offsets_ms": offsets,
                            "csp_end_ms": csp_ends,
                            "trial_numbers": nums,
-                           "colour": colours.get(key)}
+                           "colour": colours.get(key),
+                           "profile_note": (getattr(self, "_profile_notes", {})
+                                            or {}).get(key)}
         return groups
 
     def _preview_combined(self, payload, seed, ptp_ms, cfg):

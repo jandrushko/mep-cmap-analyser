@@ -962,6 +962,13 @@ class DataInspectorWindow:
         self._auc_fill = []
         a0 = m.get("auc_start_idx")
         a1 = m.get("auc_end_idx")
+        # No onset: no AUC is measured (the status line says so and the results
+        # file leaves it blank), so none is shaded. Shading it anyway drew an
+        # area from the stimulus to the offset under a line reading "not
+        # measured". Dragging the onset clears the flag and the area returns.
+        if m.get("onset_auto_failed"):
+            self.canvas.draw_idle()
+            return
         if a0 is None or a1 is None or a0 >= a1:
             self.canvas.draw_idle()
             return
@@ -1315,11 +1322,41 @@ class DataInspectorWindow:
         # added later and forwarded no amplitude/peak-fraction parameters, so
         # a re-detection here could use a different algorithm, and different
         # settings, than the analysis it was reviewing.
+        # The SAME search window as the analysis (pipeline.onset_search_window):
+        # max(min(PTP start, Min lat), artefact floor) to max(PTP end, Max lat).
+        # This started at the PTP window start (10 ms by default) instead, so
+        # on an FDI M-wave (Min lat 3 ms) every trial the Inspector -- and the
+        # Preview's lower plot, which IS the Inspector -- re-detected came out
+        # at 10.0 ms, part-way through the response, while the analysis and
+        # the Preview's upper plot found ~5 ms. Imported here, not at module
+        # level, to keep the Inspector importable on its own.
+        from types import SimpleNamespace as _NS
+        from .pipeline import onset_search_window
+        _s_lo, _s_hi = onset_search_window(
+            _NS(ptp_start=float(self.ptp_start_ms or 10),
+                ptp_end=float(self.ptp_end_ms or 50)),
+            _min_lat, _max_lat)
+        # ...and the SAME baseline. The analysis detects on a segment cut at the
+        # type's own Pre (ms) (20 ms by default); the Inspector's segment
+        # carries the longer prestim lead-in (100 ms) for display. Detecting on
+        # the whole lead-in gave a different noise threshold: on an FDI M-wave
+        # recording 10 of 31 onsets moved 0.4-1 ms, and two trials the
+        # analysis left empty gained one. Trimmed to the type's Pre the
+        # Inspector matched the analysis on every trial. Only the detector's
+        # input is trimmed; the plot keeps the full lead-in.
+        _det_pre = _pre_ms
+        try:
+            if self.visible_pre_ms is not None and 0 < float(self.visible_pre_ms) < _pre_ms:
+                _det_pre = float(self.visible_pre_ms)
+        except (TypeError, ValueError):
+            _det_pre = _pre_ms
+        _cut = int(round((_pre_ms - _det_pre) * fs / 1000.0))
+        _emg_det = emg[_cut:] if _cut > 0 else emg
         onset_ms = dispatch_onset(
-            emg, fs, self.detection_params,
-            pre_ms=_pre_ms,
-            search_start_ms=self.ptp_start_ms or 10,
-            search_end_ms=self.ptp_end_ms or 50,
+            _emg_det, fs, self.detection_params,
+            pre_ms=_det_pre,
+            search_start_ms=_s_lo,
+            search_end_ms=_s_hi,
             min_latency_ms=_min_lat,
             max_latency_ms=_max_lat,
             template=self._condition_template(),
@@ -1350,7 +1387,24 @@ class DataInspectorWindow:
                 _mask = (self.t >= _min_lat) & (self.t <= _max_lat)
                 if _gate > 0 and np.any(_mask):
                     _p2p = float(np.ptp(emg[_mask]))
-                    if _p2p < _gate:
+                    # Is the response simply LATER than the profile allows?
+                    # The in-window amplitude is measured between Min and Max
+                    # lat only. A single-pulse FDI MEP starting at ~30 ms
+                    # against an 18-28 ms profile measured 0.049 mV there and
+                    # 0.76 mV in the amplitude window, and this message told
+                    # the analyst to lower the amplitude minimum -- which would
+                    # only let noise inside the window pass.
+                    _after = (self.t > _max_lat) & (self.t <= _s_hi)
+                    _p2p_after = (float(np.ptp(emg[_after]))
+                                  if np.any(_after) else 0.0)
+                    if _p2p_after >= max(3.0 * _p2p, 3.0 * _gate):
+                        _fail_reason = (
+                            f"the response ({_p2p_after:.2f} mV) lies after "
+                            f"the onset search window ({_min_lat:g}-"
+                            f"{_max_lat:g} ms, where it is {_p2p:.3f} mV) — "
+                            f"check this stimulus type's muscle group, Max "
+                            f"lat or channel on tab 1a")
+                    elif _p2p < _gate:
                         _fail_reason = (
                             f"response {_p2p:.3f} mV is below the "
                             f"{_gate:.3f} mV minimum — lower 'Min peak "
@@ -1656,6 +1710,11 @@ class DataInspectorWindow:
             idx0 = int(idx0)
             mk   = 'x' if field.startswith('ptp_') else 'o'
             alp  = 0.6 if field == "onset_idx" else 1.0
+            # No onset detected: the dot sits at the stimulus as a placeholder.
+            # Drawn faint and labelled so it is not read as a measurement, but
+            # kept, because dragging it is how an onset is set by hand.
+            if field in ("onset_idx", "mep_offset_idx") and _onset_missing:
+                alp = 0.25
             # EVERY marker is placed on, and snaps to, the RAW trace -- see
             # _SNAP_SOURCE. The rectified trace and the envelope are display
             # overlays and are never handed to a marker: a peak-to-peak
@@ -1676,9 +1735,12 @@ class DataInspectorWindow:
                 )
             )
 
+        _onset_missing = bool(m.get('onset_auto_failed'))
         _add(m['ptp_min_idx'], self.DOT_COLOURS["ptp_min_idx"], "ptp_min_idx", label="PTP min")
         _add(m['ptp_max_idx'], self.DOT_COLOURS["ptp_max_idx"], "ptp_max_idx", label="PTP max")
-        _add(m['onset_idx'],   self.DOT_COLOURS["onset_idx"],   "onset_idx",   label="Onset")
+        _add(m['onset_idx'],   self.DOT_COLOURS["onset_idx"],   "onset_idx",
+             label=("Onset not detected (drag to set)" if _onset_missing
+                    else "Onset"))
 
         _has_csp = ('silent_start_idx' in m and 'silent_end_idx' in m)
         if self.enable_silent.get() and _has_csp:
@@ -1703,7 +1765,9 @@ class DataInspectorWindow:
                     m['mep_offset_idx'] = _seed
             if 'mep_offset_idx' in m:
                 _add(m['mep_offset_idx'], self.DOT_COLOURS["mep_offset_idx"],
-                     "mep_offset_idx", label="MEP offset")
+                     "mep_offset_idx",
+                     label=("MEP offset (no onset, not reported)"
+                            if _onset_missing else "MEP offset"))
 
         self.ax_raw.legend(loc="upper right", fontsize=12, frameon=False)
         self.fig._draggables = self._dpts
@@ -2142,6 +2206,19 @@ class DataInspectorWindow:
             # Display only: AUC(mV*s) in the results file is unchanged, so
             # nothing downstream and no published value moves.
             auc_txt = f"    |AUC|:{auc_val * 1000.0:.1f} µV·s"
+
+        # No onset: the AUC would be the stimulus artefact's, so it is not
+        # measured, and the amplitude is kept (a recruitment curve needs its
+        # sub-threshold points). The note says what is known -- the onset was
+        # not detected -- and not "no response": a near-threshold M-wave that
+        # begins as the artefact settles is a real response whose onset could
+        # not be separated, and calling it "no response" was simply wrong. The
+        # results file applies the same rule (pipeline: no offset, duration or
+        # AUC).
+        if _no_onset:
+            if not _ptp_inverted:
+                ptp_txt += " (onset not detected)"
+            auc_txt = "    |AUC|: not measured (no onset)" if auc_txt else ""
 
         self.status.config(
             text=(f"{ptp_txt}    "

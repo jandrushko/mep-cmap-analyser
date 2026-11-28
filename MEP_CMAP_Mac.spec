@@ -123,8 +123,8 @@ app = BUNDLE(
     info_plist={
         'CFBundleName':              'MEP-CMAP Analyser',
         'CFBundleDisplayName':       'MEP-CMAP Analyser',
-        'CFBundleVersion':           '1.4.15',
-        'CFBundleShortVersionString':'1.4.15',
+        'CFBundleVersion':           '1.4.16',
+        'CFBundleShortVersionString':'1.4.16',
         'NSHighResolutionCapable':   True,
         'NSRequiresAquaSystemAppearance': False,  # supports dark mode
     },

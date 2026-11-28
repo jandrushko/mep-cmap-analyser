@@ -325,6 +325,14 @@ class OverlayPanel:
         n_off = sum(1 for g in self.groups.values()
                     for v in (g.get("offsets_ms") or []) if v is not None)
         bits.append(f"{n_on} onset(s), {n_off} offset(s)")
+        # A latency profile that does not fit the data (pipeline.
+        # profile_fit_warning): the responses lie after the onset search
+        # window. Said here, beside the onset count it explains, because a
+        # low count with no reason given reads as a detector failure.
+        _notes = [g.get("profile_note") for g in self.groups.values()
+                  if g.get("profile_note")]
+        if _notes:
+            bits.append("⚠ " + "; ".join(_notes))
         if self.rectify.get():
             # Said on the plot, not only on the tick box. A rectified overlay
             # pasted into a slide is otherwise indistinguishable from a

@@ -1619,10 +1619,26 @@ def pipeline_quantify_segments(stim_type, segs_all, prestim_all,
                         f"({type(_exc).__name__}: {_exc}); "
                         f"MEP_Offset(ms) will be blank.")
                     _offset_warned = True
+        # No onset, no response: an offset is the END of a response, so with
+        # none detected there is nothing to end. On sub-threshold M-wave trials
+        # the offset detector otherwise reported where the stimulus artefact's
+        # tail settled. No exception for a stored offset: the Inspector SEEDS
+        # one automatically and stores it, and the pipeline cannot tell a
+        # seeded marker from a dragged one. An analyst who sees a response sets
+        # the onset (drag it), and the offset then counts again.
+        if man_lat is None and auto_lat is None:
+            mep_offset_ms = mep_duration_ms = None
+            mep_offset_src = "none"
 
         # ── AUC ──────────────────────────────────────────────────────────
         auc_val = None
-        if mk in segments_metadata and "auc_start_idx" in segments_metadata[mk]:
+        if man_lat is None and auto_lat is None:
+            # No onset, no response, no area. The Inspector links the AUC to
+            # the onset, and with none detected its window ran from the
+            # placeholder at the stimulus to the artefact's settling point:
+            # the area of the stimulus artefact, reported as the response's.
+            pass
+        elif mk in segments_metadata and "auc_start_idx" in segments_metadata[mk]:
             # User-set or inspector-auto AUC window
             a0 = _ci(segments_metadata[mk]["auc_start_idx"])
             a1 = _ci(segments_metadata[mk]["auc_end_idx"])
@@ -3000,7 +3016,12 @@ def low_agreement_warnings(rows, min_methods=3):
         seen[key] = k + 1
         try:
             lat, n = r[i_lat], r[i_n]
-            if lat is None or n is None or n == "" or (isinstance(lat, float) and np.isnan(lat)):
+            # A missing onset is the TEXT "Not Detected" in these rows, not
+            # None: only a numeric latency can have been found by a minority.
+            # Treating the text as an onset named every no-onset trial (92 of
+            # 95 TMS trials on one recording) as "found by fewer than 3".
+            lat = float(lat)
+            if n is None or n == "" or np.isnan(lat):
                 continue
             if int(n) < min_methods:
                 flagged.setdefault(key, []).append(k)
@@ -3014,6 +3035,72 @@ def low_agreement_warnings(rows, min_methods=3):
                    f"Data Inspector: #{', #'.join(map(str, trials[:12]))}"
                    + (" ..." if len(trials) > 12 else ""))
     return out
+
+
+def profile_fit_warning(stim_type, segs, rows, fs, pre_ms, min_lat, max_lat,
+                        search_end_ms, gate_mv=0.05, min_trials=3,
+                        min_share=0.25):
+    """Say so when a stimulus type's responses lie AFTER its latency profile.
+
+    A single-pulse FDI MEP starting at ~30 ms against the 18-28 ms FDI
+    profile found no onset on most trials: between Min and Max lat there was
+    0.05 mV, after Max lat 0.76 mV. The profile looked right for the muscle;
+    the data did not (a channel or setup question). Widening the defaults
+    would have hidden that and loosened every other type's onset search, so
+    the run says it instead and leaves the decision to the analyst.
+
+    A trial counts when it has no reliable onset (none, or one fewer than 3
+    detection methods found) and the trace after Max lat (to the search end)
+    is at least three times its size inside Min-Max lat and three
+    times the amplitude minimum. A sub-threshold trial of a recruitment curve,
+    whose only deflection is the stimulus artefact INSIDE the window, does
+    not. One message when at least ``min_trials`` and ``min_share`` of the
+    type's trials count, else None.
+    """
+    i_lat = LAT_COLS.index("Latency(ms)")
+    i_n = LAT_COLS.index("Onset_Methods_N")
+    s0 = int(round(float(pre_ms) * fs / 1000.0))
+    def _idx(ms):
+        return s0 + int(round(float(ms) * fs / 1000.0))
+    n_total, hits, after_vals = 0, 0, []
+    for seg, r in zip(segs if segs is not None else [],
+                      rows if rows is not None else []):
+        n_total += 1
+        # Counted: no onset, or one only a MINORITY of detectors found. On a
+        # TMS recording whose MEPs began after Max lat, 68 of 95 trials got a
+        # minority onset on the noise inside the window, and requiring "no
+        # onset" missed them all. A majority onset is a real one and is not
+        # counted: lower-limb MEPs start inside their profile and peak after
+        # it, which is normal and must not raise this warning.
+        try:
+            float(r[i_lat])
+            _has_onset = True
+        except (TypeError, ValueError):
+            _has_onset = False
+        if _has_onset:
+            try:
+                if int(r[i_n]) >= 3:
+                    continue
+            except (TypeError, ValueError):
+                continue
+        x = np.asarray(seg, dtype=float)
+        a, b, c = _idx(min_lat), _idx(max_lat), _idx(search_end_ms)
+        if not (0 <= a < b < min(c, len(x))):
+            continue
+        p_in = float(np.ptp(x[a:b + 1]))
+        p_after = float(np.ptp(x[b + 1:min(c, len(x))]))
+        if p_after >= max(3.0 * p_in, 3.0 * float(gate_mv)):
+            hits += 1
+            after_vals.append(p_after)
+    if n_total == 0 or hits < max(min_trials, min_share * n_total):
+        return None
+    return (f"'{stim_type}': {hits} of {n_total} trials have a clear response "
+            f"(median {np.median(after_vals):.2f} mV) AFTER the onset search "
+            f"window ({min_lat:g}-{max_lat:g} ms) and no reliable onset (none, "
+            f"or one found by fewer than 3 detection methods). The responses "
+            f"appear to start later than this stimulus type's latency profile "
+            f"allows -- check its muscle group / Max lat, and the channel, on "
+            f"tab 1a. The profile was not widened automatically.")
 
 
 def ptp_window_warnings(cfg) -> list:
@@ -3779,6 +3866,25 @@ def run_pipeline(input_path,
                 # This type's rows only: latency_manual spans every file.
                 for _w in low_agreement_warnings(man_r):
                     log_callback(f"⚠️  {_w}")
+                # Responses lying after this type's latency profile: said, not
+                # fixed (see profile_fit_warning). Never allowed to stop a run.
+                try:
+                    _plo, _phi = (cfg.latency_map.get(stim_type)
+                                  or (float(cfg.ptp_start), float(cfg.ptp_end)))
+                    _fit = profile_fit_warning(
+                        stim_type, info["segs_all"], man_r, fs,
+                        resolve_window(cfg, stim_type)[0], float(_plo),
+                        float(_phi), onset_search_window(cfg, _plo, _phi)[1],
+                        gate_mv=float(detector_params(cfg).get(
+                            "min_peak_amplitude", 0.05) or 0.05))
+                    if _fit:
+                        log_callback(f"⚠️  {_fit}")
+                except Exception as _fit_exc:          # noqa: BLE001
+                    # Never stops a run, but never silent either: a swallowed
+                    # error here once made the check look like it had passed.
+                    log_callback(f"   (latency-profile check skipped for "
+                                 f"'{stim_type}': {type(_fit_exc).__name__}: "
+                                 f"{_fit_exc})")
 
             # ── Stage 7b: Onset-method comparison report ──────────────────────
             # Follows cfg.onset_agreement, not the selected method: agreement
