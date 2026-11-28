@@ -54,6 +54,8 @@ from .onset_boyles import detect_mep_onset_boyles
 from .onset_cusum import detect_mep_onset_cusum
 from .onset_peak_fraction import detect_mep_onset_peak_fraction
 from .onset_rms_envelope import detect_mep_onset_rms_envelope
+from .artefact import (settled_search_start, on_window_edge, lower_bound_ms,
+                       plateau_corrected, artefact_at_start)
 
 # Five fast, methodologically distinct detectors. Odd count so the median is a
 # member of the set rather than an average of two.
@@ -226,6 +228,37 @@ _ADAPTERS = {
 }
 
 
+# Members that count as ONE vote towards the quorum. Empty: counting the
+# walkback variant with plain Bigoni (it starts from Bigoni's answer) was
+# tried and blanked dozens of TMS MEPs found by Bigoni, walkback and one
+# other member -- a majority of five, not of four families -- while not
+# correcting the M-wave trials it was aimed at. Kept as the place to say so.
+_VOTE_FAMILY = {}
+
+
+def consensus_onset(per_method):
+    """Median of the members that found an onset, if a majority of votes did.
+
+    Votes are counted per independent family (see ``_VOTE_FAMILY``); the
+    median itself is still taken over every member that found an onset.
+    Below a majority of families the trial has no onset: the median of a
+    minority is not a consensus. On an FDI recruitment curve three of five
+    members reported the window start on trials with no M-wave at all; the
+    window-edge rule drops those, and this is the backstop for whatever a
+    minority still finds. Returns None or the median, rounded to 0.01 ms.
+    """
+    fams_all, fams_hit, vals = set(), set(), []
+    for name, v in (per_method or {}).items():
+        fam = _VOTE_FAMILY.get(name, name)
+        fams_all.add(fam)
+        if v is not None:
+            fams_hit.add(fam)
+            vals.append(float(v))
+    if not vals or len(fams_hit) < len(fams_all) // 2 + 1:
+        return None
+    return round(float(np.median(vals)), 2)
+
+
 def compute_onset_agreement(
         signal, fs, *,
         pre_ms=100,
@@ -270,6 +303,24 @@ def compute_onset_agreement(
     """
     methods = tuple(METHODS_MEDIAN_DEFAULT_MEMBERS if methods is None else methods)
     params = {} if params is None else dict(params)
+    # The artefact rules (detection/artefact.py) apply only when an artefact
+    # is actually present where the search starts. Everywhere else -- the
+    # ordinary TMS trial -- this is exactly the 1.4.14 computation.
+    _artefact = artefact_at_start(signal, fs, pre_ms, search_start_ms)
+    if _artefact:
+        # Past the artefact still settling: the same start for every member.
+        search_start_ms = settled_search_start(signal, fs, pre_ms,
+                                               search_start_ms, search_end_ms)
+        # A flat post-artefact plateau moved to baseline, for the detectors
+        # only (a copy; every amplitude is measured on the original).
+        sig = plateau_corrected(signal, fs, pre_ms, search_start_ms)
+    else:
+        sig = signal
+    # The edge rule guards the SEARCH START only, where the artefact sits. Not
+    # the profile's floor (min_latency_ms): a TMS MEP whose first phase begins
+    # right at that floor was found there correctly by several members, and
+    # dropping them moved the median a phase late.
+    _lower = search_start_ms if _artefact else None
 
     common = {
         "pre_ms": pre_ms,
@@ -289,10 +340,15 @@ def compute_onset_agreement(
             continue
         attempted += 1
         try:
-            per_method[name] = fn(signal, fs, common, params)
+            per_method[name] = fn(sig, fs, common, params)
         except Exception:
             # One detector failing on a pathological trial must not lose the
             # information the others provide.
+            per_method[name] = None
+        # A latency on the search's first sample is the window edge, not an
+        # onset (detection/artefact.py): the signal was already above this
+        # detector's threshold when the search began.
+        if on_window_edge(per_method[name], _lower, fs):
             per_method[name] = None
 
     vals = [v for v in per_method.values() if v is not None]
@@ -300,7 +356,12 @@ def compute_onset_agreement(
         return OnsetAgreement(per_method, None, None, None, 0, attempted)
 
     arr = np.asarray(vals, dtype=float)
-    methods_median = round(float(np.median(arr)), 2)
+    # Quorum only where an artefact was present; elsewhere the plain median
+    # of whatever was found, as in 1.4.14. A TMS onset found by a minority is
+    # kept: n_detected travels with it, so the trial can be flagged for
+    # review instead of silently losing a clear MEP.
+    methods_median = (consensus_onset(per_method) if _artefact
+                      else round(float(np.median(arr)), 2))
     if arr.size < 2:
         return OnsetAgreement(per_method, methods_median, None, None,
                               int(arr.size), attempted)

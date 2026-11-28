@@ -47,6 +47,8 @@ from .onset_methods_median import detect_mep_onset_methods_median
 from .onset_cusum import detect_mep_onset_cusum
 from .onset_peak_fraction import detect_mep_onset_peak_fraction
 from .onset_rms_envelope import detect_mep_onset_rms_envelope
+from .artefact import (settled_search_start, on_window_edge, lower_bound_ms,
+                       plateau_corrected, artefact_at_start)
 
 
 def dispatch_onset(signal, fs, params=None, *,
@@ -57,6 +59,64 @@ def dispatch_onset(signal, fs, params=None, *,
                    max_latency_ms=None,
                    method=None,
                    template=None):
+    """Run the configured onset detector, kept out of the stimulus artefact.
+
+    The detector itself is chosen and run by ``_dispatch_onset_raw`` below.
+    Around it, for every method alike (detection/artefact.py):
+
+    * the search starts where the trace has settled after the stimulus
+      artefact, never earlier than ``search_start_ms``;
+    * a latency on the search's first sample is returned as None: the signal
+      was already above the detector's threshold when the search began, so
+      the window edge is not an onset.
+
+    Same signature and return as before.
+    """
+    # Only where an artefact is present at the search start (see
+    # detection/artefact.artefact_at_start); otherwise exactly as in 1.4.14.
+    # The methods-median applies these rules itself, inside
+    # compute_onset_agreement, so it goes straight through: applied here as
+    # well, its inner pass saw the already-corrected trace, found no artefact,
+    # skipped the quorum and edge rule, and let an artefact onset through.
+    _p = dict(DETECTION_DEFAULTS)
+    if params:
+        _p.update({k: v for k, v in params.items() if v is not None})
+    _m = _METHOD_ALIASES.get(method or _p.get("onset_method", DEFAULT_ONSET_METHOD),
+                             method or _p.get("onset_method", DEFAULT_ONSET_METHOD))
+    _artefact = (_m != "methods_median"
+                 and artefact_at_start(signal, fs, pre_ms, search_start_ms))
+    if not _artefact:
+        return _dispatch_onset_raw(signal, fs, params, pre_ms=pre_ms,
+                                   search_start_ms=search_start_ms,
+                                   search_end_ms=search_end_ms,
+                                   min_latency_ms=min_latency_ms,
+                                   max_latency_ms=max_latency_ms,
+                                   method=method, template=template)
+    start = settled_search_start(signal, fs, pre_ms, search_start_ms,
+                                 search_end_ms)
+    # A flat post-artefact plateau off baseline moved to baseline, for the
+    # detector only (a copy; amplitude is never measured on it).
+    sig = plateau_corrected(signal, fs, pre_ms, start)
+    lat = _dispatch_onset_raw(sig, fs, params, pre_ms=pre_ms,
+                              search_start_ms=start,
+                              search_end_ms=search_end_ms,
+                              min_latency_ms=min_latency_ms,
+                              max_latency_ms=max_latency_ms,
+                              method=method, template=template)
+    # The search start only, not the profile floor: see compute_onset_agreement.
+    if on_window_edge(lat, start, fs):
+        return None
+    return lat
+
+
+def _dispatch_onset_raw(signal, fs, params=None, *,
+                        pre_ms,
+                        search_start_ms,
+                        search_end_ms,
+                        min_latency_ms=None,
+                        max_latency_ms=None,
+                        method=None,
+                        template=None):
     """
     Run the configured onset detector on one trace.
 

@@ -2981,6 +2981,41 @@ def _report_run_outcome(failed, n_files, log_callback=print,
     return {"n_files": int(n_files), "failed": failed, "ok": not failed}
 
 
+def low_agreement_warnings(rows, min_methods=3):
+    """Name the trials whose onset only a minority of the detectors found.
+
+    Outside trials with a stimulus artefact, an onset found by fewer than a
+    majority of the methods-median members is KEPT -- a blanket quorum
+    blanked clear TMS MEPs (a 1.2 mV MEP among them) -- but it is the trial
+    a human should look at. Reads Onset_Methods_N and Latency(ms) from the
+    trial rows; returns one message per stimulus type (and condition) with
+    such trials, numbered as the Data Inspector numbers them, or [].
+    """
+    i_st, i_cond = LAT_COLS.index("StimType"), LAT_COLS.index("Condition")
+    i_lat, i_n = LAT_COLS.index("Latency(ms)"), LAT_COLS.index("Onset_Methods_N")
+    seen, flagged = {}, {}
+    for r in rows or []:
+        key = (r[i_st], r[i_cond] or "")
+        k = seen.get(key, 0)
+        seen[key] = k + 1
+        try:
+            lat, n = r[i_lat], r[i_n]
+            if lat is None or n is None or n == "" or (isinstance(lat, float) and np.isnan(lat)):
+                continue
+            if int(n) < min_methods:
+                flagged.setdefault(key, []).append(k)
+        except (TypeError, ValueError):
+            continue
+    out = []
+    for (st, cond), trials in sorted(flagged.items()):
+        name = f"{st} ({cond})" if cond else str(st)
+        out.append(f"{name}: onset found by fewer than {min_methods} detection "
+                   f"methods on {len(trials)} trial(s) -- worth checking in the "
+                   f"Data Inspector: #{', #'.join(map(str, trials[:12]))}"
+                   + (" ..." if len(trials) > 12 else ""))
+    return out
+
+
 def ptp_window_warnings(cfg) -> list:
     """Warn when the fixed PTP window starts after a response could begin.
 
@@ -3740,6 +3775,10 @@ def run_pipeline(input_path,
                 with_out_rows.append(with_r)
                 _ptps_per_stim[stim_type]       = ptps_arr
                 _stim_times_per_stim[stim_type] = info["stim_times_s"]
+                # Onsets only a minority of detectors found: kept, but named.
+                # This type's rows only: latency_manual spans every file.
+                for _w in low_agreement_warnings(man_r):
+                    log_callback(f"⚠️  {_w}")
 
             # ── Stage 7b: Onset-method comparison report ──────────────────────
             # Follows cfg.onset_agreement, not the selected method: agreement
